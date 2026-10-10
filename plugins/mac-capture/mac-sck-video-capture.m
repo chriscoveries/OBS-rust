@@ -5,16 +5,31 @@ API_AVAILABLE(macos(12.5)) static void destroy_screen_stream(struct screen_captu
 {
     if (sc->disp && !sc->capture_failed) {
         os_event_t *stop_completed = NULL;
-        os_event_init(&stop_completed, OS_EVENT_TYPE_AUTO);
-        [sc->disp stopCaptureWithCompletionHandler:^(NSError *_Nullable error) {
-            if (error && error.code != SCStreamErrorAttemptToStopStreamState) {
-                MACCAP_ERR("destroy_screen_stream: Failed to stop stream with error %s\n",
-                           [[error localizedFailureReason] cStringUsingEncoding:NSUTF8StringEncoding]);
+        if (os_event_init(&stop_completed, OS_EVENT_TYPE_AUTO) == 0) {
+            [sc->disp stopCaptureWithCompletionHandler:^(NSError *_Nullable error) {
+                if (error && error.code != SCStreamErrorAttemptToStopStreamState) {
+                    MACCAP_ERR("destroy_screen_stream: Failed to stop stream with error %s\n",
+                               [[error localizedFailureReason] cStringUsingEncoding:NSUTF8StringEncoding]);
+                }
+                os_event_signal(stop_completed);
+            }];
+            /* The completion block must keep the event valid until it fires:
+               on timeout we leak rather than free memory the block may still
+               touch. */
+            if (os_event_timedwait(stop_completed, 2000) == ETIMEDOUT) {
+                MACCAP_ERR("destroy_screen_stream: stream stop did not complete in 2 s; "
+                           "leaking capture to avoid use-after-free\n");
+                return;
             }
-            os_event_signal(stop_completed);
-        }];
-        os_event_wait(stop_completed);
-        os_event_destroy(stop_completed);
+            os_event_destroy(stop_completed);
+        } else {
+            [sc->disp stopCaptureWithCompletionHandler:^(NSError *_Nullable error) {
+                if (error && error.code != SCStreamErrorAttemptToStopStreamState) {
+                    MACCAP_ERR("destroy_screen_stream: Failed to stop stream with error %s\n",
+                               [[error localizedFailureReason] cStringUsingEncoding:NSUTF8StringEncoding]);
+                }
+            }];
+        }
     }
 
     if (sc->capture_delegate) {
