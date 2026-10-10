@@ -33,6 +33,7 @@ fn main() {
         .file("oracle/file_serializer.c")
         .file("oracle/file_serializer_host.c")
         .file(libobs.join("util/dstr.c"))
+        .file("oracle/video_frame.c")
         .include(&libobs)
         .std("c11");
     // base.c includes util/threading.h, which includes <pthread.h>. MSVC has
@@ -78,6 +79,10 @@ fn main() {
         "util/dstr.c",
         "util/dstr.h",
         "util/platform.h",
+        "media-io/video-frame.c",
+        "media-io/video-frame.h",
+        "media-io/video-io.h",
+        "media-io/media-io-defs.h",
     ] {
         println!("cargo:rerun-if-changed={}", libobs.join(header).display());
     }

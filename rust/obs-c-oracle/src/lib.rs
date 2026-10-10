@@ -194,3 +194,47 @@ pub mod file_serializer {
         pub fn oracle_file_output_serializer_free(s: *mut OracleSerializer);
     }
 }
+
+pub mod video_frame {
+    use core::ffi::c_int;
+
+    /// Independent declaration of `struct video_frame` for calling the
+    /// oracle. Intentionally not shared with `obs-media-io`.
+    /// `MAX_AV_PLANES` is 8 (`libobs/media-io/media-io-defs.h`).
+    #[repr(C)]
+    #[derive(Debug)]
+    pub struct OracleVideoFrame {
+        pub data: [*mut u8; 8],
+        pub linesize: [u32; 8],
+    }
+
+    unsafe extern "C" {
+        pub fn oracle_video_frame_get_linesizes(
+            linesize: *mut u32,
+            format: c_int,
+            width: u32,
+        );
+        pub fn oracle_video_frame_get_plane_heights(
+            heights: *mut u32,
+            format: c_int,
+            height: u32,
+        );
+        pub fn oracle_video_frame_init(
+            frame: *mut OracleVideoFrame,
+            format: c_int,
+            width: u32,
+            height: u32,
+        );
+        pub fn oracle_video_frame_copy(
+            dst: *mut OracleVideoFrame,
+            src: *const OracleVideoFrame,
+            format: c_int,
+            cy: u32,
+        );
+
+        pub fn oracle_video_frame_size() -> usize;
+        pub fn oracle_video_frame_align() -> usize;
+        pub fn oracle_video_frame_offset_data() -> usize;
+        pub fn oracle_video_frame_offset_linesize() -> usize;
+    }
+}

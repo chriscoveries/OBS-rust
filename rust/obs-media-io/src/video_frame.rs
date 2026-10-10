@@ -169,7 +169,7 @@ pub fn get_linesizes(format: VideoFormat, width: u32) -> [u32; MAX_AV_PLANES] {
             // Little Endian Compressed: width aligned to 48, then
             // ((width + 5) / 6) * 16 bytes per line.
             let w = width.wrapping_add(47) & !47;
-            out[0] = w.wrapping_add(5) / 6 * 16;
+            out[0] = (w.wrapping_add(5) / 6).wrapping_mul(16);
         }
         VideoFormat::None => {}
     }

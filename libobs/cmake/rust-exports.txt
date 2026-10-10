@@ -23,3 +23,5 @@ vec2_ceil
 vec2_close
 vec2_floor
 vec2_norm
+video_frame_copy
+video_frame_init

@@ -65,7 +65,7 @@ fn rust_exports_list_matches_no_mangle_shims() {
         }
         visited.push(ffi_dir);
     }
-    for krate in ["obs-util", "obs-graphics"] {
+    for krate in ["obs-util", "obs-graphics", "obs-media-io"] {
         assert!(
             visited
                 .iter()
