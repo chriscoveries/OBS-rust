@@ -323,3 +323,11 @@ if(TARGET OBS::outputs)
   add_dependencies(cmocka-tests test_rtmp_error)
   add_test(test_rtmp_error ${CMAKE_CURRENT_BINARY_DIR}/test_rtmp_error)
 endif()
+
+# video frame test (media-io/video-frame.c + video-frame.h inlines)
+add_executable(test_video_frame test_video_frame.c)
+target_include_directories(test_video_frame PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_video_frame PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+
+add_dependencies(cmocka-tests test_video_frame)
+add_test(test_video_frame ${CMAKE_CURRENT_BINARY_DIR}/test_video_frame)
