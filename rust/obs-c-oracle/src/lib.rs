@@ -209,16 +209,8 @@ pub mod video_frame {
     }
 
     unsafe extern "C" {
-        pub fn oracle_video_frame_get_linesizes(
-            linesize: *mut u32,
-            format: c_int,
-            width: u32,
-        );
-        pub fn oracle_video_frame_get_plane_heights(
-            heights: *mut u32,
-            format: c_int,
-            height: u32,
-        );
+        pub fn oracle_video_frame_get_linesizes(linesize: *mut u32, format: c_int, width: u32);
+        pub fn oracle_video_frame_get_plane_heights(heights: *mut u32, format: c_int, height: u32);
         pub fn oracle_video_frame_init(
             frame: *mut OracleVideoFrame,
             format: c_int,

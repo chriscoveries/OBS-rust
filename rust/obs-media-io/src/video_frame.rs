@@ -245,8 +245,10 @@ pub fn frame_layout(format: VideoFormat, width: u32, height: u32, alignment: usi
         if layout.linesizes[i] == 0 || layout.heights[i] == 0 {
             continue;
         }
-        let mut plane_size = (layout.linesizes[i] as usize).wrapping_mul(layout.heights[i] as usize);
-        plane_size = plane_size.wrapping_add(alignment.wrapping_sub(1)) & !(alignment.wrapping_sub(1));
+        let mut plane_size =
+            (layout.linesizes[i] as usize).wrapping_mul(layout.heights[i] as usize);
+        plane_size =
+            plane_size.wrapping_add(alignment.wrapping_sub(1)) & !(alignment.wrapping_sub(1));
         layout.total = layout.total.wrapping_add(plane_size);
         layout.offsets[i] = layout.total;
     }

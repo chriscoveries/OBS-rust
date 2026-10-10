@@ -87,8 +87,8 @@ pub unsafe extern "C" fn video_frame_copy(
     // each used plane's buffer covers linesize*height bytes.
     unsafe {
         let (d, s) = (&mut *dst, &*src);
-        for i in 0..MAX_AV_PLANES {
-            if heights[i] == 0 {
+        for (i, &h) in heights.iter().enumerate() {
+            if h == 0 {
                 continue;
             }
             let sp = s.data[i];
@@ -97,12 +97,12 @@ pub unsafe extern "C" fn video_frame_copy(
             let dls = d.linesize[i];
             if sls == dls {
                 // C: memcpy(dst, src, src->linesize[i] * heights[i]) in u32.
-                ptr::copy_nonoverlapping(sp, dp, sls.wrapping_mul(heights[i]) as usize);
+                ptr::copy_nonoverlapping(sp, dp, sls.wrapping_mul(h) as usize);
             } else {
                 let sls = sls as usize;
                 let dls = dls as usize;
                 let ls = sls.min(dls);
-                for y in 0..heights[i] as usize {
+                for y in 0..h as usize {
                     ptr::copy_nonoverlapping(sp.add(sls * y), dp.add(dls * y), ls);
                 }
             }

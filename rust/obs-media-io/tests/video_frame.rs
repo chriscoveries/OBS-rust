@@ -204,7 +204,10 @@ fn frame_init_all_formats() {
 
                 let mut offset = 0usize;
                 for p in 0..MAX_AV_PLANES {
-                    assert_eq!(frame.linesize[p], linesizes[p], "{format:?} {width}x{height} p{p}");
+                    assert_eq!(
+                        frame.linesize[p], linesizes[p],
+                        "{format:?} {width}x{height} p{p}"
+                    );
                     if linesizes[p] == 0 || plane_heights[p] == 0 {
                         assert!(
                             frame.data[p].is_null(),
@@ -269,7 +272,11 @@ fn frame_copy_same() {
         for p in 0..MAX_AV_PLANES {
             if !src.data[p].is_null() {
                 let rows = if p == 0 { 4 } else { 2 };
-                ptr::write_bytes(src.data[p], 0x30u8 + p as u8, src.linesize[p] as usize * rows);
+                ptr::write_bytes(
+                    src.data[p],
+                    0x30u8 + p as u8,
+                    src.linesize[p] as usize * rows,
+                );
             }
         }
 
