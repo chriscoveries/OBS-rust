@@ -1,0 +1,232 @@
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <cmocka.h>
+
+#include "librtmp/amf.h"
+
+/* librtmp's AMF decoder on nested objects and arrays, as an RTMP server
+ * sends them in command and metadata messages. Each nesting level is a
+ * recursion, so the decoder fails past AMF_MAX_DEPTH (128) levels instead of
+ * running out of stack on a deeply nested message. */
+
+#define MAX_DEPTH 128
+#define DEEP 200000
+
+struct buf {
+	char *data;
+	size_t len;
+	size_t cap;
+};
+
+static void put(struct buf *b, const char *bytes, size_t len)
+{
+	if (b->len + len > b->cap) {
+		b->cap = (b->cap + len) * 2;
+		b->data = realloc(b->data, b->cap);
+		assert_non_null(b->data);
+	}
+	memcpy(b->data + b->len, bytes, len);
+	b->len += len;
+}
+
+#define PUT(b, ...)                                           \
+	do {                                                  \
+		const char bytes_[] = {__VA_ARGS__};          \
+		put((b), bytes_, sizeof(bytes_));             \
+	} while (0)
+
+/* AMF0: `depth` objects, each holding the next as property "a" */
+static struct buf nested_objects(size_t depth)
+{
+	struct buf b = {0};
+	PUT(&b, AMF_OBJECT);
+	for (size_t i = 1; i < depth; i++)
+		PUT(&b, 0, 1, 'a', AMF_OBJECT);
+	for (size_t i = 0; i < depth; i++)
+		PUT(&b, 0, 0, AMF_OBJECT_END);
+	return b;
+}
+
+/* AMF0: `depth` strict arrays of one element, the innermost holding a
+ * boolean */
+static struct buf nested_arrays(size_t depth)
+{
+	struct buf b = {0};
+	for (size_t i = 0; i < depth; i++)
+		PUT(&b, AMF_STRICT_ARRAY, 0, 0, 0, 1);
+	PUT(&b, AMF_BOOLEAN, 1);
+	return b;
+}
+
+/* AMF0 ECMA arrays (count, then named properties up to an end marker) */
+static struct buf nested_ecma_arrays(size_t depth)
+{
+	struct buf b = {0};
+	PUT(&b, AMF_ECMA_ARRAY, 0, 0, 0, 1);
+	for (size_t i = 1; i < depth; i++)
+		PUT(&b, 0, 1, 'a', AMF_ECMA_ARRAY, 0, 0, 0, 1);
+	for (size_t i = 0; i < depth; i++)
+		PUT(&b, 0, 0, AMF_OBJECT_END);
+	return b;
+}
+
+/* AMF3 inside AMF0: dynamic objects, each holding the next as "a". The
+ * nested object's marker is read twice, as type and as object header. */
+static struct buf nested_amf3_objects(size_t depth)
+{
+	struct buf b = {0};
+	PUT(&b, AMF_AVMPLUS);
+	for (size_t i = 0; i < depth; i++)
+		/* object, inline dynamic traits, empty class name, "a" */
+		PUT(&b, AMF3_OBJECT, 0x0b, 0x01, 0x03, 'a', AMF3_OBJECT);
+	return b;
+}
+
+/* Same nesting, but a complete, decodable document: nested levels emit
+ * the object marker twice (member type and object header — the top-level
+ * marker is read once, after AVMPLUS), the innermost "a" is an integer,
+ * and every member list ends with an empty name. Each object closes with
+ * an integer member "b": the decoder adds the empty-name terminator as a
+ * property too, and it must not duplicate an object pointer for
+ * AMF_Reset to stay sound. */
+static struct buf nested_amf3_objects_full(size_t depth)
+{
+	struct buf b = {0};
+	PUT(&b, AMF_AVMPLUS);
+	/* object, inline dynamic traits, empty class name, "a" */
+	PUT(&b, AMF3_OBJECT, 0x0b, 0x01, 0x03, 'a');
+	for (size_t i = 1; i < depth; i++)
+		PUT(&b, AMF3_OBJECT, AMF3_OBJECT, 0x0b, 0x01, 0x03, 'a');
+	PUT(&b, AMF3_INTEGER, 0x00);
+	for (size_t i = 0; i < depth; i++)
+		/* "b" = 0, then the empty-name terminator */
+		PUT(&b, 0x03, 'b', AMF3_INTEGER, 0x00, 0x01);
+	return b;
+}
+
+static int decode(struct buf *b)
+{
+	AMFObject obj;
+	int ret = AMF_Decode(&obj, b->data, (int)b->len, FALSE);
+	AMF_Reset(&obj);
+	free(b->data);
+	b->data = NULL;
+	return ret;
+}
+
+static void test_nested_object(void **state)
+{
+	(void)state;
+
+	struct buf b = nested_objects(3);
+	AMFObject obj;
+	assert_int_equal(AMF_Decode(&obj, b.data, (int)b.len, FALSE), (int)b.len);
+
+	/* value -> "a" -> "a" */
+	assert_int_equal(AMF_CountProp(&obj), 1);
+	AMFObjectProperty *prop = AMF_GetProp(&obj, NULL, 0);
+	assert_int_equal(AMFProp_GetType(prop), AMF_OBJECT);
+	AVal a = AVC("a");
+	AMFObject level;
+	for (int i = 0; i < 2; i++) {
+		AMFProp_GetObject(prop, &level);
+		prop = AMF_GetProp(&level, &a, -1);
+		assert_int_equal(AMFProp_GetType(prop), AMF_OBJECT);
+	}
+	AMFProp_GetObject(prop, &level);
+	assert_int_equal(AMF_CountProp(&level), 0);
+
+	AMF_Reset(&obj);
+	free(b.data);
+}
+
+static void test_depth_limit(void **state)
+{
+	(void)state;
+
+	struct buf b;
+	size_t len;
+
+	b = nested_objects(MAX_DEPTH);
+	len = b.len;
+	assert_int_equal(decode(&b), (int)len);
+	b = nested_objects(MAX_DEPTH + 1);
+	assert_int_equal(decode(&b), -1);
+
+	b = nested_arrays(MAX_DEPTH);
+	len = b.len;
+	assert_int_equal(decode(&b), (int)len);
+	b = nested_arrays(MAX_DEPTH + 1);
+	assert_int_equal(decode(&b), -1);
+
+	b = nested_ecma_arrays(MAX_DEPTH);
+	len = b.len;
+	assert_int_equal(decode(&b), (int)len);
+	b = nested_ecma_arrays(MAX_DEPTH + 1);
+	assert_int_equal(decode(&b), -1);
+
+	b = nested_amf3_objects_full(MAX_DEPTH);
+	len = b.len;
+	assert_int_equal(decode(&b), (int)len);
+	b = nested_amf3_objects_full(MAX_DEPTH + 1);
+	assert_int_equal(decode(&b), -1);
+
+	b = nested_amf3_objects(MAX_DEPTH + 1);
+	assert_int_equal(decode(&b), -1);
+}
+
+/* Deep enough to overflow any thread's stack without the limit. */
+static void test_deep_nesting(void **state)
+{
+	(void)state;
+
+	struct buf b;
+
+	b = nested_objects(DEEP);
+	assert_int_equal(decode(&b), -1);
+	b = nested_arrays(DEEP);
+	assert_int_equal(decode(&b), -1);
+	b = nested_ecma_arrays(DEEP);
+	assert_int_equal(decode(&b), -1);
+	b = nested_amf3_objects(DEEP);
+	assert_int_equal(decode(&b), -1);
+}
+
+/* An AMF3 member that fails to decode (here an unsupported array) fails the
+ * whole object. librtmp used to keep the half-decoded property and step the
+ * buffer back by the -1 it got (obs-rust/obs-studio#116). */
+static void test_amf3_member_error(void **state)
+{
+	(void)state;
+	/* object, inline traits, 1 sealed member, empty class name, "a",
+	 * then an AMF3 array value */
+	const char sealed[] = {AMF3_OBJECT, 0x13, 0x01, 0x03, 'a', AMF3_ARRAY, 0x01};
+	/* object, inline externalizable traits, empty class name, then an
+	 * AMF3 array value */
+	const char externalizable[] = {AMF3_OBJECT, 0x07, 0x01, AMF3_ARRAY, 0x01};
+	AMFObject obj;
+
+	memset(&obj, 0, sizeof(obj));
+	assert_int_equal(AMF3_Decode(&obj, sealed, (int)sizeof(sealed), TRUE), -1);
+	assert_int_equal(AMF_CountProp(&obj), 0);
+
+	memset(&obj, 0, sizeof(obj));
+	assert_int_equal(AMF3_Decode(&obj, externalizable, (int)sizeof(externalizable), TRUE), -1);
+	assert_int_equal(AMF_CountProp(&obj), 0);
+}
+
+int main(void)
+{
+	const struct CMUnitTest tests[] = {
+		cmocka_unit_test(test_nested_object),
+		cmocka_unit_test(test_depth_limit),
+		cmocka_unit_test(test_deep_nesting),
+		cmocka_unit_test(test_amf3_member_error),
+	};
+
+	return cmocka_run_group_tests(tests, NULL, NULL);
+}
