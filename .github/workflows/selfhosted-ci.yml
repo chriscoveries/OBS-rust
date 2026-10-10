@@ -29,7 +29,10 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.event.pull_request.head.sha }}
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+          persist-credentials: false
+      - name: Submodules (public, no token)
+        run: git submodule sync --recursive && git submodule update --init --recursive --depth 1
       - name: Toolchain
         run: |
           echo "host=$(hostname) cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2)"
