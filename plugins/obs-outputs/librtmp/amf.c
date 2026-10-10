@@ -1265,12 +1265,13 @@ AMF3_DecodeDepth(AMFObject *obj, const char *pBuffer, int nSize, int bAMFData,
                         AMF_Reset(obj);
                         return -1;
                     }
-                    AMF_AddProp(obj, &prop);
 
                     pBuffer += nRes;
                     nSize -= nRes;
 
                     len = prop.p_name.av_len;
+                    if (len > 0)
+                        AMF_AddProp(obj, &prop);
                 }
                 while (len > 0);
             }
