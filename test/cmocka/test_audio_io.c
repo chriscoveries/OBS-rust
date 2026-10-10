@@ -25,9 +25,11 @@
 #include <obs.h>
 #include <media-io/audio-io.h>
 #include <util/platform.h>
+#include <util/threading.h>
 
 static int obs_up;
 static volatile size_t g_input_calls;
+static os_event_t *g_input_event;
 
 static bool counting_input(void *param, uint64_t start_ts, uint64_t end_ts, uint64_t *new_ts, uint32_t active_mixers,
 			   struct audio_output_data *mixes)
@@ -42,6 +44,8 @@ static bool counting_input(void *param, uint64_t start_ts, uint64_t end_ts, uint
 		(*count)++;
 	else
 		g_input_calls++;
+	if (g_input_event)
+		os_event_signal(g_input_event);
 	return true;
 }
 
@@ -49,7 +53,10 @@ static void silent_output(void *param, size_t mix_idx, struct audio_data *data)
 {
 	uint32_t *frames = param;
 	(void)mix_idx;
-	*frames += data->frames;
+	/* param may be NULL: connect() accepts it, and this callback still
+	 * runs on the audio thread for that input. */
+	if (frames)
+		*frames += data->frames;
 }
 
 static struct audio_output_info stereo_info(void)
@@ -252,11 +259,12 @@ static void input_thread_runs(void **state)
 	audio_t *audio = NULL;
 	struct audio_output_info info = stereo_info();
 	info.input_param = (void *)&calls;
+	assert_int_equal(os_event_init(&g_input_event, OS_EVENT_TYPE_AUTO), 0);
 	assert_int_equal(audio_output_open(&audio, &info), AUDIO_OUTPUT_SUCCESS);
 
-	uint64_t deadline = os_gettime_ns() + 3000000000ULL;
-	while (calls == 0 && os_gettime_ns() < deadline)
-		os_sleep_ms(1);
+	assert_int_equal(os_event_timedwait(g_input_event, 3000), 0);
+	os_event_destroy(g_input_event);
+	g_input_event = NULL;
 	assert_true(calls > 0);
 
 	audio_output_close(audio);
