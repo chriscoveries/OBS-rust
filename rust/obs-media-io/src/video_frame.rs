@@ -93,18 +93,139 @@ pub struct FrameLayout {
     pub total: usize,
 }
 
+/// `HALF(size)` from `video-frame.c`: `(size + 1) / 2`, wrapping like the C
+/// `uint32_t` arithmetic.
+fn half(size: u32) -> u32 {
+    size.wrapping_add(1) / 2
+}
+
 /// `video_frame_get_linesizes`: writes the per-plane linesize in bytes for
 /// `width` pixels into `out`. Planes without a linesize stay 0.
 #[must_use]
 pub fn get_linesizes(format: VideoFormat, width: u32) -> [u32; MAX_AV_PLANES] {
-    todo!()
+    let mut out = [0u32; MAX_AV_PLANES];
+    match format {
+        VideoFormat::Bgr3 => out[0] = width.wrapping_mul(3),
+        VideoFormat::Rgba
+        | VideoFormat::Bgra
+        | VideoFormat::Bgrx
+        | VideoFormat::Ayuv
+        | VideoFormat::R10l => out[0] = width.wrapping_mul(4),
+        VideoFormat::P416 => {
+            out[0] = width.wrapping_mul(2);
+            out[1] = width.wrapping_mul(4);
+        }
+        VideoFormat::I420 | VideoFormat::I422 => {
+            out[0] = width;
+            out[1] = half(width);
+            out[2] = half(width);
+        }
+        VideoFormat::I210 | VideoFormat::I010 => {
+            out[0] = width.wrapping_mul(2);
+            out[1] = width;
+            out[2] = width;
+        }
+        VideoFormat::I40a | VideoFormat::I42a => {
+            out[0] = width;
+            out[1] = half(width);
+            out[2] = half(width);
+            out[3] = width;
+        }
+        VideoFormat::Yvyu | VideoFormat::Yuy2 | VideoFormat::Uyvy => {
+            out[0] = width.wrapping_mul(2);
+        }
+        VideoFormat::P010 | VideoFormat::P216 => {
+            out[0] = width.wrapping_mul(2);
+            out[1] = width.wrapping_mul(2);
+        }
+        VideoFormat::I412 => {
+            out[0] = width.wrapping_mul(2);
+            out[1] = width.wrapping_mul(2);
+            out[2] = width.wrapping_mul(2);
+        }
+        VideoFormat::Ya2l => {
+            out[0] = width.wrapping_mul(2);
+            out[1] = width.wrapping_mul(2);
+            out[2] = width.wrapping_mul(2);
+            out[3] = width.wrapping_mul(2);
+        }
+        VideoFormat::Y800 => out[0] = width,
+        VideoFormat::Nv12 => {
+            out[0] = width;
+            out[1] = width;
+        }
+        VideoFormat::I444 => {
+            out[0] = width;
+            out[1] = width;
+            out[2] = width;
+        }
+        VideoFormat::Yuva => {
+            out[0] = width;
+            out[1] = width;
+            out[2] = width;
+            out[3] = width;
+        }
+        VideoFormat::V210 => {
+            // Little Endian Compressed: width aligned to 48, then
+            // ((width + 5) / 6) * 16 bytes per line.
+            let w = width.wrapping_add(47) & !47;
+            out[0] = w.wrapping_add(5) / 6 * 16;
+        }
+        VideoFormat::None => {}
+    }
+    out
 }
 
 /// `video_frame_get_plane_heights`: writes the per-plane row count for
 /// `height` lines into `out`. Planes without rows stay 0.
 #[must_use]
 pub fn get_plane_heights(format: VideoFormat, height: u32) -> [u32; MAX_AV_PLANES] {
-    todo!()
+    let mut out = [0u32; MAX_AV_PLANES];
+    match format {
+        VideoFormat::I420 | VideoFormat::I010 => {
+            out[0] = height;
+            out[1] = half(height);
+            out[2] = half(height);
+        }
+        VideoFormat::Nv12 | VideoFormat::P010 => {
+            out[0] = height;
+            out[1] = half(height);
+        }
+        VideoFormat::Y800
+        | VideoFormat::Yvyu
+        | VideoFormat::Yuy2
+        | VideoFormat::Uyvy
+        | VideoFormat::Rgba
+        | VideoFormat::Bgra
+        | VideoFormat::Bgrx
+        | VideoFormat::Bgr3
+        | VideoFormat::Ayuv
+        | VideoFormat::V210
+        | VideoFormat::R10l => out[0] = height,
+        VideoFormat::I444 | VideoFormat::I422 | VideoFormat::I210 | VideoFormat::I412 => {
+            out[0] = height;
+            out[1] = height;
+            out[2] = height;
+        }
+        VideoFormat::I40a => {
+            out[0] = height;
+            out[1] = half(height);
+            out[2] = half(height);
+            out[3] = height;
+        }
+        VideoFormat::I42a | VideoFormat::Yuva | VideoFormat::Ya2l => {
+            out[0] = height;
+            out[1] = height;
+            out[2] = height;
+            out[3] = height;
+        }
+        VideoFormat::P216 | VideoFormat::P416 => {
+            out[0] = height;
+            out[1] = height;
+        }
+        VideoFormat::None => {}
+    }
+    out
 }
 
 /// Computes the layout `video_frame_init` would produce for `format`,
@@ -113,5 +234,21 @@ pub fn get_plane_heights(format: VideoFormat, height: u32) -> [u32; MAX_AV_PLANE
 /// `bmalloc(0)`.
 #[must_use]
 pub fn frame_layout(format: VideoFormat, width: u32, height: u32, alignment: usize) -> FrameLayout {
-    todo!()
+    let mut layout = FrameLayout {
+        linesizes: get_linesizes(format, width),
+        heights: get_plane_heights(format, height),
+        offsets: [0; MAX_AV_PLANES],
+        total: 0,
+    };
+
+    for i in 0..MAX_AV_PLANES {
+        if layout.linesizes[i] == 0 || layout.heights[i] == 0 {
+            continue;
+        }
+        let mut plane_size = (layout.linesizes[i] as usize).wrapping_mul(layout.heights[i] as usize);
+        plane_size = plane_size.wrapping_add(alignment.wrapping_sub(1)) & !(alignment.wrapping_sub(1));
+        layout.total = layout.total.wrapping_add(plane_size);
+        layout.offsets[i] = layout.total;
+    }
+    layout
 }
