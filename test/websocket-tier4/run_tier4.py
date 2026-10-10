@@ -613,7 +613,8 @@ def coverage_matrix(ctx):
          {"inputName": media,
           "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP"}, statey),
         # outputs (status/settings reads; lifecycle actuators run in the tail)
-        ("GetVirtualCamStatus", {}, [S]),
+        # 604 when the host has no v4l2loopback device.
+        ("GetVirtualCamStatus", {}, [S, STATUS_INVALID_RESOURCE_STATE]),
         ("GetReplayBufferStatus", {},
          [S, STATUS_INVALID_RESOURCE_STATE]),
         ("GetLastReplayBufferReplay", {}, [S,
