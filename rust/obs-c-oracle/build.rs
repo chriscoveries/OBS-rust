@@ -69,6 +69,7 @@ fn main() {
         .file("oracle/cf_tokenizer.c")
         .file("oracle/buffered_file_serializer.c")
         .file("oracle/video_matrices.c")
+        .file("oracle/audio_io.c")
         .file("oracle/pipe_args.c");
     // Unix-only: pipe-posix.c needs <spawn.h>.
     if std::env::var_os("CARGO_CFG_UNIX").is_some() {
