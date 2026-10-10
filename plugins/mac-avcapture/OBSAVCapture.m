@@ -1443,9 +1443,13 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
                 OBSAVCaptureAudioFrame *audio = _captureInfo->audioFrame;
 
-                size_t num_buffers = bufferList->mNumberBuffers;
-                if (num_buffers > MAX_AV_PLANES)
-                    num_buffers = MAX_AV_PLANES;
+                size_t num_buffers = MIN(bufferList->mNumberBuffers, MAX_AV_PLANES);
+                if (bufferList->mNumberBuffers > MAX_AV_PLANES && !_captureInfo->audioPlanesClampedLogged) {
+                    [self AVCaptureLog:LOG_WARNING
+                        withFormat:@"Audio buffer list with %u buffers exceeds MAX_AV_PLANES (%d); extra buffers dropped",
+                                   bufferList->mNumberBuffers, MAX_AV_PLANES];
+                    _captureInfo->audioPlanesClampedLogged = YES;
+                }
 
                 for (size_t i = 0; i < num_buffers; i++) {
                     audio->data[i] = bufferList->mBuffers[i].mData;
