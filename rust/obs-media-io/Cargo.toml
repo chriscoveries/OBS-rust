@@ -1,0 +1,11 @@
+[package]
+name = "obs-media-io"
+version = "0.1.0"
+description = "Rust ports of libobs/media-io"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+obs-c-oracle = { path = "../obs-c-oracle" }
+proptest = "1"

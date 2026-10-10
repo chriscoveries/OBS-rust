@@ -258,6 +258,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "obs-media-io"
+version = "0.1.0"
+dependencies = [
+ "obs-c-oracle",
+ "proptest",
+]
+
+[[package]]
 name = "obs-stream-rust"
 version = "0.1.0"
 dependencies = [

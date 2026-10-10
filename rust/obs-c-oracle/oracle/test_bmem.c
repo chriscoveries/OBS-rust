@@ -32,3 +32,10 @@ void bfree(void *ptr)
 {
 	free(ptr);
 }
+
+/* Stand-in for libobs util/bmem.c's base_get_alignment, which reports the
+ * allocator's alignment (ALIGNMENT, 32). Needed by the media-io oracles. */
+int base_get_alignment(void)
+{
+	return 32;
+}
