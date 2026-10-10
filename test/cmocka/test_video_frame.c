@@ -193,7 +193,7 @@ static void frame_init_all_formats(void **state)
 
 	for (int fmt = VIDEO_FORMAT_NONE; fmt < FORMAT_COUNT; fmt++) {
 		for (size_t w = 0; w < sizeof(widths) / sizeof(widths[0]); w++) {
-				/* VIDEO_FORMAT_NONE allocs 0 bytes and crashes (below). */
+			/* VIDEO_FORMAT_NONE allocs 0 bytes and crashes (below). */
 			if (fmt == VIDEO_FORMAT_NONE)
 				continue;
 
@@ -280,8 +280,7 @@ static void frame_copy_same(void **state)
 		uint32_t rows = (p == 0) ? 4 : 2;
 		for (uint32_t y = 0; y < rows; y++)
 			assert_memory_equal((char *)dst.data[p] + dst.linesize[p] * y,
-					    (char *)src.data[p] + src.linesize[p] * y,
-					    src.linesize[p]);
+					    (char *)src.data[p] + src.linesize[p] * y, src.linesize[p]);
 	}
 
 	video_frame_free(&src);
@@ -367,12 +366,9 @@ static void frame_inline_helpers(void **state)
 int main()
 {
 	const struct CMUnitTest tests[] = {
-		cmocka_unit_test(frame_init_all_formats),
-		cmocka_unit_test(frame_init_none),
-		cmocka_unit_test(frame_init_null),
-		cmocka_unit_test(frame_copy_same),
-		cmocka_unit_test(frame_copy_wider_dst),
-		cmocka_unit_test(frame_copy_narrower_dst),
+		cmocka_unit_test(frame_init_all_formats), cmocka_unit_test(frame_init_none),
+		cmocka_unit_test(frame_init_null),        cmocka_unit_test(frame_copy_same),
+		cmocka_unit_test(frame_copy_wider_dst),   cmocka_unit_test(frame_copy_narrower_dst),
 		cmocka_unit_test(frame_inline_helpers),
 	};
 
