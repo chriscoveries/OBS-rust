@@ -75,6 +75,22 @@ PORT = int(os.environ.get("TIER4_PORT", "4455"))
 URI = f"ws://127.0.0.1:{PORT}"
 PASSWORD = "tier4-test-password"
 
+# Expected server version, read from the in-tree plugin manifest so the same
+# suite pins whichever obs-websocket the repo under test is built against.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def expected_ws_version():
+    cmake = os.path.join(REPO_ROOT, "plugins/obs-websocket/CMakeLists.txt")
+    try:
+        for line in open(cmake):
+            if "obs-websocket_VERSION" in line:
+                return line.split()[-1].rstrip(")")
+    except OSError:
+        pass
+    return None
+
+
 RESULTS = []
 
 
@@ -226,6 +242,10 @@ async def test_handshake_no_password():
           and "rpcVersion" in hello.get("d", {})
           and "authentication" not in hello.get("d", {}))
     check("handshake:no-auth hello", ok, json.dumps(hello)[:200])
+    expected = expected_ws_version()
+    actual = hello.get("d", {}).get("obsWebSocketVersion")
+    check("handshake:hello-version", expected is not None and actual == expected,
+          f"obsWebSocketVersion={actual} expected={expected} (plugins/obs-websocket/CMakeLists.txt)")
     await c.identify(event_subscriptions=SUB_ALL)
     ident = await c.wait_op(2)
     ok = (ident.get("op") == 2
@@ -613,7 +633,8 @@ def coverage_matrix(ctx):
          {"inputName": media,
           "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP"}, statey),
         # outputs (status/settings reads; lifecycle actuators run in the tail)
-        ("GetVirtualCamStatus", {}, [S]),
+        # 604 when the host has no v4l2loopback device.
+        ("GetVirtualCamStatus", {}, [S, STATUS_INVALID_RESOURCE_STATE]),
         ("GetReplayBufferStatus", {},
          [S, STATUS_INVALID_RESOURCE_STATE]),
         ("GetLastReplayBufferReplay", {}, [S,
