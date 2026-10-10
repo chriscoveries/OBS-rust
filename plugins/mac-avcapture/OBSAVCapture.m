@@ -1443,7 +1443,11 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
                 OBSAVCaptureAudioFrame *audio = _captureInfo->audioFrame;
 
-                for (size_t i = 0; i < bufferList->mNumberBuffers; i++) {
+                size_t num_buffers = bufferList->mNumberBuffers;
+                if (num_buffers > MAX_AV_PLANES)
+                    num_buffers = MAX_AV_PLANES;
+
+                for (size_t i = 0; i < num_buffers; i++) {
                     audio->data[i] = bufferList->mBuffers[i].mData;
                 }
 
