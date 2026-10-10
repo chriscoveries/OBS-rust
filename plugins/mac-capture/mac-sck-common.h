@@ -28,7 +28,10 @@ typedef enum {
 API_AVAILABLE(macos(12.5)) typedef SCDisplay *SCDisplayRef;
 
 API_AVAILABLE(macos(12.5))
-@interface ScreenCaptureDelegate : NSObject <SCStreamOutput, SCStreamDelegate>
+@interface ScreenCaptureDelegate : NSObject <SCStreamOutput, SCStreamDelegate> {
+      @public
+    pthread_mutex_t sc_mutex;
+}
 
 @property struct screen_capture *sc;
 

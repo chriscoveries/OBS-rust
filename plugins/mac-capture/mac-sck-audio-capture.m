@@ -8,12 +8,23 @@ const char *sck_audio_capture_getname(void *unused __unused)
 API_AVAILABLE(macos(13.0)) static void destroy_audio_screen_stream(struct screen_capture *sc)
 {
     if (sc->disp && !sc->capture_failed) {
+        os_event_t *stop_completed = NULL;
+        os_event_init(&stop_completed, OS_EVENT_TYPE_AUTO);
         [sc->disp stopCaptureWithCompletionHandler:^(NSError *_Nullable error) {
             if (error && error.code != SCStreamErrorAttemptToStopStreamState) {
                 MACCAP_ERR("destroy_audio_screen_stream: Failed to stop stream with error %s\n",
                            [[error localizedFailureReason] cStringUsingEncoding:NSUTF8StringEncoding]);
             }
+            os_event_signal(stop_completed);
         }];
+        os_event_wait(stop_completed);
+        os_event_destroy(stop_completed);
+    }
+
+    if (sc->capture_delegate) {
+        pthread_mutex_lock(&sc->capture_delegate->sc_mutex);
+        sc->capture_delegate.sc = NULL;
+        pthread_mutex_unlock(&sc->capture_delegate->sc_mutex);
     }
 
     if (sc->stream_properties) {
