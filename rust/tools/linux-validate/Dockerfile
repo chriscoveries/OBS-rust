@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libasound2-dev libfdk-aac-dev libfontconfig-dev libfreetype-dev libjack-jackd2-dev libsndio-dev libspeexdsp-dev libudev-dev \
   libv4l-dev libva-dev libvlc-dev libpci-dev libdrm-dev nlohmann-json3-dev libwebsocketpp-dev libasio-dev libqrcodegencpp-dev \
   librist-dev libsrt-openssl-dev \
-  extra-cmake-modules rsync ccache qt6-base-dev qt6-svg-dev qt6-base-private-dev libxcb-xinput-dev libgl-dev \
+  extra-cmake-modules rsync ccache xvfb qt6-base-dev qt6-svg-dev qt6-base-private-dev libxcb-xinput-dev libgl-dev \
  && if apt-cache show libvpl-dev >/dev/null 2>&1; then apt-get install -y --no-install-recommends libvpl-dev; fi
 # libvpl-dev is amd64-only. validate.sh leaves QSV off, so an arm64 image skips it.
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
