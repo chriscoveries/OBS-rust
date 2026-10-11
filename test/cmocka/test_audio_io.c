@@ -263,11 +263,12 @@ static void input_thread_runs(void **state)
 	assert_int_equal(audio_output_open(&audio, &info), AUDIO_OUTPUT_SUCCESS);
 
 	assert_int_equal(os_event_timedwait(g_input_event, 3000), 0);
-	os_event_destroy(g_input_event);
-	g_input_event = NULL;
 	assert_true(calls > 0);
 
+	/* Join the audio thread before freeing the event it signals. */
 	audio_output_close(audio);
+	os_event_destroy(g_input_event);
+	g_input_event = NULL;
 }
 
 /* Without a running obs core the audio thread dereferences
