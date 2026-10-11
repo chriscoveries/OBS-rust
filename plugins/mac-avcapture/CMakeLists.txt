@@ -42,6 +42,8 @@ target_sources(
     plugin-properties.h
     OBSAVCapture.m
     OBSAVCapture.h
+    avcapture-audio-planes.c
+    avcapture-audio-planes.h
     OBSAVCapturePresetInfo.m
     OBSAVCapturePresetInfo.h
 )

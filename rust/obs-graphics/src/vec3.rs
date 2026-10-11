@@ -58,6 +58,23 @@ impl Vec3 {
         Self::new(self.x - other.x, self.y - other.y, self.z - other.z)
     }
 
+    /// Lane-wise product of all four lanes (`vec3_mul`). `w` is kept.
+    #[must_use]
+    pub fn lane_mul(self, other: Self) -> Self {
+        Self::with_w(
+            self.x * other.x,
+            self.y * other.y,
+            self.z * other.z,
+            self.w * other.w,
+        )
+    }
+
+    /// Negate xyz and clear `w` (`vec3_neg`).
+    #[must_use]
+    pub fn neg_xyz(self) -> Self {
+        Self::new(-self.x, -self.y, -self.z)
+    }
+
     /// Every lane times `f`, `w` included (`vec3_mulf`).
     #[must_use]
     pub fn mulf(self, f: f32) -> Self {

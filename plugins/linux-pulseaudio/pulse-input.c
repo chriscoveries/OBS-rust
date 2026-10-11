@@ -17,13 +17,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <util/platform.h>
 #include <util/bmem.h>
-#include <util/util_uint64.h>
 #include <obs-module.h>
 
 #include "pulse-reconnect.h"
+#include "pulse-timing.h"
 #include "pulse-wrapper.h"
 
-#define NSEC_PER_SEC 1000000000LL
 #define NSEC_PER_MSEC 1000000L
 
 #define PULSE_DATA(voidptr) struct pulse_data *data = voidptr;
@@ -46,6 +45,7 @@ struct pulse_data {
 	uint_fast32_t bytes_per_frame;
 	uint_fast8_t channels;
 	uint64_t first_ts;
+	struct pulse_timing timing;
 	bool reconnected;
 	uint32_t restart_attempts;
 
@@ -164,16 +164,6 @@ static pa_channel_map pulse_channel_map(enum speaker_layout layout)
 	return ret;
 }
 
-static inline uint64_t samples_to_ns(size_t frames, uint_fast32_t rate)
-{
-	return util_mul_div64(frames, NSEC_PER_SEC, rate);
-}
-
-static inline uint64_t get_sample_time(size_t frames, uint_fast32_t rate)
-{
-	return os_gettime_ns() - samples_to_ns(frames, rate);
-}
-
 #define STARTUP_TIMEOUT_NS (500 * NSEC_PER_MSEC)
 
 /**
@@ -211,7 +201,7 @@ static void pulse_stream_read(pa_stream *p, size_t nbytes, void *userdata)
 	out.format = pulse_to_obs_audio_format(data->format);
 	out.data[0] = (uint8_t *)frames;
 	out.frames = bytes / data->bytes_per_frame;
-	out.timestamp = get_sample_time(out.frames, out.samples_per_sec);
+	out.timestamp = pulse_timing_packet_ts(&data->timing, os_gettime_ns(), out.frames, out.samples_per_sec);
 
 	/* Skip the startup period after a reconnect: the audio was already
 	 * running and every dropped packet lengthens the gap. */
@@ -402,6 +392,7 @@ static void pulse_stop_recording(struct pulse_data *data)
 	blog(LOG_INFO, "Got %" PRIuFAST32 " packets with %" PRIuFAST64 " frames", data->packets, data->frames);
 
 	data->first_ts = 0;
+	pulse_timing_reset(&data->timing);
 	data->packets = 0;
 	data->frames = 0;
 }

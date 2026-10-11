@@ -123,6 +123,8 @@ private:
 	QPointer<QWidget> vodTrackContainer;
 	QPointer<QRadioButton> vodTrack[MAX_AUDIO_MIXES];
 
+	QString multitrackLadderKey;
+
 	QIcon hotkeyConflictIcon;
 
 	void SaveCombo(QComboBox *widget, const char *section, const char *value);
@@ -229,9 +231,12 @@ private:
 	void enableAppearanceDensityControls(bool enable);
 
 	bool IsCustomServer();
+	QString MultitrackVideoLadderRequestKey() const;
 
 private slots:
 	void UpdateMultitrackVideo();
+	void UpdateMultitrackVideoLadderStale();
+	void PreviewMultitrackVideoLadder();
 	void RecreateOutputResolutionWidget();
 	bool UpdateResFPSLimits();
 	void DisplayEnforceWarning(bool checked);

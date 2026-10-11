@@ -1,0 +1,11 @@
+# Review routing for the Rust port (docs/rust-port/coordination.md).
+/rust/                      @zackees
+/Cargo.toml                 @zackees
+/Cargo.lock                 @zackees
+/rust-toolchain.toml        @zackees
+/libobs/cmake/rust*         @zackees
+/libobs/CMakeLists.txt      @zackees
+/test/cmocka/               @zackees
+/docs/rust-port/            @zackees
+/ci/                        @zackees
+/local-gate.toml            @zackees

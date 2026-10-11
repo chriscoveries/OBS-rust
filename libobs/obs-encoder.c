@@ -696,6 +696,30 @@ static inline bool obs_encoder_initialize_internal(obs_encoder_t *encoder)
 	if (!encoder->context.data)
 		return false;
 
+	/* A texture-only encoder has no CPU encode callback. It is expected to
+	 * reroute to a CPU encoder from create() when the video it is attached
+	 * to does not produce NV12/P010 textures; if it did not, raw frames
+	 * would reach do_encode() and call a NULL encode. Refuse to start. */
+	if (encoder->info.type == OBS_ENCODER_VIDEO && !encoder->info.encode && !gpu_encode_available(encoder)) {
+		const struct video_output_info *voi = video_output_get_info(encoder->media);
+		const char *format = voi ? get_video_format_name(voi->format) : "unknown";
+
+		blog(LOG_ERROR,
+		     "Encoder '%s' (%s) can only encode GPU textures, which are not "
+		     "available for video format %s",
+		     encoder->context.name, encoder->info.id, format);
+		obs_encoder_shutdown(encoder);
+
+		struct dstr msg = {0};
+		dstr_printf(&msg,
+			    "The selected encoder can only encode GPU textures, which are not available "
+			    "for the %s color format. Use the NV12 or P010 color format, or a different encoder.",
+			    format);
+		obs_encoder_set_last_error(encoder, msg.array);
+		dstr_free(&msg);
+		return false;
+	}
+
 	if (encoder->orig_info.type == OBS_ENCODER_AUDIO)
 		intitialize_audio_encoder(encoder);
 

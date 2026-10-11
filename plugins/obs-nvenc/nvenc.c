@@ -1,4 +1,5 @@
 #include "nvenc-internal.h"
+#include "nvenc-override.h"
 
 #include <obs-nal.h>
 #include <util/darray.h>
@@ -292,9 +293,12 @@ static bool init_encoder_base(struct nvenc_data *enc, obs_data_t *settings)
 
 #ifdef NVENC_12_2_OR_LATER
 	/* Force at least 4 b-frames when using the UHQ tune */
-	if (nv_tuning == NV_ENC_TUNING_INFO_ULTRA_HIGH_QUALITY && enc->props.bf < 4) {
-		warn("Forcing number of b-frames to 4 for UHQ tune.");
-		enc->props.bf = 4;
+	if (nv_tuning == NV_ENC_TUNING_INFO_ULTRA_HIGH_QUALITY) {
+		const int bf = nvenc_bframes_for_uhq(true, (int)enc->props.bf);
+		if (bf != (int)enc->props.bf) {
+			warn("Forcing number of b-frames to 4 for UHQ tune.");
+			enc->props.bf = bf;
+		}
 	}
 #endif
 
@@ -303,9 +307,13 @@ static bool init_encoder_base(struct nvenc_data *enc, obs_data_t *settings)
 
 	/* lookahead */
 
+	/* An explicit lookahead value wins over the preset. The settings
+	 * checkbox and the Enhanced Broadcasting override both write the key.
+	 * When the key is absent, the preset may still enable lookahead. */
+	const bool lookahead_explicit = enc->props.data && obs_data_has_user_value(enc->props.data, "lookahead");
 	const bool use_profile_lookahead = config->rcParams.enableLookahead;
 	bool lookahead = nv_get_cap(enc, NV_ENC_CAPS_SUPPORT_LOOKAHEAD) &&
-			 (enc->props.lookahead || use_profile_lookahead);
+			 nvenc_lookahead_enabled(use_profile_lookahead, lookahead_explicit, enc->props.lookahead);
 
 	if (lookahead) {
 		rc_lookahead = use_profile_lookahead ? config->rcParams.lookaheadDepth : 8;
@@ -336,6 +344,11 @@ static bool init_encoder_base(struct nvenc_data *enc, obs_data_t *settings)
 		} else {
 			lookahead = false;
 		}
+	}
+
+	if (nvenc_lookahead_force_off(lookahead_explicit, enc->props.lookahead)) {
+		config->rcParams.enableLookahead = 0;
+		config->rcParams.lookaheadDepth = 0;
 	}
 
 	enc->config.rcParams.disableIadapt = enc->props.disable_scenecut;

@@ -1,0 +1,4 @@
+bitstream_reader_init
+bitstream_reader_r16
+bitstream_reader_r8
+bitstream_reader_read_bits

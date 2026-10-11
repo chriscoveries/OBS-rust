@@ -1,0 +1,11 @@
+matrix3_from_axisang
+matrix3_from_matrix4
+matrix3_from_quat
+matrix3_inv
+matrix3_mirror
+matrix3_mirrorv
+matrix3_mul
+matrix3_rotate
+matrix3_rotate_aa
+matrix3_scale
+matrix3_transpose

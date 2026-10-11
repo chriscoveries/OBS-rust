@@ -39,9 +39,103 @@ fn symbol_list(rel: &str) -> BTreeSet<String> {
         .collect()
 }
 
+const EXPORTS_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../libobs/cmake/rust-exports.d"
+);
+
+/// `rust-exports.d/<crate>-<ffi module>.txt` fragments (obs-rust/obs-studio#137):
+/// fragment stem -> lines (`symbol` or `symbol unix`).
+fn export_fragments() -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = fs::read_dir(EXPORTS_DIR)
+        .expect("read libobs/cmake/rust-exports.d")
+        .map(|e| e.expect("dir entry").path())
+        .filter(|p| p.extension().is_some_and(|e| e == "txt"))
+        .map(|p| {
+            let stem = p.file_stem().unwrap().to_string_lossy().into_owned();
+            let lines = fs::read_to_string(&p)
+                .expect("read fragment")
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(String::from)
+                .collect();
+            (stem, lines)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Every exported symbol, from all fragments.
+fn exported_symbols() -> BTreeSet<String> {
+    export_fragments()
+        .into_iter()
+        .flat_map(|(_, lines)| lines)
+        .filter_map(|l| l.split_whitespace().next().map(String::from))
+        .collect()
+}
+
+/// (crate, ffi module) -> its `#[no_mangle]` shims, for every rust/*/src/ffi/*.rs.
+fn ffi_modules() -> Vec<((String, String), Vec<String>)> {
+    let mut out = Vec::new();
+    for krate in fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).expect("read rust/") {
+        let krate = krate.expect("dir entry").path();
+        let ffi_dir = krate.join("src/ffi");
+        if !ffi_dir.is_dir() {
+            continue;
+        }
+        let name = krate.file_name().unwrap().to_string_lossy().into_owned();
+        for entry in fs::read_dir(&ffi_dir).expect("read src/ffi") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                let module = path.file_stem().unwrap().to_string_lossy().into_owned();
+                let src = fs::read_to_string(&path).expect("read ffi source");
+                out.push(((name.clone(), module), no_mangle_fns(&src)));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Each FFI module with exported shims owns exactly one fragment,
+/// `rust-exports.d/<crate>-<module>.txt`, listing exactly those shims, so a
+/// new port adds a file instead of editing a list every other port edits.
+#[test]
+fn rust_exports_are_one_fragment_per_ffi_module() {
+    let hidden = symbol_list("rust-hidden.txt");
+    let fragments: std::collections::BTreeMap<String, BTreeSet<String>> = export_fragments()
+        .into_iter()
+        .map(|(stem, lines)| {
+            let names = lines
+                .iter()
+                .filter_map(|l| l.split_whitespace().next().map(String::from))
+                .collect();
+            (stem, names)
+        })
+        .collect();
+    let mut expected = std::collections::BTreeMap::new();
+    for ((krate, module), shims) in ffi_modules() {
+        let exported: BTreeSet<String> =
+            shims.into_iter().filter(|s| !hidden.contains(s)).collect();
+        if !exported.is_empty() {
+            expected.insert(format!("{krate}-{module}"), exported);
+        }
+    }
+    assert_eq!(
+        fragments.keys().collect::<Vec<_>>(),
+        expected.keys().collect::<Vec<_>>(),
+        "rust-exports.d must hold one <crate>-<ffi module>.txt per FFI module with exported shims"
+    );
+    for (stem, names) in &expected {
+        assert_eq!(&fragments[stem], names, "rust-exports.d/{stem}.txt");
+    }
+}
+
 #[test]
 fn rust_exports_list_matches_no_mangle_shims() {
-    let listed = symbol_list("rust-exports.txt");
+    let listed = exported_symbols();
     let hidden = symbol_list("rust-hidden.txt");
     let overlap: Vec<_> = listed.intersection(&hidden).collect();
     assert!(
@@ -80,7 +174,7 @@ fn rust_exports_list_matches_no_mangle_shims() {
     let missing_from_src: Vec<_> = accounted.difference(&found).collect();
     assert!(
         missing_from_list.is_empty() && missing_from_src.is_empty(),
-        "shims missing from rust-exports.txt and rust-hidden.txt: {missing_from_list:?}; \
+        "shims missing from rust-exports.d and rust-hidden.txt: {missing_from_list:?}; \
          listed but no #[no_mangle] shim in rust/*/src/ffi:{missing_from_src:?}"
     );
 
@@ -132,21 +226,15 @@ fn unix_only_fns(src: &str) -> Vec<String> {
     out
 }
 
-/// `rust-exports.txt` lines are `symbol` or `symbol unix`. The `unix`
+/// `rust-exports.d` lines are `symbol` or `symbol unix`. The `unix`
 /// marker keeps libobs/cmake/rust.cmake from emitting `/EXPORT:symbol` on
 /// Windows, where the shim is not compiled and the C file (e.g.
 /// util/pipe-windows.c) still provides the dllexport'ed symbol.
 #[test]
 fn unix_only_shims_are_marked_unix_in_rust_exports() {
-    let text = fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../libobs/cmake/rust-exports.txt"
-    ))
-    .expect("read rust-exports.txt");
-    let marked: BTreeSet<String> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    let marked: BTreeSet<String> = export_fragments()
+        .into_iter()
+        .flat_map(|(_, lines)| lines)
         .filter_map(|l| {
             let mut it = l.split_whitespace();
             let name = it.next()?;
@@ -173,6 +261,6 @@ fn unix_only_shims_are_marked_unix_in_rust_exports() {
     );
     assert_eq!(
         marked, unix_only,
-        "rust-exports.txt `unix` markers must match the cfg(unix) shims"
+        "rust-exports.d `unix` markers must match the cfg(unix) shims"
     );
 }

@@ -1,0 +1,74 @@
+name: Contributor leaderboard
+
+# Regenerates leaderboard.json + leaderboard.jpg and commits them to the
+# `leaderboard` branch only (served by GitHub Pages). Nothing here touches
+# master, so the OBS build workflows are not triggered.
+#
+# GitHub cron is UTC-only and has no `timezone` key, so both 10:00 and 11:00
+# UTC are scheduled (3 a.m. Pacific in PDT and PST) and the job skips unless
+# it is currently 3 a.m. in America/Los_Angeles.
+on:
+  schedule:
+    - cron: "0 10 * * *"
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: leaderboard
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check it is 3 a.m. Pacific
+        id: gate
+        run: |
+          hour=$(TZ=America/Los_Angeles date +%H)
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$hour" != "03" ]; then
+            echo "Pacific hour is $hour, skipping"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          sparse-checkout: tools/leaderboard
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          ref: leaderboard
+          path: data
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+      - name: Generate
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp tools/leaderboard/site/* data/
+          touch data/.nojekyll
+          python3 tools/leaderboard/generate.py --repo "${{ github.repository }}" --out data/leaderboard.json
+      - name: Render JPEG
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          pip install playwright==1.49.1
+          playwright install --with-deps chromium
+          python3 tools/leaderboard/render.py data
+      - name: Commit to leaderboard branch
+        if: steps.gate.outputs.run == 'true'
+        working-directory: data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "no changes"; exit 0; }
+          git commit -m "leaderboard: update $(date -u +%F)"
+          git push origin HEAD:leaderboard

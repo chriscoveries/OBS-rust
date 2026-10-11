@@ -1,3 +1,8 @@
 [toolchain]
-channel = "stable"
+# Pinned (obs-rust/obs-studio#136) to the latest Rust that the soldr version CI
+# uses (.github/workflows/build-project.yaml, setup-soldr `version:`) supports
+# natively: that soldr release's own rust-toolchain.toml. Never pin beyond it.
+# Bump only after a soldr bump that supports the new version, in one PR with
+# the full CI matrix; keep [workspace.package] rust-version in step.
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]

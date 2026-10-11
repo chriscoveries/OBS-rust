@@ -1,0 +1,5 @@
+file_input_serializer_free
+file_input_serializer_init
+file_output_serializer_free
+file_output_serializer_init
+file_output_serializer_init_safe

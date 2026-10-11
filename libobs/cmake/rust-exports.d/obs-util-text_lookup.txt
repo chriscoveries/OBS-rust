@@ -1,0 +1,4 @@
+text_lookup_add
+text_lookup_create
+text_lookup_destroy
+text_lookup_getstr

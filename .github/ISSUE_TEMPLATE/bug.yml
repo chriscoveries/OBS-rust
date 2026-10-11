@@ -1,0 +1,36 @@
+name: Bug
+description: A defect in libobs, a plugin, the Rust port or the tooling
+title: "bug: <component>: <symptom>"
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Read docs/rust-port/coordination.md first. Search open issues and PRs for duplicates.
+  - type: textarea
+    id: location
+    attributes:
+      label: Location
+      description: file:line and a short code excerpt.
+    validations:
+      required: true
+  - type: input
+    id: class
+    attributes:
+      label: Class
+      description: e.g. OOB read, use-after-free, integer overflow, logic error, data loss.
+    validations:
+      required: true
+  - type: textarea
+    id: reach
+    attributes:
+      label: How it is reached
+      description: Input, call path or user action that triggers it. Upstream OBS issue, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: Proposed fix and failing test
+      description: The fix, and a sketch of the test that fails before it (RED) and passes after (GREEN).
+    validations:
+      required: true

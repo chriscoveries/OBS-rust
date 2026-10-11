@@ -1153,10 +1153,12 @@ static inline bool obs_init_hotkeys(void)
 	hotkeys->sceneitem_show = bstrdup("Show '%1'");
 	hotkeys->sceneitem_hide = bstrdup("Hide '%1'");
 
-	if (!obs_hotkeys_platform_init(hotkeys))
+	/* The mutex must exist before the platform layer initializes: on
+	 * Wayland its keyboard listeners take it as soon as events arrive. */
+	if (pthread_mutex_init_recursive(&hotkeys->mutex) != 0)
 		return false;
 
-	if (pthread_mutex_init_recursive(&hotkeys->mutex) != 0)
+	if (!obs_hotkeys_platform_init(hotkeys))
 		goto fail;
 
 	if (os_event_init(&hotkeys->stop_event, OS_EVENT_TYPE_MANUAL) != 0)

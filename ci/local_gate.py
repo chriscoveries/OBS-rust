@@ -15,6 +15,9 @@ Lanes:
                clippy -D warnings. Formatters are pinned through uvx, so no
                brew/zsh install is needed.
   rust-test    soldr cargo test --workspace --locked (Tiers 1-3).
+
+Cargo runs with SOLDR_RUSTC_WRAPPER=none (soldr's zccache has replayed stale
+rustc output; #134). Set OBS_GATE_ZCCACHE=1 to keep the cache locally.
   tier2-linux  rust/tools/linux-validate/run.sh: libobs + cmocka with
                ENABLE_RUST_LIBOBS OFF and ON in Docker, exported-symbol diff.
 """
@@ -59,6 +62,25 @@ GERSEMI_EXCLUDE = (
 def run(cmd: list[str], **kw) -> None:
     print("+", " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True, **kw)
+
+
+def soldr_cargo(args: list[str]) -> None:
+    """Run `soldr cargo ...` with soldr's zccache rustc wrapper disabled.
+
+    The wrapper has replayed stale rustc output (old diagnostics, and green
+    results that never compiled the current source; obs-rust/obs-studio#134),
+    and the gate's attestation lets CI skip jobs on the strength of these
+    lanes. OBS_GATE_ZCCACHE=1 keeps the cached build for local iteration.
+    """
+    env = dict(os.environ)
+    if env.get("OBS_GATE_ZCCACHE") != "1":
+        env["SOLDR_RUSTC_WRAPPER"] = "none"
+    run(["soldr", "cargo", *args], env=env)
+
+
+def self_test() -> None:
+    """The gate's and the repo layout's unit tests: every ci/test_*.py."""
+    run([sys.executable, "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py"])
 
 
 def tracked_files() -> list[str]:
@@ -129,12 +151,13 @@ def lane_lint(fix: bool) -> None:
     files = tracked_files()
     clang_format(files, fix)
     gersemi(files, fix)
-    run(["soldr", "cargo", "fmt", "--all"] + ([] if fix else ["--check"]))
-    run(["soldr", "cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"])
+    self_test()
+    soldr_cargo(["fmt", "--all"] + ([] if fix else ["--check"]))
+    soldr_cargo(["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"])
 
 
 def lane_rust_test(fix: bool) -> None:
-    run(["soldr", "cargo", "test", "--workspace", "--locked"])
+    soldr_cargo(["test", "--workspace", "--locked"])
 
 
 def lane_tier2_linux(fix: bool) -> None:

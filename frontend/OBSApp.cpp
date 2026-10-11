@@ -17,6 +17,8 @@
 
 #include "OBSApp.hpp"
 
+#include <utility/output-filename-format.h>
+
 #include <components/Multiview.hpp>
 #include <dialogs/LogUploadDialog.hpp>
 #include <plugin-manager/PluginManager.hpp>
@@ -1637,57 +1639,12 @@ static void ensure_directory_exists(string &path)
 	os_mkdirs(directory.c_str());
 }
 
-static void remove_reserved_file_characters(string &s)
-{
-	replace(s.begin(), s.end(), '\\', '/');
-	replace(s.begin(), s.end(), '*', '_');
-	replace(s.begin(), s.end(), '?', '_');
-	replace(s.begin(), s.end(), '"', '_');
-	replace(s.begin(), s.end(), '|', '_');
-	replace(s.begin(), s.end(), ':', '_');
-	replace(s.begin(), s.end(), '>', '_');
-	replace(s.begin(), s.end(), '<', '_');
-}
-
 string GetFormatString(const char *format, const char *prefix, const char *suffix)
 {
-	string f;
-
-	f = format;
-
-	if (prefix && *prefix) {
-		string str_prefix = prefix;
-
-		if (str_prefix.back() != ' ') {
-			str_prefix += " ";
-		}
-
-		size_t insert_pos = 0;
-		size_t tmp;
-
-		tmp = f.find_last_of('/');
-		if (tmp != string::npos && tmp > insert_pos) {
-			insert_pos = tmp + 1;
-		}
-
-		tmp = f.find_last_of('\\');
-		if (tmp != string::npos && tmp > insert_pos) {
-			insert_pos = tmp + 1;
-		}
-
-		f.insert(insert_pos, str_prefix);
-	}
-
-	if (suffix && *suffix) {
-		if (*suffix != ' ') {
-			f += " ";
-		}
-		f += suffix;
-	}
-
-	remove_reserved_file_characters(f);
-
-	return f;
+	char *f = output_filename_format(format, prefix, suffix);
+	string result = f ? f : "";
+	free(f);
+	return result;
 }
 
 string GetFormatExt(const char *container)

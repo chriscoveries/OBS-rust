@@ -76,13 +76,15 @@ cannot prove both, so every ported unit carries the four tiers below.
 - C ABI shims for symbols libobs does not export (base.c internals, utf8) are
   listed in `libobs/cmake/rust-hidden.txt` and hidden via `local:` in
   `rust-exports.map` and `rust-unexports-macos.txt` instead of being listed in
-  `rust-exports.txt`; `export_list.rs` checks that every shim is exported or
+  `rust-exports.d/`; `export_list.rs` checks that every shim is exported or
   hidden.
 - Windows: Rust `#[no_mangle]` symbols are not dllexport, so every C ABI shim
-  symbol is listed in `libobs/cmake/rust-exports.txt`, which
+  symbol is listed in `libobs/cmake/rust-exports.d/<crate>-<ffi module>.txt`
+  (one fragment per FFI module, so ports don't edit a shared list), which
   `libobs/cmake/rust.cmake` turns into `/EXPORT:` linker options.
-  `rust/obs-util/tests/export_list.rs` fails if the list and the
-  `#[unsafe(no_mangle)]` functions in `rust/*/src/ffi/` differ.
+  `rust/obs-util/tests/export_list.rs` fails if a fragment and the
+  `#[unsafe(no_mangle)]` functions in its `rust/<crate>/src/ffi/<module>.rs`
+  differ.
 - macOS: `libobs/cmake/rust-unexports-macos.txt` hides Rust internals with
   `-unexported_symbols_list`.
 - CI: `.github/workflows/build-project.yaml` runs the Rust tests on Linux,
@@ -272,7 +274,7 @@ Cargo.toml                    # workspace root, members = ["rust/*"]
 rust-toolchain.toml           # pinned toolchain (required by soldr)
 libobs/cmake/rust.cmake       # Corrosion import + whole-archive link into libobs
 libobs/cmake/rust-exports.map # hides Rust internals from libobs exports (ELF)
-libobs/cmake/rust-exports.txt # C ABI shim symbols to export (Windows /EXPORT:)
+libobs/cmake/rust-exports.d/  # C ABI shim symbols to export (Windows /EXPORT:), one file per FFI module
 libobs/cmake/rust-unexports-macos.txt # hides Rust internals (macOS)
 rust/
   libobs-rust/                # the ONLY staticlib; re-exports every port's ffi
@@ -304,6 +306,16 @@ directory (`obs-util`, `obs-graphics`, `obs-media-io`, ...).
 ## Rules that apply everywhere
 
 - Use `soldr cargo ...`, never bare `cargo`.
+- The Rust toolchain is pinned in `rust-toolchain.toml` to the latest version
+  natively supported by the soldr version CI uses (`version:` of the
+  `setup-soldr` step in `.github/workflows/build-project.yaml`). Check what a
+  soldr release supports in its own `rust-toolchain.toml` (zackees/soldr, at
+  that tag). Never pin beyond it; bump the toolchain only together with, and
+  after, a soldr bump that supports it. The Tier 2 Docker image installs the
+  same pinned version (`rust/tools/linux-validate/run.sh`). `./lint` enforces
+  this: `ci/test_toolchain.py` holds the expected version
+  (`SOLDR_SUPPORTED_RUST`) and fails if `rust-toolchain.toml`, the MSRV, or
+  any Dockerfile, workflow or doc pin differs.
 - `soldr cargo clippy --all-targets -- -D warnings` and `soldr cargo fmt --check`
   must be clean.
 - `unsafe` is allowed only in `src/ffi/` shims, in `obs-c-oracle`, and in the

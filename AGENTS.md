@@ -15,6 +15,10 @@ It defines the four required test tiers (Rust unit tests, unchanged C tests
 against the Rust implementation, differential tests against the original C,
 and black-box protocol tests) and the per-unit workflow.
 
+Before picking up or filing an issue, or opening a PR, read
+[docs/rust-port/coordination.md](docs/rust-port/coordination.md): claim
+before coding, search open PRs first, target master, RED then GREEN commits.
+
 ## Local gate (run before every push)
 
 - `./lint` (8 s): clang-format 22.1.3 and gersemi 0.25.0 pinned via uvx, rustfmt, clippy. `./lint --fix` rewrites files.
@@ -27,6 +31,7 @@ and black-box protocol tests) and the per-unit workflow.
 ## Quick rules
 
 - Use `soldr cargo ...`, never bare `cargo`.
+- Pin `rust-toolchain.toml` to the latest Rust the CI soldr version supports natively, never beyond; bump it only after a soldr bump (see the testing policy).
 - Never edit existing C tests or public C headers to make a port pass.
 - Every port starts RED (failing test against stubs) and ends GREEN.
 - Do not add new GitHub Actions workflow files without explicit sign-off.

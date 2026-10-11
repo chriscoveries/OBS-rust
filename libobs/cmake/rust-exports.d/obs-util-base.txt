@@ -1,0 +1,3 @@
+base_get_log_handler
+base_set_crash_handler
+base_set_log_handler

@@ -1443,7 +1443,7 @@ RTMP_ClientPacket(RTMP *r, RTMPPacket *packet)
             else if (packet->m_body[pos] == 8 || packet->m_body[pos] == 9)
             {
                 nTimeStamp = AMF_DecodeInt24(packet->m_body + pos + 4);
-                nTimeStamp |= (packet->m_body[pos + 7] << 24);
+                nTimeStamp |= (uint32_t)(uint8_t)packet->m_body[pos + 7] << 24;
             }
             pos += (11 + dataSize + 4);
         }
@@ -3602,7 +3602,15 @@ HandleChangeChunkSize(RTMP *r, const RTMPPacket *packet)
 {
     if (packet->m_nBodySize >= 4)
     {
-        r->m_inChunkSize = AMF_DecodeInt32(packet->m_body);
+        int32_t chunkSize = AMF_DecodeInt32(packet->m_body);
+        /* RTMP 1.0 5.4.1: 1 to 0x7FFFFFFF. Bit 31 set reads as negative. */
+        if (chunkSize < 1)
+        {
+            RTMP_Log(RTMP_LOGWARNING, "%s, ignoring invalid chunk size %d", __FUNCTION__,
+                     chunkSize);
+            return;
+        }
+        r->m_inChunkSize = chunkSize;
         RTMP_Log(RTMP_LOGDEBUG, "%s, received: chunk size change to %d", __FUNCTION__,
                  r->m_inChunkSize);
     }
@@ -3786,10 +3794,11 @@ HandleClientBW(RTMP *r, const RTMPPacket *packet)
 static int
 DecodeInt32LE(const char *data)
 {
-    unsigned char *c = (unsigned char *)data;
+    const unsigned char *c = (const unsigned char *)data;
     unsigned int val;
 
-    val = (c[3] << 24) | (c[2] << 16) | (c[1] << 8) | c[0];
+    val = ((unsigned int)c[3] << 24) | ((unsigned int)c[2] << 16) |
+          ((unsigned int)c[1] << 8) | (unsigned int)c[0];
     return val;
 }
 
@@ -4576,7 +4585,7 @@ DecodeTEA(AVal *key, AVal *text)
     p = key->av_len > 16 ? 16 : key->av_len;
     for (i = 0; i < p; i++)
     {
-        u |= ptr[i] << (n * 8);
+        u |= (uint32_t)ptr[i] << (n * 8);
         if (n == 3)
         {
             *v++ = u;
@@ -4602,7 +4611,7 @@ DecodeTEA(AVal *key, AVal *text)
         u = (HEX2BIN(ptr[0]) << 4) + HEX2BIN(ptr[1]);
         u |= ((HEX2BIN(ptr[2]) << 4) + HEX2BIN(ptr[3])) << 8;
         u |= ((HEX2BIN(ptr[4]) << 4) + HEX2BIN(ptr[5])) << 16;
-        u |= ((HEX2BIN(ptr[6]) << 4) + HEX2BIN(ptr[7])) << 24;
+        u |= (uint32_t)((HEX2BIN(ptr[6]) << 4) + HEX2BIN(ptr[7])) << 24;
         *v++ = u;
         ptr += 8;
     }
@@ -4868,7 +4877,7 @@ Read_1_Packet(RTMP *r, char *buf, unsigned int buflen)
                             uint32_t dataSize =
                                 AMF_DecodeInt24(packetBody + pos + 1);
                             ts = AMF_DecodeInt24(packetBody + pos + 4);
-                            ts |= (packetBody[pos + 7] << 24);
+                            ts |= (uint32_t)(uint8_t)packetBody[pos + 7] << 24;
 
 #ifdef _DEBUG
                             RTMP_Log(RTMP_LOGDEBUG,
@@ -5098,7 +5107,7 @@ stopKeyframeSearch:
 
             /* grab first timestamp and see if it needs fixing */
             nTimeStamp = AMF_DecodeInt24(packetBody + 4);
-            nTimeStamp |= (packetBody[7] << 24);
+            nTimeStamp |= (uint32_t)(uint8_t)packetBody[7] << 24;
             delta = packet.m_nTimeStamp - nTimeStamp + r->m_read.nResumeTS;
 
             while (pos + 11 < nPacketLen)
@@ -5106,7 +5115,7 @@ stopKeyframeSearch:
                 /* size without header (11) and without prevTagSize (4) */
                 uint32_t dataSize = AMF_DecodeInt24(packetBody + pos + 1);
                 nTimeStamp = AMF_DecodeInt24(packetBody + pos + 4);
-                nTimeStamp |= (packetBody[pos + 7] << 24);
+                nTimeStamp |= (uint32_t)(uint8_t)packetBody[pos + 7] << 24;
 
                 if (delta)
                 {
@@ -5353,7 +5362,7 @@ RTMP_Write(RTMP *r, const char *buf, int size, int streamIdx)
             buf += 3;
             pkt->m_nTimeStamp = AMF_DecodeInt24(buf);
             buf += 3;
-            pkt->m_nTimeStamp |= *buf++ << 24;
+            pkt->m_nTimeStamp |= (uint32_t)(uint8_t)*buf++ << 24;
             buf += 3;
             s2 -= 11;
 

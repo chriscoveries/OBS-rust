@@ -11,6 +11,8 @@
 #include <errno.h>
 #include <string.h>
 
+#include "vcam-format.h"
+
 struct virtualcam_data {
 	obs_output_t *output;
 	int device;
@@ -192,6 +194,15 @@ static bool try_connect(void *data, const char *device)
 	if (ioctl(vcam->device, VIDIOC_S_FMT, &format) < 0)
 		goto fail_close_device;
 
+	struct vcam_format vf;
+	if (!vcam_format_negotiate(width, height, &format.fmt.pix, &vf))
+		goto fail_close_device;
+	vcam->frame_size = vf.frame_size;
+
+	if (vf.width != width || vf.height != height)
+		blog(LOG_INFO, "Virtual camera device %s has a fixed size of %ux%u, scaling the %ux%u output to it",
+		     device, vf.width, vf.height, width, height);
+
 	if (!use_caps_workaround && ioctl(vcam->device, VIDIOC_STREAMON, &format.type) == 0) {
 		/* STREAMON should error on all devices except v4l2loopback 0.12.x-0.13.x */
 		use_caps_workaround = true;
@@ -200,8 +211,8 @@ static bool try_connect(void *data, const char *device)
 
 	struct video_scale_info vsi = {0};
 	vsi.format = VIDEO_FORMAT_YUY2;
-	vsi.width = width;
-	vsi.height = height;
+	vsi.width = vf.width;
+	vsi.height = vf.height;
 	obs_output_set_video_conversion(vcam->output, &vsi);
 
 	memset(&parm, 0, sizeof(parm));

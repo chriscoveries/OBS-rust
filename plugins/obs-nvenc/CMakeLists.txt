@@ -39,6 +39,8 @@ target_sources(
     nvenc-opts-parser.c
     nvenc-properties.c
     nvenc.c
+    nvenc-override.c
+    nvenc-override.h
     obs-nvenc.c
     obs-nvenc.h
 )

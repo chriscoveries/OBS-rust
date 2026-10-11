@@ -22,6 +22,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <sys/stat.h>
 #include "text-freetype2.h"
 #include "obs-convenience.h"
+#include "glyph-atlas.h"
 
 float offsets[16] = {-2.0f, 0.0f, 0.0f, -2.0f, 2.0f,  0.0f, 2.0f,  0.0f,
 		     0.0f,  2.0f, 0.0f, 2.0f,  -2.0f, 0.0f, -2.0f, 0.0f};
@@ -271,64 +272,93 @@ void rasterize(struct ft2_source *srcdata, FT_GlyphSlot slot, const FT_Render_Mo
 	}
 }
 
+struct glyph_cache_ctx {
+	struct ft2_source *srcdata;
+	FT_Render_Mode render_mode;
+};
+
+static bool glyph_cache_is_cached(void *data, wchar_t ch)
+{
+	struct glyph_cache_ctx *ctx = data;
+	struct ft2_source *srcdata = ctx->srcdata;
+	const FT_UInt glyph_index = FT_Get_Char_Index(srcdata->font_face, ch);
+
+	return src_glyph != NULL;
+}
+
+static void glyph_cache_render(void *data, wchar_t ch, uint32_t *w, uint32_t *h)
+{
+	struct glyph_cache_ctx *ctx = data;
+	struct ft2_source *srcdata = ctx->srcdata;
+	FT_GlyphSlot slot = srcdata->font_face->glyph;
+	const FT_UInt glyph_index = FT_Get_Char_Index(srcdata->font_face, ch);
+
+	load_glyph(srcdata, glyph_index, ctx->render_mode);
+	FT_Render_Glyph(slot, ctx->render_mode);
+
+	*w = slot->bitmap.width;
+	*h = slot->bitmap.rows;
+}
+
+static void glyph_cache_store(void *data, wchar_t ch, uint32_t x, uint32_t y)
+{
+	struct glyph_cache_ctx *ctx = data;
+	struct ft2_source *srcdata = ctx->srcdata;
+	FT_GlyphSlot slot = srcdata->font_face->glyph;
+	const FT_UInt glyph_index = FT_Get_Char_Index(srcdata->font_face, ch);
+
+	src_glyph = init_glyph(slot, x, y, slot->bitmap.width, slot->bitmap.rows);
+	rasterize(srcdata, slot, ctx->render_mode, x, y);
+}
+
+static void glyph_cache_clear(void *data)
+{
+	struct glyph_cache_ctx *ctx = data;
+	struct ft2_source *srcdata = ctx->srcdata;
+
+	for (uint32_t i = 0; i < num_cache_slots; i++) {
+		bfree(srcdata->cacheglyphs[i]);
+		srcdata->cacheglyphs[i] = NULL;
+	}
+
+	memset(srcdata->texbuf, 0, (size_t)texbuf_w * (size_t)texbuf_h);
+}
+
+static const struct glyph_atlas_ops glyph_cache_ops = {
+	.is_cached = glyph_cache_is_cached,
+	.render = glyph_cache_render,
+	.store = glyph_cache_store,
+	.clear = glyph_cache_clear,
+};
+
 void cache_glyphs(struct ft2_source *srcdata, wchar_t *cache_glyphs)
 {
 	if (!srcdata->font_face || !cache_glyphs)
 		return;
 
-	FT_GlyphSlot slot = srcdata->font_face->glyph;
+	struct glyph_cache_ctx ctx = {
+		.srcdata = srcdata,
+		.render_mode = get_render_mode(srcdata),
+	};
+	struct glyph_atlas atlas = {
+		.width = texbuf_w,
+		.height = texbuf_h,
+		.x = srcdata->texbuf_x,
+		.y = srcdata->texbuf_y,
+		.max_h = srcdata->max_h,
+	};
 
-	uint32_t dx = srcdata->texbuf_x;
-	uint32_t dy = srcdata->texbuf_y;
+	const struct glyph_atlas_result result =
+		glyph_atlas_cache(&atlas, cache_glyphs, wcslen(cache_glyphs), &glyph_cache_ops, &ctx);
 
-	int32_t cached_glyphs = 0;
-	const size_t len = wcslen(cache_glyphs);
+	srcdata->texbuf_x = atlas.x;
+	srcdata->texbuf_y = atlas.y;
+	srcdata->max_h = atlas.max_h;
 
-	const FT_Render_Mode render_mode = get_render_mode(srcdata);
+	if (result.out_of_space)
+		blog(LOG_WARNING, "Out of space trying to render glyphs");
 
-	for (size_t i = 0; i < len; i++) {
-		const FT_UInt glyph_index = FT_Get_Char_Index(srcdata->font_face, cache_glyphs[i]);
-
-		if (src_glyph != NULL) {
-			continue;
-		}
-
-		load_glyph(srcdata, glyph_index, render_mode);
-		FT_Render_Glyph(slot, render_mode);
-
-		const uint32_t g_w = slot->bitmap.width;
-		const uint32_t g_h = slot->bitmap.rows;
-
-		if (srcdata->max_h < g_h) {
-			srcdata->max_h = g_h;
-		}
-
-		if (dx + g_w >= texbuf_w) {
-			dx = 0;
-			dy += srcdata->max_h + 1;
-		}
-
-		if (dy + g_h >= texbuf_h) {
-			blog(LOG_WARNING, "Out of space trying to render glyphs");
-			break;
-		}
-
-		src_glyph = init_glyph(slot, dx, dy, g_w, g_h);
-		rasterize(srcdata, slot, render_mode, dx, dy);
-
-		dx += (g_w + 1);
-		if (dx >= texbuf_w) {
-			dx = 0;
-			dy += srcdata->max_h;
-		}
-
-		cached_glyphs++;
-	}
-
-	srcdata->texbuf_x = dx;
-	srcdata->texbuf_y = dy;
-
-	if (cached_glyphs > 0) {
+	if (result.stored > 0) {
 
 		obs_enter_graphics();
 

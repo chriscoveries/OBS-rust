@@ -43,6 +43,7 @@
 #include <pci/pci.h>
 
 #include "vaapi-utils.h"
+#include "vaapi-device-select.h"
 #include "obs-ffmpeg-formats.h"
 
 #include <va/va_drmcommon.h>
@@ -235,11 +236,32 @@ static const rc_mode_t *get_rc_mode(const char *name)
 	return rc_mode ? rc_mode : RC_MODES;
 }
 
+static bool vaapi_device_codec_supported(const char *path, enum codec_type codec);
+static inline const char *vaapi_default_device(enum codec_type codec);
+
+static bool vaapi_device_usable(const char *path, void *param)
+{
+	const enum codec_type *codec = param;
+	return vaapi_device_codec_supported(path, *codec);
+}
+
+static const char *vaapi_choose_device(struct vaapi_encoder *enc, const char *configured)
+{
+	const char *const candidates[] = {vaapi_default_device(enc->codec)};
+	const char *device = vaapi_select_device(configured, candidates, sizeof(candidates) / sizeof(candidates[0]),
+						 vaapi_device_usable, &enc->codec);
+
+	if (device != configured)
+		warn("Device '%s' is not usable, falling back to '%s'", configured, device);
+
+	return device;
+}
+
 static bool vaapi_update(void *data, obs_data_t *settings)
 {
 	struct vaapi_encoder *enc = data;
 
-	const char *device = obs_data_get_string(settings, "vaapi_device");
+	const char *device = vaapi_choose_device(enc, obs_data_get_string(settings, "vaapi_device"));
 
 	const char *rate_control = obs_data_get_string(settings, "rate_control");
 	const rc_mode_t *rc_mode = get_rc_mode(rate_control);
@@ -562,6 +584,13 @@ static inline bool vaapi_test_texencode(struct vaapi_encoder *enc)
 static void *vaapi_create_tex_internal(obs_data_t *settings, obs_encoder_t *encoder, enum codec_type codec,
 				       const char *fallback)
 {
+	if (!obs_encoder_video_tex_active(encoder, VIDEO_FORMAT_NV12) &&
+	    !obs_encoder_video_tex_active(encoder, VIDEO_FORMAT_P010)) {
+		blog(LOG_INFO, "VAAPI: GPU textures not available for this video format, falling back to %s encoder",
+		     fallback);
+		return obs_encoder_create_rerouted(encoder, fallback);
+	}
+
 	void *enc = vaapi_create_internal(settings, encoder, codec);
 	if (!enc) {
 		return NULL;
@@ -680,6 +709,12 @@ static bool vaapi_encode_internal(struct vaapi_encoder *enc, AVFrame *frame, str
 			bfree(new_packet);
 		} else {
 			da_copy_array(enc->buffer, enc->packet->data, enc->packet->size);
+		}
+
+		/* A first packet with only parameter sets leaves nothing to output. */
+		if (!enc->buffer.num) {
+			av_packet_unref(enc->packet);
+			return true;
 		}
 
 		packet->pts = enc->packet->pts;

@@ -1,0 +1,11 @@
+os_process_args_add_arg
+os_process_args_create
+os_process_args_destroy
+os_process_args_get_argc
+os_process_args_get_argv
+os_process_pipe_create unix
+os_process_pipe_create2 unix
+os_process_pipe_destroy unix
+os_process_pipe_read unix
+os_process_pipe_read_err unix
+os_process_pipe_write unix

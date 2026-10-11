@@ -18,7 +18,8 @@ using json = nlohmann::json;
 
 Qt::ConnectionType BlockingConnectionTypeFor(QObject *object);
 
-void HandleGoLiveApiErrors(QWidget *parent, const json &raw_json, const GoLiveApi::Config &config)
+void HandleGoLiveApiErrors(QWidget *parent, const json &raw_json, const GoLiveApi::Config &config,
+			   bool interactive_status)
 {
 	using GoLiveApi::StatusResult;
 
@@ -56,6 +57,9 @@ void HandleGoLiveApiErrors(QWidget *parent, const json &raw_json, const GoLiveAp
 	};
 
 	if (status.result == StatusResult::Unknown) {
+		if (!interactive_status) {
+			return;
+		}
 		return warn_continue(QTStr("FailedToStartStream.WarningUnknownStatus")
 					     .arg(raw_json["status"]["result"].dump().c_str()));
 
@@ -64,6 +68,9 @@ void HandleGoLiveApiErrors(QWidget *parent, const json &raw_json, const GoLiveAp
 			throw MultitrackVideoError::warning(status.html_en_us.value_or(missing_html()).c_str());
 		}
 
+		if (!interactive_status) {
+			return;
+		}
 		return warn_continue(status.html_en_us.value_or(missing_html()).c_str());
 	} else if (status.result == StatusResult::Error) {
 		throw MultitrackVideoError::critical(status.html_en_us.value_or(missing_html()).c_str());
@@ -71,7 +78,7 @@ void HandleGoLiveApiErrors(QWidget *parent, const json &raw_json, const GoLiveAp
 }
 
 GoLiveApi::Config DownloadGoLiveConfig(QWidget *parent, QString url, const GoLiveApi::PostData &post_data,
-				       const QString &multitrack_video_name)
+				       const QString &multitrack_video_name, bool interactive_status)
 {
 	json post_data_json = post_data;
 	blog(LOG_INFO, "Go live POST data: %s", censoredJson(post_data_json).toUtf8().constData());
@@ -101,7 +108,7 @@ GoLiveApi::Config DownloadGoLiveConfig(QWidget *parent, QString url, const GoLiv
 		auto data = json::parse(encodeConfigText);
 		blog(LOG_INFO, "Go live response data: %s", censoredJson(data, true).toUtf8().constData());
 		GoLiveApi::Config config = data;
-		HandleGoLiveApiErrors(parent, data, config);
+		HandleGoLiveApiErrors(parent, data, config, interactive_status);
 		return config;
 
 	} catch (const json::exception &e) {

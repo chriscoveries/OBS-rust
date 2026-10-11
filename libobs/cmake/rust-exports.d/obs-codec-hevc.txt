@@ -1,0 +1,4 @@
+obs_extract_hevc_headers
+obs_hevc_keyframe
+obs_parse_hevc_packet
+obs_parse_hevc_packet_priority

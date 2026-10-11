@@ -3,12 +3,14 @@ name = "obs-media-io"
 version = "0.1.0"
 description = "Rust ports of libobs/media-io"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
 libc = "0.2"
 obs-graphics = { path = "../obs-graphics" }
+obs-util = { path = "../obs-util" }
 
 [dev-dependencies]
 obs-c-oracle = { path = "../obs-c-oracle" }

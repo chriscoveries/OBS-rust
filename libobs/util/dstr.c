@@ -519,7 +519,7 @@ void dstr_depad(struct dstr *str)
 void dstr_left(struct dstr *dst, const struct dstr *str, const size_t pos)
 {
 	dstr_resize(dst, pos);
-	if (dst != str)
+	if (dst != str && pos)
 		memcpy(dst->array, str->array, pos);
 }
 

@@ -38,6 +38,10 @@ fi
 git config --global --add safe.directory /src
 mkdir -p /src
 rsync -a --delete --exclude /target /ro/ /src/
+# shellcheck source=stale-build.sh
+source /src/rust/tools/linux-validate/stale-build.sh
+# rustc as rust-toolchain.toml selects it, which is what Corrosion configures.
+rustc_version=$(cd /src && rustc -V)
 cd /src
 for sub in plugins/obs-browser plugins/obs-websocket; do
   if [ -z "$(ls -A "$sub" 2>/dev/null)" ]; then
@@ -54,8 +58,23 @@ export CCACHE_BASEDIR=/src CCACHE_COMPRESS=1 CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-2
 export CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime
 ccache -z >/dev/null
 
+# Every libobs C file the Rust build replaces, derived from the
+# ENABLE_RUST_LIBOBS guards (a NOT around the option means "left out when
+# ON") instead of a hand-kept list (obs-rust/obs-studio#137). Included-when-ON
+# files such as util/base-variadic.c have no NOT and are skipped. Paths stay
+# relative to libobs/ and are matched under libobs.dir/, because libobs also
+# links same-named files from deps (deps/libcaption/src/utf8.c).
+ported_objs=$(grep -hE 'ENABLE_RUST_LIBOBS' /src/libobs/CMakeLists.txt /src/libobs/cmake/os-linux.cmake |
+  grep 'NOT:' | grep -oE ':[A-Za-z0-9_./-]+\.c>' | sed -E 's|^:||; s|>$||; s|$|.o|' | sort -u)
+if [ "$(wc -w <<<"$ported_objs")" -lt 20 ]; then
+  echo "FAIL: derived only $(wc -w <<<"$ported_objs") ported objects from the ENABLE_RUST_LIBOBS guards"
+  exit 1
+fi
+echo "== ported objects checked with ENABLE_RUST_LIBOBS=ON: $(wc -w <<<"$ported_objs")"
+
 for mode in OFF ON; do
   build="/build/rust-$mode"
+  reset_stale_build "$build" "$rustc_version"
   echo "== [$mode] configure + build"
   cmake -S /src -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -86,8 +105,8 @@ for mode in OFF ON; do
   # persists across runs, so a stale .o from an older checkout would linger.
   libobs_objs=$(ninja -C "$build" -t inputs libobs | grep -E '\.c\.o$' || true)
   if [ "$mode" = ON ]; then
-    for obj in bitstream.c.o array-serializer.c.o path-extension.c.o base.c.o file-serializer.c.o pipe.c.o pipe-posix.c.o buffered-file-serializer.c.o; do
-      if grep -q "/$obj\$" <<<"$libobs_objs"; then
+    for obj in $ported_objs; do
+      if grep -q "libobs\.dir/$obj\$" <<<"$libobs_objs"; then
         echo "FAIL: $obj was compiled into libobs with ENABLE_RUST_LIBOBS=ON"
         exit 1
       fi
@@ -108,6 +127,7 @@ done
 # Configure-only check: inspect which archive the Debug link line uses.
 echo "== [ON/Debug] Rust staticlib profile"
 dbg=/build/rust-ON-debug
+reset_stale_build "$dbg" "$rustc_version"
 cmake -S /src -B "$dbg" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DENABLE_UNIT_TESTS=OFF -DENABLE_RUST_LIBOBS=ON \
   -DENABLE_FRONTEND=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF \

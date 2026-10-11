@@ -1,4 +1,5 @@
 #include "mac-sck-common.h"
+#include "mac-sck-stop.h"
 
 const char *sck_audio_capture_getname(void *unused __unused)
 {
@@ -8,12 +9,36 @@ const char *sck_audio_capture_getname(void *unused __unused)
 API_AVAILABLE(macos(13.0)) static void destroy_audio_screen_stream(struct screen_capture *sc)
 {
     if (sc->disp && !sc->capture_failed) {
-        [sc->disp stopCaptureWithCompletionHandler:^(NSError *_Nullable error) {
-            if (error && error.code != SCStreamErrorAttemptToStopStreamState) {
-                MACCAP_ERR("destroy_audio_screen_stream: Failed to stop stream with error %s\n",
-                           [[error localizedFailureReason] cStringUsingEncoding:NSUTF8StringEncoding]);
+        os_event_t *stop_completed = NULL;
+        if (os_event_init(&stop_completed, OS_EVENT_TYPE_AUTO) == 0) {
+            [sc->disp stopCaptureWithCompletionHandler:^(NSError *_Nullable error) {
+                if (error && error.code != SCStreamErrorAttemptToStopStreamState) {
+                    MACCAP_ERR("destroy_audio_screen_stream: Failed to stop stream with error %s\n",
+                               [[error localizedFailureReason] cStringUsingEncoding:NSUTF8StringEncoding]);
+                }
+                os_event_signal(stop_completed);
+            }];
+            enum sck_stop_wait_result wait_result = sck_wait_for_stop(stop_completed, SCK_STOP_TIMEOUT_MS);
+            if (sck_stop_may_destroy_event(wait_result)) {
+                os_event_destroy(stop_completed);
+            } else {
+                MACCAP_ERR("destroy_audio_screen_stream: stream stop did not complete in 2 s; "
+                           "leaking stop event\n");
             }
-        }];
+        } else {
+            [sc->disp stopCaptureWithCompletionHandler:^(NSError *_Nullable error) {
+                if (error && error.code != SCStreamErrorAttemptToStopStreamState) {
+                    MACCAP_ERR("destroy_audio_screen_stream: Failed to stop stream with error %s\n",
+                               [[error localizedFailureReason] cStringUsingEncoding:NSUTF8StringEncoding]);
+                }
+            }];
+        }
+    }
+
+    if (sc->capture_delegate) {
+        pthread_mutex_lock(&sc->capture_delegate->sc_mutex);
+        sc->capture_delegate.sc = NULL;
+        pthread_mutex_unlock(&sc->capture_delegate->sc_mutex);
     }
 
     if (sc->stream_properties) {

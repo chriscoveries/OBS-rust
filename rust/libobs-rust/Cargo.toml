@@ -3,6 +3,7 @@ name = "libobs-rust"
 version = "0.1.0"
 description = "The single Rust staticlib linked into libobs when ENABLE_RUST_LIBOBS=ON"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

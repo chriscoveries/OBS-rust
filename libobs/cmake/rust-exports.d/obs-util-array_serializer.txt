@@ -1,0 +1,3 @@
+array_output_serializer_free
+array_output_serializer_init
+array_output_serializer_reset

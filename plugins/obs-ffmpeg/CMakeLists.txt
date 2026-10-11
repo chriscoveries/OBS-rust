@@ -24,6 +24,8 @@ target_sources(
     $<$<BOOL:${ENABLE_NEW_MPEGTS_OUTPUT}>:obs-ffmpeg-srt.h>
     $<$<BOOL:${ENABLE_NEW_MPEGTS_OUTPUT}>:obs-ffmpeg-url.h>
     $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:obs-ffmpeg-vaapi.c>
+    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:vaapi-device-select.c>
+    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:vaapi-device-select.h>
     $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:vaapi-utils.c>
     $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:vaapi-utils.h>
     obs-ffmpeg-audio-encoders.c

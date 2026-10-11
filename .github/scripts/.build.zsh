@@ -214,6 +214,9 @@ build() {
         -DENABLE_BROWSER:BOOL=ON
         -DCEF_ROOT_DIR:PATH="${project_root}/.deps/cef_binary_${CEF_VERSION}_${target//ubuntu-/linux_}"
       )
+      # The Rust build of libobs (obs-rust/obs-studio#140): CI sets
+      # ENABLE_RUST_LIBOBS=ON for the Rust variant of the Ubuntu job.
+      if [[ ${ENABLE_RUST_LIBOBS:-OFF} == ON ]] cmake_args+=(-DENABLE_RUST_LIBOBS:BOOL=ON)
 
       cmake_build_args+=(build_${target%%-*} --config ${config} --parallel)
       cmake_install_args+=(build_${target%%-*} --prefix ${project_root}/build_${target%%-*}/install/${config})

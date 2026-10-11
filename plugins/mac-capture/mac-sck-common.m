@@ -13,8 +13,24 @@ bool is_screen_capture_available(void)
 
 @implementation ScreenCaptureDelegate
 
+- (instancetype)init
+{
+    self = [super init];
+    if (self) {
+        pthread_mutex_init(&sc_mutex, NULL);
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    pthread_mutex_destroy(&sc_mutex);
+    [super dealloc];
+}
+
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type
 {
+    pthread_mutex_lock(&sc_mutex);
     if (self.sc != NULL) {
         if (type == SCStreamOutputTypeScreen && !self.sc->audio_only) {
             screen_stream_video_update(self.sc, sampleBuffer);
@@ -24,6 +40,7 @@ bool is_screen_capture_available(void)
             }
         }
     }
+    pthread_mutex_unlock(&sc_mutex);
 }
 
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error
@@ -44,8 +61,12 @@ bool is_screen_capture_available(void)
 
     MACCAP_LOG(LOG_WARNING, "%s", errorMessage.UTF8String);
 
-    self.sc->capture_failed = true;
-    obs_source_update_properties(self.sc->source);
+    pthread_mutex_lock(&sc_mutex);
+    if (self.sc != NULL) {
+        self.sc->capture_failed = true;
+        obs_source_update_properties(self.sc->source);
+    }
+    pthread_mutex_unlock(&sc_mutex);
 }
 
 @end
