@@ -6,6 +6,10 @@
 //! `audio_resampler_create` is stubbed to NULL inside the oracle, so both
 //! sides refuse a `conversion` that differs from the output's own format —
 //! the parity check covers the refusal path, not resampling itself.
+//!
+//! Unix-first: the port is `#[cfg(unix)]`; Windows keeps media-io/audio-io.c.
+
+#![cfg(unix)]
 
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;

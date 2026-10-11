@@ -69,11 +69,14 @@ fn main() {
         .file("oracle/cf_tokenizer.c")
         .file("oracle/buffered_file_serializer.c")
         .file("oracle/video_matrices.c")
-        .file("oracle/audio_io.c")
         .file("oracle/pipe_args.c");
-    // Unix-only: pipe-posix.c needs <spawn.h>.
+    // Unix-only: pipe-posix.c needs <spawn.h>; audio-io.c's POSIX
+    // threading surface has no libc equivalent on Windows (the port is
+    // Unix-first: Windows keeps media-io/audio-io.c in C).
     if std::env::var_os("CARGO_CFG_UNIX").is_some() {
-        oracle.file("oracle/pipe_posix.c");
+        oracle
+            .file("oracle/pipe_posix.c")
+            .file("oracle/audio_io.c");
     }
     oracle
         .include(&libobs)

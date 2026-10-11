@@ -3,16 +3,16 @@
 # One symbol per line; lines starting with '#' are comments.
 # A trailing " unix" marks a cfg(unix) shim: Windows keeps the C version
 # (e.g. util/pipe-windows.c), so rust.cmake does not /EXPORT it there.
-audio_output_active
-audio_output_close
-audio_output_connect
-audio_output_disconnect
-audio_output_get_block_size
-audio_output_get_channels
-audio_output_get_info
-audio_output_get_planes
-audio_output_get_sample_rate
-audio_output_open
+audio_output_active unix
+audio_output_close unix
+audio_output_connect unix
+audio_output_disconnect unix
+audio_output_get_block_size unix
+audio_output_get_channels unix
+audio_output_get_info unix
+audio_output_get_planes unix
+audio_output_get_sample_rate unix
+audio_output_open unix
 array_output_serializer_free
 array_output_serializer_init
 array_output_serializer_reset

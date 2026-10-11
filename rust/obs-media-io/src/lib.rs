@@ -7,6 +7,7 @@
 #[cfg(test)]
 use obs_c_oracle as _; // links the test bmalloc/bfree (oracle/test_bmem.c)
 
+#[cfg(unix)]
 pub mod audio_io;
 pub mod ffi;
 pub mod frame_rate;

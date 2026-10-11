@@ -10,6 +10,7 @@
 //! from `util/base-variadic.c`), so any test binary using the oracle resolves
 //! them.
 
+#[cfg(unix)]
 pub mod audio_io;
 pub mod bmem;
 pub mod dstr;

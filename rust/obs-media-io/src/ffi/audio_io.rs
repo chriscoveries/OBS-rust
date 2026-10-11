@@ -88,142 +88,149 @@ pub type audio_output_callback_t =
 /// `audio` must point to writable `audio_t` storage and `info` to a valid
 /// `struct audio_output_info` for the duration of the call; the returned
 /// handle owns a thread that keeps calling `info.input_callback` until
-/// `audio_output_close`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_open(
-    audio: *mut *mut c_void,
-    info: *mut audio_output_info,
-) -> c_int {
-    // SAFETY: caller provides a valid info pointer per the C contract (a
-    // NULL info faults in the C and here alike).
-    match AudioOutput::open(unsafe { &*info }) {
-        Ok(out) => {
-            // SAFETY: caller provides a valid out-pointer slot.
-            unsafe { *audio = Box::into_raw(out) as *mut c_void };
-            AUDIO_OUTPUT_SUCCESS
+/// `audio_output_close`.#[cfg(unix)]
+pub use unix::*;
+
+#[cfg(unix)]
+mod unix {
+    use super::*;
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_open(
+        audio: *mut *mut c_void,
+        info: *mut audio_output_info,
+    ) -> c_int {
+        // SAFETY: caller provides a valid info pointer per the C contract (a
+        // NULL info faults in the C and here alike).
+        match AudioOutput::open(unsafe { &*info }) {
+            Ok(out) => {
+                // SAFETY: caller provides a valid out-pointer slot.
+                unsafe { *audio = Box::into_raw(out) as *mut c_void };
+                AUDIO_OUTPUT_SUCCESS
+            }
+            Err(code) => code,
         }
-        Err(code) => code,
     }
-}
 
-/// `audio_output_close`.
-///
-/// # Safety
-/// `audio` must be a handle from `audio_output_open` not yet closed, or NULL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_close(audio: *mut c_void) {
-    if audio.is_null() {
-        return;
+    /// `audio_output_close`.
+    ///
+    /// # Safety
+    /// `audio` must be a handle from `audio_output_open` not yet closed, or NULL.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_close(audio: *mut c_void) {
+        if audio.is_null() {
+            return;
+        }
+        // SAFETY: ownership returns to the box once; Drop runs the close sequence.
+        unsafe { drop(Box::from_raw(audio as *mut AudioOutput)) };
     }
-    // SAFETY: ownership returns to the box once; Drop runs the close sequence.
-    unsafe { drop(Box::from_raw(audio as *mut AudioOutput)) };
-}
 
-/// `audio_output_connect`.
-///
-/// # Safety
-/// `audio` must be a live handle; `conversion`, when non-NULL, must point to
-/// a valid `struct audio_convert_info`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_connect(
-    audio: *mut c_void,
-    mix_idx: usize,
-    conversion: *const audio_convert_info,
-    callback: audio_output_callback_t,
-    param: *mut c_void,
-) -> bool {
-    if audio.is_null() {
-        return false;
+    /// `audio_output_connect`.
+    ///
+    /// # Safety
+    /// `audio` must be a live handle; `conversion`, when non-NULL, must point to
+    /// a valid `struct audio_convert_info`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_connect(
+        audio: *mut c_void,
+        mix_idx: usize,
+        conversion: *const audio_convert_info,
+        callback: audio_output_callback_t,
+        param: *mut c_void,
+    ) -> bool {
+        if audio.is_null() {
+            return false;
+        }
+        // SAFETY: live handle; `conversion` is valid per the C contract (NULL ->
+        // None). The lock inside `connect` serializes the list; `&self` — no
+        // exclusive reference is ever created on a live handle.
+        let conversion = unsafe { conversion.as_ref() };
+        unsafe { (&*(audio as *const AudioOutput)).connect(mix_idx, conversion, callback, param) }
     }
-    // SAFETY: live handle; `conversion` is valid per the C contract (NULL ->
-    // None). The lock inside `connect` serializes the list; `&self` — no
-    // exclusive reference is ever created on a live handle.
-    let conversion = unsafe { conversion.as_ref() };
-    unsafe { (&*(audio as *const AudioOutput)).connect(mix_idx, conversion, callback, param) }
-}
 
-/// `audio_output_disconnect`.
-///
-/// # Safety
-/// `audio` must be a live handle or NULL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_disconnect(
-    audio: *mut c_void,
-    mix_idx: usize,
-    callback: audio_output_callback_t,
-    param: *mut c_void,
-) {
-    if audio.is_null() {
-        return;
+    /// `audio_output_disconnect`.
+    ///
+    /// # Safety
+    /// `audio` must be a live handle or NULL.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_disconnect(
+        audio: *mut c_void,
+        mix_idx: usize,
+        callback: audio_output_callback_t,
+        param: *mut c_void,
+    ) {
+        if audio.is_null() {
+            return;
+        }
+        // SAFETY: live handle; the lock inside `disconnect` serializes the list.
+        unsafe { (&*(audio as *const AudioOutput)).disconnect(mix_idx, callback, param) }
     }
-    // SAFETY: live handle; the lock inside `disconnect` serializes the list.
-    unsafe { (&*(audio as *const AudioOutput)).disconnect(mix_idx, callback, param) }
-}
 
-/// `audio_output_get_info`.
-///
-/// # Safety
-/// `audio` must be a live handle or NULL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_get_info(audio: *const c_void) -> *const audio_output_info {
-    if audio.is_null() {
-        return core::ptr::null();
+    /// `audio_output_get_info`.
+    ///
+    /// # Safety
+    /// `audio` must be a live handle or NULL.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_get_info(audio: *const c_void) -> *const audio_output_info {
+        if audio.is_null() {
+            return core::ptr::null();
+        }
+        // SAFETY: live handle; `info` lives inside the shared state (the C
+        // returns the same pointer).
+        unsafe { &(*(audio as *const AudioOutput)).shared.info as *const audio_output_info }
     }
-    // SAFETY: live handle; `info` lives inside the shared state (the C
-    // returns the same pointer).
-    unsafe { &(*(audio as *const AudioOutput)).shared.info as *const audio_output_info }
-}
 
-/// `audio_output_active`.
-///
-/// # Safety
-/// `audio` must be a live handle or NULL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_active(audio: *const c_void) -> bool {
-    if audio.is_null() {
-        return false;
+    /// `audio_output_active`.
+    ///
+    /// # Safety
+    /// `audio` must be a live handle or NULL.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_active(audio: *const c_void) -> bool {
+        if audio.is_null() {
+            return false;
+        }
+        // SAFETY: live handle.
+        unsafe { (&*(audio as *const AudioOutput)).active() }
     }
-    // SAFETY: live handle.
-    unsafe { (&*(audio as *const AudioOutput)).active() }
-}
 
-/// `audio_output_get_block_size`. The C dereferences `audio` unconditionally;
-/// a NULL handle faults the same way here.
-///
-/// # Safety
-/// `audio` must be a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_get_block_size(audio: *const c_void) -> usize {
-    // SAFETY: C pins a NULL deref; reading a field off the handle preserves it.
-    unsafe { (*(audio as *const AudioOutput)).shared.block_size }
-}
+    /// `audio_output_get_block_size`. The C dereferences `audio` unconditionally;
+    /// a NULL handle faults the same way here.
+    ///
+    /// # Safety
+    /// `audio` must be a live handle.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_get_block_size(audio: *const c_void) -> usize {
+        // SAFETY: C pins a NULL deref; reading a field off the handle preserves it.
+        unsafe { (*(audio as *const AudioOutput)).shared.block_size }
+    }
 
-/// `audio_output_get_planes`.
-///
-/// # Safety
-/// `audio` must be a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_get_planes(audio: *const c_void) -> usize {
-    // SAFETY: see get_block_size.
-    unsafe { (*(audio as *const AudioOutput)).shared.planes }
-}
+    /// `audio_output_get_planes`.
+    ///
+    /// # Safety
+    /// `audio` must be a live handle.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_get_planes(audio: *const c_void) -> usize {
+        // SAFETY: see get_block_size.
+        unsafe { (*(audio as *const AudioOutput)).shared.planes }
+    }
 
-/// `audio_output_get_channels`.
-///
-/// # Safety
-/// `audio` must be a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_get_channels(audio: *const c_void) -> usize {
-    // SAFETY: see get_block_size.
-    unsafe { (*(audio as *const AudioOutput)).shared.channels }
-}
+    /// `audio_output_get_channels`.
+    ///
+    /// # Safety
+    /// `audio` must be a live handle.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_get_channels(audio: *const c_void) -> usize {
+        // SAFETY: see get_block_size.
+        unsafe { (*(audio as *const AudioOutput)).shared.channels }
+    }
 
-/// `audio_output_get_sample_rate`.
-///
-/// # Safety
-/// `audio` must be a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn audio_output_get_sample_rate(audio: *const c_void) -> u32 {
-    // SAFETY: see get_block_size.
-    unsafe { (*(audio as *const AudioOutput)).shared.info.samples_per_sec }
+    /// `audio_output_get_sample_rate`.
+    ///
+    /// # Safety
+    /// `audio` must be a live handle.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn audio_output_get_sample_rate(audio: *const c_void) -> u32 {
+        // SAFETY: see get_block_size.
+        unsafe { (*(audio as *const AudioOutput)).shared.info.samples_per_sec }
+    }
 }

@@ -163,7 +163,7 @@ target_sources(
 target_sources(
   libobs
   PRIVATE
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/audio-io.c>
+    $<$<NOT:$<AND:$<BOOL:${ENABLE_RUST_LIBOBS}>,$<NOT:$<PLATFORM_ID:Windows>>>>:media-io/audio-io.c>
     media-io/audio-io.h
     media-io/audio-math.h
     media-io/audio-resampler-ffmpeg.c
