@@ -7,6 +7,7 @@
 
 #import "OBSAVCapture.h"
 #import "AVCaptureDeviceFormat+OBSListable.h"
+#import "avcapture-audio-planes.h"
 
 /// The maximum number of frame rate ranges to show complete information for before providing a more generic description of the supported frame rates inside of a device format description.
 static const UInt32 kMaxFrameRateRangesInDescription = 10;
@@ -1443,7 +1444,7 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
                 OBSAVCaptureAudioFrame *audio = _captureInfo->audioFrame;
 
-                size_t num_buffers = MIN(bufferList->mNumberBuffers, MAX_AV_PLANES);
+                size_t num_buffers = avcapture_audio_plane_count(bufferList->mNumberBuffers);
                 if (bufferList->mNumberBuffers > MAX_AV_PLANES && !_captureInfo->audioPlanesClampedLogged) {
                     [self AVCaptureLog:LOG_WARNING
                         withFormat:@"Audio buffer list with %u buffers exceeds MAX_AV_PLANES (%d); extra buffers dropped",
