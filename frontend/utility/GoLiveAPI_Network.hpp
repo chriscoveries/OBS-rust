@@ -12,4 +12,4 @@ QString MultitrackVideoAutoConfigURL(obs_service_t *service);
 class QWidget;
 
 GoLiveApi::Config DownloadGoLiveConfig(QWidget *parent, QString url, const GoLiveApi::PostData &post_data,
-				       const QString &multitrack_video_name);
+				       const QString &multitrack_video_name, bool interactive_status = true);

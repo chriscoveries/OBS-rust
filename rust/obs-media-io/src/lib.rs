@@ -8,8 +8,10 @@
 use obs_c_oracle as _; // links the test bmalloc/bfree (oracle/test_bmem.c)
 
 pub mod audio_io;
+pub mod audio_math;
 pub mod ffi;
 pub mod frame_rate;
 pub mod video_fourcc;
+pub mod video_frame;
 pub mod video_io;
 pub mod video_matrices;

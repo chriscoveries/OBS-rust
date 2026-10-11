@@ -419,6 +419,10 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	HookWidget(ui->multitrackVideoConfigOverrideEnable,        CHECK_CHANGED,  STREAM1_CHANGED);
 	HookWidget(ui->multitrackVideoConfigOverride,              TEXT_CHANGED,   STREAM1_CHANGED);
 	HookWidget(ui->multitrackVideoAdditionalCanvas,            COMBO_CHANGED,   STREAM1_CHANGED);
+	HookWidget(ui->multitrackVideoDisableBFrames,              CHECK_CHANGED,  STREAM1_CHANGED);
+	HookWidget(ui->multitrackVideoDisableLookahead,            CHECK_CHANGED,  STREAM1_CHANGED);
+	HookWidget(ui->multitrackVideoPreset,                      COMBO_CHANGED,  STREAM1_CHANGED);
+	HookWidget(ui->multitrackVideoTune,                        COMBO_CHANGED,  STREAM1_CHANGED);
 	HookWidget(ui->outputMode,           COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutputPath,     EDIT_CHANGED,   OUTPUTS_CHANGED);
 	HookWidget(ui->simpleNoSpace,        CHECK_CHANGED,  OUTPUTS_CHANGED);
@@ -5864,6 +5868,22 @@ void OBSBasicSettings::UpdateMultitrackVideo()
 	ui->multitrackVideoConfigOverride->setVisible(available && IsCustomService());
 
 	ui->multitrackVideoStreamDumpEnable->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked());
+	ui->multitrackVideoDisableBFrames->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked());
+	ui->multitrackVideoDisableLookahead->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked());
+	ui->multitrackVideoPresetLabel->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked());
+	ui->multitrackVideoPreset->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked());
+	ui->multitrackVideoTuneLabel->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked());
+	ui->multitrackVideoTune->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked());
+	ui->multitrackVideoDisableBFrames->setToolTip(
+		QTStr("Basic.Settings.Stream.MultitrackVideoDisableBFrames.ToolTip"));
+	ui->multitrackVideoDisableLookahead->setToolTip(
+		QTStr("Basic.Settings.Stream.MultitrackVideoDisableLookahead.ToolTip"));
+	ui->multitrackVideoPreset->setToolTip(QTStr("Basic.Settings.Stream.MultitrackVideoPreset.ToolTip"));
+	ui->multitrackVideoTune->setToolTip(QTStr("Basic.Settings.Stream.MultitrackVideoTune.ToolTip"));
+	ui->multitrackVideoPreviewLadder->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked());
+	ui->multitrackVideoPreviewLadder->setToolTip(
+		QTStr("Basic.Settings.Stream.MultitrackVideoPreviewLadder.ToolTip"));
+	UpdateMultitrackVideoLadderStale();
 	ui->multitrackVideoConfigOverrideEnable->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked());
 	ui->multitrackVideoConfigOverrideLabel->setEnabled(toggle_available && ui->enableMultitrackVideo->isChecked() &&
 							   ui->multitrackVideoConfigOverrideEnable->isChecked());

@@ -2077,6 +2077,85 @@
                      </property>
                     </widget>
                    </item>
+                   <item row="7" column="1">
+                    <widget class="QCheckBox" name="multitrackVideoDisableBFrames">
+                     <property name="text">
+                      <string>Basic.Settings.Stream.MultitrackVideoDisableBFrames</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="8" column="1">
+                    <widget class="QCheckBox" name="multitrackVideoDisableLookahead">
+                     <property name="text">
+                      <string>Basic.Settings.Stream.MultitrackVideoDisableLookahead</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="9" column="0">
+                    <widget class="QLabel" name="multitrackVideoPresetLabel">
+                     <property name="text">
+                      <string>Basic.Settings.Stream.MultitrackVideoPreset</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="9" column="1">
+                    <widget class="QComboBox" name="multitrackVideoPreset">
+                    </widget>
+                   </item>
+                   <item row="10" column="0">
+                    <widget class="QLabel" name="multitrackVideoTuneLabel">
+                     <property name="text">
+                      <string>Basic.Settings.Stream.MultitrackVideoTune</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="10" column="1">
+                    <widget class="QComboBox" name="multitrackVideoTune">
+                    </widget>
+                   </item>
+                   <item row="11" column="1">
+                    <widget class="QPushButton" name="multitrackVideoPreviewLadder">
+                     <property name="text">
+                      <string>Basic.Settings.Stream.MultitrackVideoPreviewLadder</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="12" column="0" colspan="2">
+                    <widget class="QLabel" name="multitrackVideoLadderStale">
+                     <property name="text">
+                      <string>Basic.Settings.Stream.MultitrackVideoLadder.Stale</string>
+                     </property>
+                     <property name="class" stdset="0">
+                      <string notr="true">text-warning</string>
+                     </property>
+                     <property name="wordWrap">
+                      <bool>true</bool>
+                     </property>
+                     <property name="visible">
+                      <bool>false</bool>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="13" column="0" colspan="2">
+                    <widget class="QTableWidget" name="multitrackVideoLadder">
+                     <property name="minimumSize">
+                      <size>
+                       <width>0</width>
+                       <height>140</height>
+                      </size>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="14" column="0" colspan="2">
+                    <widget class="QLabel" name="multitrackVideoLadderStatus">
+                     <property name="text">
+                      <string>Basic.Settings.Stream.MultitrackVideoLadder.Help</string>
+                     </property>
+                     <property name="wordWrap">
+                      <bool>true</bool>
+                     </property>
+                    </widget>
+                   </item>
                   </layout>
                  </item>
                 </layout>

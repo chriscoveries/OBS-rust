@@ -26,7 +26,8 @@ public:
 			      std::optional<uint32_t> maximum_video_tracks, std::optional<std::string> custom_config,
 			      obs_data_t *dump_stream_to_file_config, size_t main_audio_mixer,
 			      std::optional<size_t> vod_track_mixer, std::optional<bool> use_rtmps,
-			      std::optional<QString> extra_canvas);
+			      std::optional<QString> extra_canvas, bool disable_b_frames, bool disable_lookahead,
+			      const char *preset, const char *tune);
 	signal_handler_t *StreamingSignalHandler();
 	void StartedStreaming();
 	void StopStreaming();

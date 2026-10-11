@@ -175,7 +175,7 @@ target_sources(
     media-io/media-remux.c
     media-io/media-remux.h
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-fourcc.c>
-    media-io/video-frame.c
+    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-frame.c>
     media-io/video-frame.h
     media-io/video-io.c
     media-io/video-io.h
@@ -212,7 +212,7 @@ target_sources(
     graphics/math-defs.h
     graphics/math-extra.c
     graphics/math-extra.h
-    graphics/matrix3.c
+    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/matrix3.c>
     graphics/matrix3.h
     graphics/matrix4.c
     graphics/matrix4.h

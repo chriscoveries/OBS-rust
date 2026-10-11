@@ -3,68 +3,90 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>obs-rust Contributor Leaderboard</title>
+<title>obs-rust Leaderboard</title>
+<link rel="icon" href="logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Unbounded:wght@800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Stencil+Display:wght@800;900&family=Barlow+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#07060d;--fg:#f4f2ff;--mut:#8b87a8;--card:#12101f;--line:#251f3d;--gold:#ffd24a;--silver:#cfd6e6;--bronze:#ff9a5c;--a:#8b5cf6;--b:#22d3ee;--c:#ff4fa3}
+:root{--steel:#1b1d1f;--steel2:#232628;--plate:#2c3033;--edge:#4a4f53;--hi:#6b7176;--fg:#e9e6df;--rust:#e8631a;--rust2:#b9480f;--cu:#3fa58a;--haz:#f2b705}
 *{box-sizing:border-box;margin:0}
-body{background:radial-gradient(900px 500px at 15% -10%,#3b1d7a55,transparent),radial-gradient(800px 500px at 100% 0,#0e749044,transparent),var(--bg);color:var(--fg);font:500 16px/1.4 "Space Grotesk",system-ui,sans-serif;min-height:100vh;padding:48px 16px 40px}
-main{max-width:980px;margin:auto}
-h1{font:900 clamp(34px,7vw,72px)/.95 Unbounded,sans-serif;letter-spacing:-.03em;background:linear-gradient(100deg,var(--b),var(--a) 45%,var(--c));-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 0 28px #8b5cf666)}
-.sub{color:var(--mut);margin:14px 0 44px;max-width:60ch}
-.sub b{color:var(--fg)}
-.podium{display:grid;grid-template-columns:1fr 1.15fr 1fr;gap:16px;align-items:end;margin-bottom:28px}
-.pod{position:relative;text-align:center;padding:26px 12px 18px;border-radius:20px;background:linear-gradient(180deg,var(--card),#0b0916);border:1px solid var(--line);animation:rise .8s cubic-bezier(.2,.9,.2,1) both;--g:var(--silver)}
-.pod.r1{--g:var(--gold);order:2;padding-top:40px}
-.pod.r2{order:1;--g:var(--silver);animation-delay:.15s}
-.pod.r3{order:3;--g:var(--bronze);animation-delay:.3s}
-.pod{border-color:color-mix(in srgb,var(--g) 55%,transparent);box-shadow:0 0 40px -14px var(--g)}
-.pod img{width:92px;height:92px;border-radius:50%;border:3px solid var(--g);box-shadow:0 0 28px var(--g);background:#222}
-.r1 img{width:116px;height:116px}
-.medal{font:900 44px Unbounded;color:var(--g);text-shadow:0 0 24px var(--g);line-height:1;margin-bottom:10px}
-.name{font:700 18px "Space Grotesk";margin-top:12px;word-break:break-all}
-.name a{color:inherit;text-decoration:none}
-.score{font:900 34px Unbounded;color:var(--g);margin-top:4px}
-.meta{color:var(--mut);font-size:13px}
-.list{display:grid;gap:10px}
-.row{display:grid;grid-template-columns:52px 48px 1fr auto auto auto;gap:16px;align-items:center;padding:12px 18px;border-radius:14px;background:var(--card);border:1px solid var(--line);animation:slide .6s ease both;transition:.2s}
-.row:hover{transform:translateX(6px);border-color:var(--a);box-shadow:0 0 24px -6px var(--a)}
-.rank{font:800 22px Unbounded;color:var(--mut)}
-.row img{width:44px;height:44px;border-radius:50%;background:#222}
-.row .who{font-weight:700;word-break:break-all}.row .who a{color:inherit;text-decoration:none}
-.row .when{color:var(--mut);font-size:12px}
-.num{text-align:right;min-width:56px}.num b{display:block;font:800 20px Unbounded}.num span{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.08em}
-.num.s b{background:linear-gradient(90deg,var(--b),var(--c));-webkit-background-clip:text;background-clip:text;color:transparent}
-footer{margin-top:34px;color:var(--mut);font-size:13px}
-footer a{color:var(--b)}
-@keyframes rise{from{opacity:0;transform:translateY(40px) scale(.94)}}
-@keyframes slide{from{opacity:0;transform:translateX(-24px)}}
-@media(max-width:640px){.podium{grid-template-columns:1fr}.pod.r1{order:1}.pod.r2{order:2}.pod.r3{order:3}
-.row{grid-template-columns:34px 40px 1fr auto;gap:10px;padding:10px 12px}.row .num:not(.s){display:none}.rank{font-size:16px}}
-@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+body{color:var(--fg);font:600 17px/1.35 "Barlow Condensed",sans-serif;letter-spacing:.02em;min-height:100vh;padding:28px 16px 36px;
+background:
+repeating-linear-gradient(90deg,rgba(255,255,255,.025) 0 1px,transparent 1px 3px),
+repeating-linear-gradient(0deg,rgba(0,0,0,.18) 0 1px,transparent 1px 4px),
+linear-gradient(180deg,#25282a,#17191a)}
+main{max-width:940px;margin:auto;border:3px solid var(--edge);background:var(--steel);box-shadow:0 0 0 2px #0c0d0e,inset 0 0 0 2px #0c0d0e;position:relative;padding:0 0 22px}
+.rv{position:absolute;width:12px;height:12px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#8a9095,#33373a 70%);box-shadow:0 1px 0 #000}
+.rv.a{top:10px;left:10px}.rv.b{top:10px;right:10px}.rv.c{bottom:10px;left:10px}.rv.d{bottom:10px;right:10px}
+.haz{height:16px;background:repeating-linear-gradient(-45deg,var(--haz) 0 14px,#111 14px 28px);border-bottom:3px solid #0c0d0e}
+.haz.bot{border:0;border-top:3px solid #0c0d0e;margin-top:22px;margin-bottom:-22px}
+header{display:flex;align-items:center;gap:26px;padding:28px 40px 22px;border-bottom:3px solid var(--edge)}
+header img{width:132px;height:132px;flex:none;filter:drop-shadow(0 3px 0 #000)}
+h1{font:900 clamp(38px,8vw,80px)/.9 "Big Shoulders Stencil Display",sans-serif;text-transform:uppercase;letter-spacing:.03em;color:var(--fg)}
+h1 em{font-style:normal;color:var(--rust)}
+.sub{margin-top:10px;color:#a9aeb2;text-transform:uppercase;letter-spacing:.14em;font-size:15px}
+.sub b{color:var(--cu)}
+.tag{display:inline-block;margin-top:12px;padding:3px 10px;border:2px solid var(--rust);color:var(--rust);font:700 13px "JetBrains Mono",monospace;letter-spacing:.08em;text-transform:uppercase}
+.board{padding:22px 40px 0;display:grid;gap:10px}
+.colh{display:grid;grid-template-columns:78px 52px 1fr 1fr 110px;gap:14px;font:700 12px "JetBrains Mono",monospace;color:var(--cu);text-transform:uppercase;letter-spacing:.14em;padding:0 14px 6px;border-bottom:2px dashed var(--edge)}
+.colh span:last-child{text-align:right}
+.row{display:grid;grid-template-columns:78px 52px 1fr 1fr 110px;gap:14px;align-items:center;padding:10px 14px;background:linear-gradient(180deg,var(--plate),var(--steel2));border:2px solid var(--edge);border-left:8px solid var(--hi);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 2px 0 #0c0d0e}
+.row.r1{border-left-color:var(--rust);padding:16px 14px;background:linear-gradient(180deg,#34302d,#262322)}
+.row.r2{border-left-color:#c9ced1}.row.r3{border-left-color:var(--cu)}
+.plate{font:900 38px/1 "Big Shoulders Stencil Display",sans-serif;text-align:center;padding:4px 0;border:3px double var(--hi);color:#c9ced1;background:#16181a;text-shadow:0 -1px 0 #000}
+.r1 .plate{color:#111;background:var(--rust);border:3px double #5b2305;font-size:50px;text-shadow:0 1px 0 rgba(255,255,255,.25)}
+.r2 .plate{color:var(--fg)}.r3 .plate{color:var(--cu);border-color:var(--cu)}
+.row img{width:48px;height:48px;border:2px solid var(--edge);background:#111;filter:grayscale(.35) contrast(1.05)}
+.r1 img{width:52px;height:52px;border-color:var(--rust)}
+.who{font:700 24px "Barlow Condensed";text-transform:uppercase;letter-spacing:.05em;word-break:break-all}
+.who a{color:inherit;text-decoration:none}.who a:hover{color:var(--rust)}
+.r1 .who{font-size:32px}
+.when{font:500 12px "JetBrains Mono",monospace;color:#8a8f93;text-transform:uppercase}
+.gauge{height:16px;background:repeating-linear-gradient(90deg,#0d0e0f 0 6px,#17191a 6px 8px);border:2px solid #0c0d0e;position:relative}
+.gauge i{position:absolute;inset:0 auto 0 0;background:repeating-linear-gradient(90deg,var(--rust) 0 6px,transparent 6px 8px)}
+.r2 .gauge i,.r3 .gauge i{background:repeating-linear-gradient(90deg,#aeb4b8 0 6px,transparent 6px 8px)}
+.r3 .gauge i{background:repeating-linear-gradient(90deg,var(--cu) 0 6px,transparent 6px 8px)}
+.cnt{text-align:right;font:700 34px/1 "JetBrains Mono",monospace;color:var(--fg);background:#101213;border:2px solid #000;padding:6px 10px;box-shadow:inset 0 0 0 1px var(--edge);letter-spacing:.04em}
+.r1 .cnt{color:var(--rust);font-size:42px}
+.cnt small{display:block;font:500 10px "JetBrains Mono";color:var(--cu);letter-spacing:.14em;margin-top:2px}
+footer{padding:20px 40px 0;font:500 12px "JetBrains Mono",monospace;color:#8a8f93;text-transform:uppercase;letter-spacing:.06em}
+footer a{color:var(--cu)}
+@media(max-width:640px){header{padding:24px 22px 18px;gap:16px;flex-direction:column;align-items:flex-start}header img{width:96px;height:96px}
+.board{padding:18px 16px 0}.colh{display:none}
+.row{grid-template-columns:52px 42px 1fr 74px;gap:10px;padding:8px}.row .meter{display:none}.plate{font-size:28px}.r1 .plate{font-size:34px}
+.row img{width:40px;height:40px}.who{font-size:19px}.r1 .who{font-size:23px}.cnt{font-size:24px;padding:4px 6px}.r1 .cnt{font-size:28px}footer{padding:18px 16px 0}}
 </style>
 </head>
 <body>
 <main>
-<h1>obs-rust<br>Leaderboard</h1>
-<p class="sub">The people who filed or merged fixes. Credit goes to the <b>original author</b>, even when a maintainer rebased or re-landed the work. Score = <span id="w"></span>.</p>
-<section class="podium" id="podium"></section>
-<section class="list" id="list"></section>
+<i class="rv a"></i><i class="rv b"></i><i class="rv c"></i><i class="rv d"></i>
+<div class="haz"></div>
+<header>
+<img src="logo.png" alt="obs-rust logo">
+<div>
+<h1>obs<em>-rust</em><br>Leaderboard</h1>
+<p class="sub">Ranked by <b>merged pull requests</b> &middot; credit to the original author</p>
+<span class="tag" id="tot">Loading...</span>
+</div>
+</header>
+<section class="board">
+<div class="colh"><span>Rank</span><span></span><span>Operator</span><span>Output</span><span>Merged PRs</span></div>
+<div id="list" style="display:grid;gap:10px"></div>
+</section>
 <footer id="foot"></footer>
+<div class="haz bot"></div>
 </main>
 <script>
 (async()=>{
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let d;try{d=await (await fetch("leaderboard.json",{cache:"no-store"})).json()}catch(e){document.getElementById("foot").textContent="Could not load leaderboard.json";return}
-const C=d.contributors,w=d.weights;
-document.getElementById("w").textContent=w.merged_pr+" per merged PR + "+w.issue_filed+" per issue filed";
+const C=[...d.contributors].sort((a,b)=>a.rank-b.rank),max=Math.max(1,...C.map(c=>c.merged_prs));
 const fmt=s=>new Date(s).toLocaleDateString("en",{month:"short",year:"numeric"});
 const gh=l=>"https://github.com/"+encodeURIComponent(l);
-document.getElementById("podium").innerHTML=C.slice(0,3).map(c=>`<div class="pod r${c.rank}"><div class="medal">${c.rank}</div><img src="${esc(c.avatar_url)}" alt=""><div class="name"><a href="${gh(c.login)}">${esc(c.login)}</a></div><div class="score">${c.score}</div><div class="meta">${c.merged_prs} PRs · ${c.issues_filed} issues</div></div>`).join("");
-document.getElementById("list").innerHTML=C.slice(3).map((c,i)=>`<div class="row" style="animation-delay:${.4+i*.07}s"><div class="rank">${c.rank}</div><img src="${esc(c.avatar_url)}" alt=""><div><div class="who"><a href="${gh(c.login)}">${esc(c.login)}</a></div><div class="when">${fmt(c.first_contribution)} - ${fmt(c.last_contribution)}</div></div><div class="num"><b>${c.merged_prs}</b><span>PRs</span></div><div class="num"><b>${c.issues_filed}</b><span>Issues</span></div><div class="num s"><b>${c.score}</b><span>Score</span></div></div>`).join("");
-document.getElementById("foot").innerHTML=`Updated ${new Date(d.generated_at).toUTCString()} · <a href="https://github.com/${esc(d.repo)}">${esc(d.repo)}</a> · <a href="leaderboard.json">JSON</a>`;
+document.getElementById("tot").textContent=(d.merged_pr_total||C.reduce((a,c)=>a+c.merged_prs,0))+" merged PRs logged";
+document.getElementById("list").innerHTML=C.map(c=>`<div class="row r${c.rank}"><div class="plate">${String(c.rank).padStart(2,"0")}</div><img src="${esc(c.avatar_url)}" alt=""><div><div class="who"><a href="${gh(c.login)}">${esc(c.login)}</a></div><div class="when">${fmt(c.first_contribution)} - ${fmt(c.last_contribution)}</div></div><div class="meter"><div class="gauge"><i style="width:${Math.round(100*c.merged_prs/max)}%"></i></div></div><div class="cnt">${c.merged_prs}<small>MERGED</small></div></div>`).join("");
+document.getElementById("foot").innerHTML=`Updated ${new Date(d.generated_at).toUTCString()} &middot; <a href="https://github.com/${esc(d.repo)}">${esc(d.repo)}</a> &middot; <a href="leaderboard.json">JSON</a>`;
 document.body.dataset.ready="1";
 })();
 </script>

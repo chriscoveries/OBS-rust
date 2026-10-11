@@ -10,8 +10,8 @@ Same obs studio, but without the bugs. AI generated issues and PRs welcome.
 Contributors leaderboard
 ------------------------
 
-Everyone who filed or merged fixes, credited to the original author even when
-a maintainer re-landed the work. Updated daily at 3 a.m. Pacific.
+Ranked by merged PRs only, credited to the original author even when a
+maintainer re-landed the work (counted once). Updated daily at 3 a.m. Pacific.
 
 .. image:: https://raw.githubusercontent.com/obs-rust/obs-studio/leaderboard/leaderboard.jpg
    :alt: obs-rust contributors leaderboard

@@ -12,6 +12,7 @@
 
 pub mod array_serializer;
 pub mod audio_io_inlines;
+pub mod audio_math;
 pub mod av1;
 pub mod avc;
 pub mod base;
@@ -39,5 +40,6 @@ pub mod utf8;
 pub mod util_uint64;
 pub mod vec2;
 pub mod video_fourcc;
+pub mod video_frame;
 pub mod video_io_inlines;
 pub mod video_matrices;

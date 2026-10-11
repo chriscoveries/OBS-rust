@@ -53,7 +53,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp tools/leaderboard/site/index.html data/index.html
+          cp tools/leaderboard/site/* data/
           touch data/.nojekyll
           python3 tools/leaderboard/generate.py --repo "${{ github.repository }}" --out data/leaderboard.json
       - name: Render JPEG

@@ -155,6 +155,42 @@ unsafe extern "C" {
     pub fn oracle_matrix3_offset_y() -> usize;
     pub fn oracle_matrix3_offset_z() -> usize;
     pub fn oracle_matrix3_offset_t() -> usize;
+
+    pub fn oracle_matrix3_from_quat(dst: *mut OracleMatrix3, q: *const OracleQuat);
+    pub fn oracle_matrix3_from_axisang(dst: *mut OracleMatrix3, aa: *const OracleAxisAng);
+    pub fn oracle_matrix3_from_matrix4(dst: *mut OracleMatrix3, m: *const OracleMatrix4);
+    pub fn oracle_matrix3_mul(
+        dst: *mut OracleMatrix3,
+        m1: *const OracleMatrix3,
+        m2: *const OracleMatrix3,
+    );
+    pub fn oracle_matrix3_rotate(
+        dst: *mut OracleMatrix3,
+        m: *const OracleMatrix3,
+        q: *const OracleQuat,
+    );
+    pub fn oracle_matrix3_rotate_aa(
+        dst: *mut OracleMatrix3,
+        m: *const OracleMatrix3,
+        aa: *const OracleAxisAng,
+    );
+    pub fn oracle_matrix3_scale(
+        dst: *mut OracleMatrix3,
+        m: *const OracleMatrix3,
+        v: *const OracleVec3,
+    );
+    pub fn oracle_matrix3_transpose(dst: *mut OracleMatrix3, m: *const OracleMatrix3);
+    pub fn oracle_matrix3_inv(dst: *mut OracleMatrix3, m: *const OracleMatrix3);
+    pub fn oracle_matrix3_mirror(
+        dst: *mut OracleMatrix3,
+        m: *const OracleMatrix3,
+        p: *const OraclePlane,
+    );
+    pub fn oracle_matrix3_mirrorv(
+        dst: *mut OracleMatrix3,
+        m: *const OracleMatrix3,
+        v: *const OracleVec3,
+    );
 }
 
 unsafe extern "C" {

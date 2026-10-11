@@ -15,7 +15,7 @@ with sync_playwright() as p:
     pg.goto(f"http://127.0.0.1:{srv.server_port}/index.html")
     pg.wait_for_selector("body[data-ready]")
     pg.wait_for_load_state("networkidle")
-    pg.wait_for_timeout(2500)  # entrance animations + avatars
+    pg.wait_for_timeout(1500)  # entrance animations + avatars
     pg.screenshot(path=str(d / "leaderboard.jpg"), type="jpeg", quality=88, full_page=True)
     b.close()
 srv.shutdown()
