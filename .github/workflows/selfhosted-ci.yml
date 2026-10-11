@@ -71,6 +71,10 @@ jobs:
         run: |
           echo "host=$(hostname)"
           for t in cmake ninja ccache cargo nm; do command -v $t >/dev/null || { echo "MISSING: $t"; exit 1; }; done
+      - name: Rust build with the host GCC (compile only)
+        # The gate job's RD hosts carry older GCC. claw's GCC 14 rejects
+        # incompatible pointer types in the C oracles, so build them here too.
+        run: CC=gcc soldr cargo build --workspace --tests --locked
       - name: Tier 2 (native, OFF/ON)
         env:
           # rd4 runs Ubuntu 22.04: GIO is too old for PipeWire, there is no
