@@ -22,6 +22,5 @@
 
 size_t avcapture_audio_plane_count(size_t buffer_list_count)
 {
-	return buffer_list_count < AVCAPTURE_MAX_AUDIO_PLANES ? buffer_list_count
-							      : AVCAPTURE_MAX_AUDIO_PLANES;
+	return buffer_list_count < AVCAPTURE_MAX_AUDIO_PLANES ? buffer_list_count : AVCAPTURE_MAX_AUDIO_PLANES;
 }

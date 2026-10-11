@@ -25,15 +25,13 @@ static void test_under_limit_passes_through(void **state)
 static void test_at_limit_passes_through(void **state)
 {
 	UNUSED_PARAMETER(state);
-	assert_int_equal(avcapture_audio_plane_count(MAX_AV_PLANES_UNDER_TEST),
-			 MAX_AV_PLANES_UNDER_TEST);
+	assert_int_equal(avcapture_audio_plane_count(MAX_AV_PLANES_UNDER_TEST), MAX_AV_PLANES_UNDER_TEST);
 }
 
 static void test_over_limit_is_clamped(void **state)
 {
 	UNUSED_PARAMETER(state);
-	assert_int_equal(avcapture_audio_plane_count(MAX_AV_PLANES_UNDER_TEST + 1),
-			 MAX_AV_PLANES_UNDER_TEST);
+	assert_int_equal(avcapture_audio_plane_count(MAX_AV_PLANES_UNDER_TEST + 1), MAX_AV_PLANES_UNDER_TEST);
 	assert_int_equal(avcapture_audio_plane_count(16), MAX_AV_PLANES_UNDER_TEST);
 	assert_int_equal(avcapture_audio_plane_count(SIZE_MAX), MAX_AV_PLANES_UNDER_TEST);
 }

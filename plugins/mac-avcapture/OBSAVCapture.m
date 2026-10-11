@@ -1447,8 +1447,9 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
                 size_t num_buffers = avcapture_audio_plane_count(bufferList->mNumberBuffers);
                 if (bufferList->mNumberBuffers > MAX_AV_PLANES && !_captureInfo->audioPlanesClampedLogged) {
                     [self AVCaptureLog:LOG_WARNING
-                        withFormat:@"Audio buffer list with %u buffers exceeds MAX_AV_PLANES (%d); extra buffers dropped",
-                                   bufferList->mNumberBuffers, MAX_AV_PLANES];
+                            withFormat:
+                                @"Audio buffer list with %u buffers exceeds MAX_AV_PLANES (%d); extra buffers dropped",
+                                bufferList->mNumberBuffers, MAX_AV_PLANES];
                     _captureInfo->audioPlanesClampedLogged = YES;
                 }
 
