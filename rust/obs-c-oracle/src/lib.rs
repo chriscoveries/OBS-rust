@@ -11,6 +11,8 @@
 //! them.
 
 pub mod array_serializer;
+#[cfg(unix)]
+pub mod audio_io;
 pub mod audio_io_inlines;
 pub mod audio_math;
 pub mod av1;

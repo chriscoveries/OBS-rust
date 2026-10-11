@@ -59,6 +59,10 @@ static const uint8_t *ff_avc_find_startcode_internal(const uint8_t *p, const uin
 
 const uint8_t *obs_nal_find_startcode(const uint8_t *p, const uint8_t *end)
 {
+	/* An empty range may be NULL, NULL; the search below computes end - 3. */
+	if (end <= p)
+		return end;
+
 	const uint8_t *out = ff_avc_find_startcode_internal(p, end);
 	if (p < out && out < end && !out[-1])
 		out--;

@@ -1,0 +1,10 @@
+audio_output_active unix
+audio_output_close unix
+audio_output_connect unix
+audio_output_disconnect unix
+audio_output_get_block_size unix
+audio_output_get_channels unix
+audio_output_get_info unix
+audio_output_get_planes unix
+audio_output_get_sample_rate unix
+audio_output_open unix

@@ -109,8 +109,7 @@ static void open_invalid_params(void **state)
 static void open_getters_stereo(void **state)
 {
 	UNUSED_PARAMETER(state);
-	if (!obs_up)
-		skip();
+	assert_true(obs_up);
 
 	audio_t *audio = NULL;
 	struct audio_output_info info = stereo_info();
@@ -138,8 +137,7 @@ static void open_getters_stereo(void **state)
 static void open_getters_planar(void **state)
 {
 	UNUSED_PARAMETER(state);
-	if (!obs_up)
-		skip();
+	assert_true(obs_up);
 
 	audio_t *audio = NULL;
 	struct audio_output_info info = stereo_info();
@@ -161,8 +159,7 @@ static void open_getters_planar(void **state)
 static void connect_disconnect(void **state)
 {
 	UNUSED_PARAMETER(state);
-	if (!obs_up)
-		skip();
+	assert_true(obs_up);
 
 	audio_t *audio = NULL;
 	struct audio_output_info info = stereo_info();
@@ -252,8 +249,7 @@ static void null_getters_crash(void **state)
 static void input_thread_runs(void **state)
 {
 	UNUSED_PARAMETER(state);
-	if (!obs_up)
-		skip();
+	assert_true(obs_up);
 
 	volatile size_t calls = 0;
 	audio_t *audio = NULL;
@@ -263,12 +259,14 @@ static void input_thread_runs(void **state)
 	assert_int_equal(audio_output_open(&audio, &info), AUDIO_OUTPUT_SUCCESS);
 
 	assert_int_equal(os_event_timedwait(g_input_event, 3000), 0);
-	assert_true(calls > 0);
 
-	/* Join the audio thread before freeing the event it signals. */
+	/* close (stop+join) before destroying the event the callback signals
+	 * or reading the counter it writes */
 	audio_output_close(audio);
+
 	os_event_destroy(g_input_event);
 	g_input_event = NULL;
+	assert_true(calls > 0);
 }
 
 /* Without a running obs core the audio thread dereferences

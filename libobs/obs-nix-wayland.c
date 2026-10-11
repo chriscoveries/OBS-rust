@@ -18,6 +18,7 @@
 #include "obs-internal.h"
 #include "obs-nix-platform.h"
 #include "obs-nix-wayland.h"
+#include "obs-nix-hotkey-state.h"
 
 #include <unistd.h>
 #include <sys/mman.h>
@@ -33,6 +34,7 @@
 
 struct obs_hotkeys_platform {
 	struct wl_display *display;
+	struct wl_registry *registry;
 	struct wl_seat *seat;
 	struct wl_keyboard *keyboard;
 	struct xkb_context *xkb_context;
@@ -41,6 +43,10 @@ struct obs_hotkeys_platform {
 	xkb_keysym_t key_to_sym[MAX_SHIFT_LEVELS][MAX_KEYCODES];
 	xkb_keysym_t obs_to_key[OBS_KEY_LAST_VALUE];
 	uint32_t current_layout;
+
+	/* What the hotkey thread may treat as held: keys pressed while OBS
+	 * has keyboard focus. */
+	struct obs_nix_hotkey_state key_state;
 };
 
 static obs_key_t obs_nix_wayland_key_from_virtual_key(int sym);
@@ -107,7 +113,25 @@ static void platform_keyboard_modifiers(void *data, struct wl_keyboard *keyboard
 	UNUSED_PARAMETER(keyboard);
 	UNUSED_PARAMETER(serial);
 	obs_hotkeys_platform_t *plat = (obs_hotkeys_platform_t *)data;
+	if (!plat->xkb_state)
+		return;
 	xkb_state_update_mask(plat->xkb_state, mods_depressed, mods_latched, mods_locked, 0, 0, group);
+
+	static const struct {
+		const char *name;
+		uint32_t modifier;
+	} modifiers[] = {
+		{XKB_MOD_NAME_SHIFT, INTERACT_SHIFT_KEY},
+		{XKB_MOD_NAME_CTRL, INTERACT_CONTROL_KEY},
+		{XKB_MOD_NAME_ALT, INTERACT_ALT_KEY},
+		{XKB_MOD_NAME_LOGO, INTERACT_COMMAND_KEY},
+	};
+	uint32_t held = 0;
+	for (size_t i = 0; i < sizeof(modifiers) / sizeof(modifiers[0]); i++) {
+		if (xkb_state_mod_name_is_active(plat->xkb_state, modifiers[i].name, XKB_STATE_MODS_DEPRESSED) > 0)
+			held |= modifiers[i].modifier;
+	}
+	obs_nix_hotkey_state_set_modifiers(&plat->key_state, held);
 
 	if (plat->current_layout != group) {
 		plat->current_layout = group;
@@ -115,39 +139,52 @@ static void platform_keyboard_modifiers(void *data, struct wl_keyboard *keyboard
 	}
 }
 
+/* Qt still injects hotkey presses; these events only tell the hotkey thread
+ * which keys are held while OBS has keyboard focus, so it does not release
+ * a binding that is still held (as it can on X11 by querying the server). */
+static void set_focused_key(obs_hotkeys_platform_t *plat, uint32_t key, bool pressed)
+{
+	/* evdev scancode to XKB keycode */
+	xkb_keycode_t keycode = key + 8;
+	if (keycode >= MAX_KEYCODES)
+		return;
+
+	xkb_keysym_t sym = plat->key_to_sym[0][keycode];
+	if (sym)
+		obs_nix_hotkey_state_set_key(&plat->key_state, obs_nix_wayland_key_from_virtual_key(sym), pressed);
+}
+
 static void platform_keyboard_key(void *data, struct wl_keyboard *keyboard, uint32_t serial, uint32_t time,
 				  uint32_t key, uint32_t state)
 {
-	UNUSED_PARAMETER(data);
 	UNUSED_PARAMETER(keyboard);
 	UNUSED_PARAMETER(serial);
 	UNUSED_PARAMETER(time);
-	UNUSED_PARAMETER(key);
-	UNUSED_PARAMETER(state);
-	// We have access to the keyboard input here, but behave like other
-	// platforms and let Qt inform us of key events through the platform
-	// callbacks.
+	set_focused_key(data, key, state == WL_KEYBOARD_KEY_STATE_PRESSED);
 }
 
 static void platform_keyboard_enter(void *data, struct wl_keyboard *keyboard, uint32_t serial,
 				    struct wl_surface *surface, struct wl_array *keys)
 {
-	UNUSED_PARAMETER(data);
 	UNUSED_PARAMETER(keyboard);
 	UNUSED_PARAMETER(serial);
 	UNUSED_PARAMETER(surface);
-	UNUSED_PARAMETER(keys);
-	// Nothing to do here.
+	uint32_t *key;
+	wl_array_for_each(key, keys)
+	{
+		set_focused_key(data, *key, true);
+	}
 }
 
 static void platform_keyboard_leave(void *data, struct wl_keyboard *keyboard, uint32_t serial,
 				    struct wl_surface *surface)
 {
-	UNUSED_PARAMETER(data);
 	UNUSED_PARAMETER(keyboard);
 	UNUSED_PARAMETER(serial);
 	UNUSED_PARAMETER(surface);
-	// Nothing to do.
+	obs_hotkeys_platform_t *plat = data;
+	/* No release events follow for keys held when focus moves away. */
+	obs_nix_hotkey_state_clear_keys(&plat->key_state);
 }
 
 static void platform_keyboard_repeat_info(void *data, struct wl_keyboard *keyboard, int32_t rate, int32_t delay)
@@ -244,14 +281,27 @@ static bool obs_nix_wayland_hotkeys_platform_init(struct obs_core_hotkeys *hotke
 	hotkeys->platform_context->xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 
 	struct wl_registry *registry = wl_display_get_registry(display);
+	hotkeys->platform_context->registry = registry;
 	wl_registry_add_listener(registry, &registry_listener, hotkeys->platform_context);
 	wl_display_roundtrip(display);
+
 	return true;
 }
 
 static void obs_nix_wayland_hotkeys_platform_free(struct obs_core_hotkeys *hotkeys)
 {
 	obs_hotkeys_platform_t *plat = hotkeys->platform_context;
+	/* The listeners point at plat; no events may arrive after this. */
+	if (plat->keyboard)
+		wl_keyboard_release(plat->keyboard);
+	if (plat->seat) {
+		if (wl_seat_get_version(plat->seat) >= WL_SEAT_RELEASE_SINCE_VERSION)
+			wl_seat_release(plat->seat);
+		else
+			wl_seat_destroy(plat->seat);
+	}
+	if (plat->registry)
+		wl_registry_destroy(plat->registry);
 	xkb_context_unref(plat->xkb_context);
 	xkb_keymap_unref(plat->xkb_keymap);
 	xkb_state_unref(plat->xkb_state);
@@ -260,12 +310,9 @@ static void obs_nix_wayland_hotkeys_platform_free(struct obs_core_hotkeys *hotke
 
 static bool obs_nix_wayland_hotkeys_platform_is_pressed(obs_hotkeys_platform_t *context, obs_key_t key)
 {
-	UNUSED_PARAMETER(context);
-	UNUSED_PARAMETER(key);
-	// This function is only used by the hotkey thread for capturing out of
-	// focus hotkey triggers. Since wayland never delivers key events when out
-	// of focus we leave this blank intentionally.
-	return false;
+	// Wayland only delivers key events while OBS has keyboard focus, so
+	// out of focus nothing is ever reported as held.
+	return obs_nix_hotkey_state_is_pressed(&context->key_state, key);
 }
 
 static void obs_nix_wayland_key_to_str(obs_key_t key, struct dstr *dstr)

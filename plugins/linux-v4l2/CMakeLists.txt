@@ -35,6 +35,7 @@ target_sources(
     v4l2-input-caps.c
     v4l2-input.c
     v4l2-output.c
+    vcam-format.c
 )
 
 target_link_libraries(

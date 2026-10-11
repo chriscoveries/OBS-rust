@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdio.h>
 #include <string.h>
 #include <cmocka.h>
 
@@ -36,6 +37,43 @@ static void test_avc_keyframe(void **state)
 	/* the first slice decides */
 	assert_false(obs_avc_keyframe(slice_idr, sizeof(slice_idr)));
 	assert_false(obs_avc_keyframe(sps_only, sizeof(sps_only)));
+}
+
+/* obsproject/obs-studio#13316 (reported by vicho314): when an encoder's
+ * first packet holds only parameter sets, obs_extract_avc_headers moves every
+ * unit into the header and leaves an empty packet whose data is NULL. The
+ * VA-API encoder then called obs_avc_keyframe(NULL, 0), and the start-code
+ * search computed `end - 3` from a NULL end and read address 0. An empty
+ * packet has no slice, so it is not a keyframe, and nothing may be read. */
+static void test_avc_keyframe_empty(void **state)
+{
+	UNUSED_PARAMETER(state);
+
+	uint8_t data[64];
+	size_t size = put_nal(data, sps_high, sizeof(sps_high));
+	size += put_nal(data + size, pps, sizeof(pps));
+
+	uint8_t *packet = NULL, *header = NULL, *sei = NULL;
+	size_t packet_size = 0, header_size = 0, sei_size = 0;
+	obs_extract_avc_headers(data, size, &packet, &packet_size, &header, &header_size, &sei, &sei_size);
+	if (packet_size != 0 || header_size != size) {
+		fprintf(stderr, "header-only packet split as %zu/%zu, expected 0/%zu\n", packet_size, header_size,
+			size);
+		fail();
+	}
+
+	if (obs_avc_keyframe(packet, packet_size)) {
+		fprintf(stderr, "empty packet reported as a keyframe\n");
+		fail();
+	}
+	if (obs_avc_keyframe(NULL, 0)) {
+		fprintf(stderr, "NULL packet reported as a keyframe\n");
+		fail();
+	}
+
+	bfree(packet);
+	bfree(header);
+	bfree(sei);
 }
 
 static void test_avc_parse_packet(void **state)
@@ -172,6 +210,7 @@ int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_avc_keyframe),
+		cmocka_unit_test(test_avc_keyframe_empty),
 		cmocka_unit_test(test_avc_parse_packet),
 		cmocka_unit_test(test_avc_packet_priority),
 		cmocka_unit_test(test_avc_parse_header_high_profile),

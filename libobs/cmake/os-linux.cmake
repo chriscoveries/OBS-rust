@@ -85,7 +85,7 @@ if(ENABLE_WAYLAND)
   find_package(Wayland REQUIRED Client)
   find_package(Xkbcommon REQUIRED)
 
-  target_sources(libobs PRIVATE obs-nix-wayland.c)
+  target_sources(libobs PRIVATE obs-nix-hotkey-state.c obs-nix-hotkey-state.h obs-nix-wayland.c)
   target_link_libraries(libobs PRIVATE Wayland::Client xkbcommon::xkbcommon)
   target_enable_feature(libobs "Wayland compositor support (Linux)")
 else()

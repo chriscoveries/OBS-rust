@@ -711,6 +711,12 @@ static bool vaapi_encode_internal(struct vaapi_encoder *enc, AVFrame *frame, str
 			da_copy_array(enc->buffer, enc->packet->data, enc->packet->size);
 		}
 
+		/* A first packet with only parameter sets leaves nothing to output. */
+		if (!enc->buffer.num) {
+			av_packet_unref(enc->packet);
+			return true;
+		}
+
 		packet->pts = enc->packet->pts;
 		packet->dts = enc->packet->dts;
 		packet->data = enc->buffer.array;

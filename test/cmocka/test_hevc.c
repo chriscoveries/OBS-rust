@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdio.h>
 #include <string.h>
 #include <cmocka.h>
 
@@ -32,6 +33,18 @@ static void test_hevc_keyframe(void **state)
 	assert_false(obs_hevc_keyframe(trail, sizeof(trail)));
 	assert_false(obs_hevc_keyframe(vps_only, sizeof(vps_only)));
 	assert_true(obs_hevc_keyframe(rsv24, sizeof(rsv24)));
+}
+
+/* obsproject/obs-studio#13316: an empty packet (NULL data) is not a keyframe
+ * and must not be read. */
+static void test_hevc_keyframe_empty(void **state)
+{
+	UNUSED_PARAMETER(state);
+
+	if (obs_hevc_keyframe(NULL, 0)) {
+		fprintf(stderr, "NULL packet reported as a keyframe\n");
+		fail();
+	}
 }
 
 static void test_hevc_parse_packet(void **state)
@@ -119,9 +132,8 @@ static void test_hevc_extract_headers(void **state)
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
-		cmocka_unit_test(test_hevc_keyframe),
-		cmocka_unit_test(test_hevc_parse_packet),
-		cmocka_unit_test(test_hevc_packet_priority),
+		cmocka_unit_test(test_hevc_keyframe),        cmocka_unit_test(test_hevc_keyframe_empty),
+		cmocka_unit_test(test_hevc_parse_packet),    cmocka_unit_test(test_hevc_packet_priority),
 		cmocka_unit_test(test_hevc_extract_headers),
 	};
 
