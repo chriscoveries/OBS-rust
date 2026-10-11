@@ -193,9 +193,8 @@ unsafe fn open_pair() -> (*mut c::OracleAudioOutput, *mut c_void) {
         0,
         "oracle open"
     );
-    let mut ro: *mut c_void = ptr::null_mut();
     let out = AudioOutput::open_no_worker(&info_rs(Some(input_rs))).expect("rust open");
-    ro = Box::into_raw(out) as *mut c_void;
+    let ro = Box::into_raw(out) as *mut c_void;
     (co, ro)
 }
 
@@ -630,10 +629,11 @@ fn fresh_clamp_snapshot_parity() {
         assert_eq!(c_tick, r_tick);
         // Mix 1's input joined after the mask snapshot; the C still clamps
         // it, so the unclamped row carries the marker.
-        assert!(c_tick.is_some_and(|t| t
-            .calls
-            .iter()
-            .any(|&(m, _, bits)| m == 1 && bits == 2.5f32.to_bits())));
+        assert!(c_tick.is_some_and(|t| {
+            t.calls
+                .iter()
+                .any(|&(m, _, bits)| m == 1 && bits == 2.5f32.to_bits())
+        }));
         close_pair(co, ro);
         // Contexts outlive close: their param pointers are what callbacks
         // dereferenced.
@@ -663,18 +663,20 @@ fn resample_parity() {
             speakers: SPEAKERS_STEREO,
             allow_clipping: false,
         };
+        // output_c/output_rs record data->frames: a resampled input sees
+        // 256 (the NULL stub left it at the output's 512).
         assert!(c::oracle_audio_output_connect(
             co,
             0,
             &cconv,
-            Some(output_full_c),
+            Some(output_c),
             ptr::null_mut()
         ));
         assert!(rs::audio_output_connect(
             ro,
             0,
             &conv,
-            Some(output_full_rs),
+            Some(output_rs),
             ptr::null_mut()
         ));
         let ra = ro as *mut AudioOutput;
@@ -689,12 +691,13 @@ fn resample_parity() {
         (*ra).tick_for_test(MAGIC + 21_000_000, MAGIC);
         let r_tick = take_tick();
         assert_eq!(c_tick, r_tick);
-        // 48k -> 24k halves the frame count on both sides.
+        // 1024 frames at 48k -> 512 at 24k: resampling ran on both sides
+        // (a same-rate input would hand the callback all 1024 frames; the
+        // NULL stub made the connect fail entirely).
         assert!(c_tick.is_some_and(|t| t.calls.iter().any(|&(_, f, _)| f == 512)));
         close_pair(co, ro);
     }
 }
-
 
 /// Handle the re-entrant callbacks operate on (oracle or rust audio_t).
 struct ReCtx {

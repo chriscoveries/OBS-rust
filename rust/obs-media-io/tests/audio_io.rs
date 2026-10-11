@@ -246,14 +246,15 @@ fn connect_disconnect() {
             ptr::null_mut()
         ));
 
-        // a differing conversion needs a resampler; the test stub has none.
+        // a differing conversion needs a resampler; the oracle's
+        // deterministic resampler satisfies it, so the connect succeeds.
         let other = audio_convert_info {
             samples_per_sec: 44100,
             format: AUDIO_FORMAT_FLOAT,
             speakers: SPEAKERS_STEREO,
             allow_clipping: false,
         };
-        assert!(!audio_output_connect(
+        assert!(audio_output_connect(
             audio,
             2,
             &other,
@@ -264,6 +265,7 @@ fn connect_disconnect() {
         audio_output_disconnect(audio, 0, Some(silent_output), ptr::null_mut());
         audio_output_disconnect(audio, 0, Some(frames_sink), ptr::null_mut());
         audio_output_disconnect(audio, 1, Some(frames_sink), ptr::null_mut());
+        audio_output_disconnect(audio, 2, Some(frames_sink), ptr::null_mut());
         audio_output_disconnect(
             audio,
             0,

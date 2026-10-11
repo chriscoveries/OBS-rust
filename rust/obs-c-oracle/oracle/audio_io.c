@@ -87,28 +87,74 @@ void profile_end(const char *name)
 }
 void profile_reenable_thread(void) {}
 
+/* Deterministic resampler so the parity suite exercises the real resample
+ * path — swapped data pointers and a rate-scaled frame count (the NULL
+ * stub made every resampled connect fail). Nearest-sample conversion by
+ * the src:dst rate ratio; the same code drives oracle and port, so
+ * outputs match bit-for-bit. Models no latency: ts_offset is always 0. */
+struct oracle_resampler {
+	struct resample_info dst;
+	struct resample_info src;
+	uint8_t *buf[MAX_AV_PLANES];
+	size_t buf_bytes[MAX_AV_PLANES];
+	size_t planes;
+	size_t frame_bytes;
+};
+
 audio_resampler_t *audio_resampler_create(const struct resample_info *dst, const struct resample_info *src)
 {
-	(void)dst;
-	(void)src;
-	return NULL;
+	struct oracle_resampler *r = bzalloc(sizeof(*r));
+	if (!r)
+		return NULL;
+
+	r->dst = *dst;
+	r->src = *src;
+	r->planes = is_audio_planar(dst->format) ? get_audio_channels(dst->speakers) : 1;
+	r->frame_bytes = (is_audio_planar(dst->format) ? 1 : get_audio_channels(dst->speakers)) *
+			 get_audio_bytes_per_channel(dst->format);
+	if (!r->planes || !r->frame_bytes || !dst->samples_per_sec || !src->samples_per_sec) {
+		bfree(r);
+		return NULL;
+	}
+	return r;
 }
 
 void audio_resampler_destroy(audio_resampler_t *resampler)
 {
-	(void)resampler;
+	struct oracle_resampler *r = resampler;
+	if (!r)
+		return;
+	for (size_t p = 0; p < MAX_AV_PLANES; p++)
+		bfree(r->buf[p]);
+	bfree(r);
 }
 
 bool audio_resampler_resample(audio_resampler_t *resampler, uint8_t *output[], uint32_t *out_frames,
 			      uint64_t *ts_offset, const uint8_t *const input[], uint32_t in_frames)
 {
-	(void)resampler;
-	(void)output;
-	(void)out_frames;
-	(void)ts_offset;
-	(void)input;
-	(void)in_frames;
-	return false;
+	struct oracle_resampler *r = resampler;
+	uint32_t out = (uint32_t)((uint64_t)in_frames * r->dst.samples_per_sec / r->src.samples_per_sec);
+
+	for (size_t p = 0; p < r->planes; p++) {
+		size_t need = (size_t)out * r->frame_bytes;
+		if (r->buf_bytes[p] < need) {
+			bfree(r->buf[p]);
+			r->buf[p] = bzalloc(need);
+			if (!r->buf[p])
+				return false;
+			r->buf_bytes[p] = need;
+		}
+		for (uint32_t i = 0; i < out; i++) {
+			uint32_t src_frame = (uint32_t)((uint64_t)i * r->src.samples_per_sec /
+							r->dst.samples_per_sec);
+			memcpy(r->buf[p] + (size_t)i * r->frame_bytes,
+			       input[p] + (size_t)src_frame * r->frame_bytes, r->frame_bytes);
+		}
+		output[p] = r->buf[p];
+	}
+	*out_frames = out;
+	*ts_offset = 0;
+	return true;
 }
 
 /* ------------------------------------------------------------------ */
