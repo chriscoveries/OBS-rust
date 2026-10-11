@@ -542,6 +542,28 @@ impl AudioOutput {
     /// failure returns the C error code and — like the C — leaves nothing
     /// behind.
     pub fn open(info: &audio_output_info) -> Result<Box<AudioOutput>, c_int> {
+        let mut out = Self::build(info)?;
+
+        let ptr = SendShared(&*out.shared as *const Shared);
+        let handle = std::thread::Builder::new().spawn(move || audio_thread(ptr.into_inner()));
+        match handle {
+            Ok(h) => out.thread = Some(h),
+            Err(_) => return Err(AUDIO_OUTPUT_FAIL),
+        }
+
+        out.initialized = true;
+        Ok(out)
+    }
+
+    /// Test-only fixture: the same object with no audio thread. A driver
+    /// owns every tick via `tick_for_test`, so an explicit tick can never
+    /// race the worker's buffer writes or lock acquisitions.
+    #[doc(hidden)]
+    pub fn open_no_worker(info: &audio_output_info) -> Result<Box<AudioOutput>, c_int> {
+        Self::build(info)
+    }
+
+    fn build(info: &audio_output_info) -> Result<Box<AudioOutput>, c_int> {
         if !Self::valid_audio_params(info) {
             return Err(AUDIO_OUTPUT_INVALIDPARAM);
         }
@@ -572,20 +594,11 @@ impl AudioOutput {
             return Err(AUDIO_OUTPUT_FAIL);
         }
 
-        let mut out = Box::new(AudioOutput {
+        let out = Box::new(AudioOutput {
             shared,
             thread: None,
             initialized: false,
         });
-
-        let ptr = SendShared(&*out.shared as *const Shared);
-        let handle = std::thread::Builder::new().spawn(move || audio_thread(ptr.into_inner()));
-        match handle {
-            Ok(h) => out.thread = Some(h),
-            Err(_) => return Err(AUDIO_OUTPUT_FAIL),
-        }
-
-        out.initialized = true;
         Ok(out)
     }
 

@@ -1,11 +1,14 @@
 //! Tier 3: the Rust audio-io C ABI behaves exactly like the original C,
 //! compiled as an oracle. State is compared through identical call
-//! sequences; ticks are driven explicitly with a magic `start_ts` so the
-//! real audio threads' asynchronous input-callback invocations are ignored.
+//! sequences; ticks are driven explicitly on NO-WORKER fixtures
+//! (`oracle_audio_output_open_no_thread` / `AudioOutput::open_no_worker`),
+//! so the driver owns the tick path exclusively — no audio thread races
+//! buffer fills, the input lock, or the recorded state. `is_magic_ts`
+//! still gates every record so no stray timestamp can pollute it.
 //!
-//! `audio_resampler_create` is stubbed to NULL inside the oracle, so both
-//! sides refuse a `conversion` that differs from the output's own format —
-//! the parity check covers the refusal path, not resampling itself.
+//! The oracle supplies a deterministic resampler (nearest-sample by the
+//! src:dst rate ratio), so a rate-differing conversion exercises the real
+//! resample path on both sides.
 //!
 //! Unix-first: the port is `#[cfg(unix)]`; Windows keeps media-io/audio-io.c.
 
@@ -30,16 +33,16 @@ const SPEAKERS_STEREO: c_int = 2;
 const MAGIC: u64 = 0x1eaf_dead_beef;
 
 /// True only for timestamps produced by explicit `*_tick(MAGIC+d)` calls.
-/// The real worker threads both sides spawn carry `os_gettime_ns` values
-/// (~1e18 ns) and must never inject records: every recorded action below
-/// checks this gate, not just the input callbacks.
+/// Worker threads (none in these fixtures) carry `os_gettime_ns` values
+/// (~1e18 ns); every recorded action below checks this gate regardless, so
+/// a callback invoked anywhere else can never inject a record.
 fn is_magic_ts(ts: u64) -> bool {
     (MAGIC..MAGIC.wrapping_add(1_000_000_000)).contains(&ts)
 }
 
-/// Serializes the whole test driver: `open` spawns real audio threads on
-/// both sides, so every test holds this for its entire body — otherwise
-/// parallel `#[test]`s would interleave into the shared TICK/ORDER state.
+/// Serializes the whole test driver: every test holds this for its entire
+/// body so parallel `#[test]`s can't interleave into the shared
+/// TICK/ORDER state.
 static DRIVER: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, PartialEq, Eq)]
@@ -177,26 +180,31 @@ fn info_c(cb: c::OracleAudioOutputCallback) -> c::OracleAudioOutputInfo {
     }
 }
 
-/// Open both sides; return the oracle handle and the Rust handle (which is
-/// the `*mut c_void` `audio_t`, i.e. `*mut AudioOutput`).
+/// Open both sides with NO audio thread: every tick a test sees is one it
+/// drove explicitly, so the driver owns the tick path exclusively — no
+/// worker races buffer fills, the lock, or the recorded state.
+/// Returns the oracle handle and the Rust handle (`*mut c_void` `audio_t`).
 unsafe fn open_pair() -> (*mut c::OracleAudioOutput, *mut c_void) {
-    // Every open needs a real input callback: the spawned audio thread
-    // invokes it unconditionally, so a NULL cb faults on both sides.
     let mut co: *mut c::OracleAudioOutput = ptr::null_mut();
     let mut info = info_c(None);
     info.input_callback = Some(input_c);
     assert_eq!(
-        unsafe { c::oracle_audio_output_open(&mut co, &mut info) },
+        unsafe { c::oracle_audio_output_open_no_thread(&mut co, &mut info) },
         0,
         "oracle open"
     );
     let mut ro: *mut c_void = ptr::null_mut();
-    assert_eq!(
-        unsafe { rs::audio_output_open(&mut ro, &mut info_rs(Some(input_rs))) },
-        rs::AUDIO_OUTPUT_SUCCESS,
-        "rust open"
-    );
+    let out = AudioOutput::open_no_worker(&info_rs(Some(input_rs))).expect("rust open");
+    ro = Box::into_raw(out) as *mut c_void;
     (co, ro)
+}
+
+/// Close the no-worker pair (counterparts of `open_pair`).
+unsafe fn close_pair(co: *mut c::OracleAudioOutput, ro: *mut c_void) {
+    unsafe {
+        c::oracle_audio_output_close_no_thread(co);
+        rs::audio_output_close(ro);
+    }
 }
 
 /// The C ABI in parameter order on both sides.
@@ -230,8 +238,7 @@ fn getters_match() {
         assert_eq!(ci.samples_per_sec, ri.samples_per_sec);
         assert_eq!(ci.format, ri.format);
         assert_eq!(ci.speakers, ri.speakers);
-        c::oracle_audio_output_close(co);
-        rs::audio_output_close(ro);
+        close_pair(co, ro);
     }
 }
 
@@ -299,8 +306,7 @@ fn connect_disconnect_match() {
             c::oracle_audio_output_active(co),
             rs::audio_output_active(ro)
         );
-        c::oracle_audio_output_close(co);
-        rs::audio_output_close(ro);
+        close_pair(co, ro);
     }
 }
 
@@ -313,13 +319,9 @@ fn tick_is_identical() {
         let mut co: *mut c::OracleAudioOutput = ptr::null_mut();
         let mut info = info_c(None);
         info.input_callback = Some(input_c);
-        assert_eq!(c::oracle_audio_output_open(&mut co, &mut info), 0);
-        let mut ro: *mut c_void = ptr::null_mut();
-        let mut ri = info_rs(Some(input_rs));
-        assert_eq!(
-            rs::audio_output_open(&mut ro, &mut ri),
-            rs::AUDIO_OUTPUT_SUCCESS
-        );
+        assert_eq!(c::oracle_audio_output_open_no_thread(&mut co, &mut info), 0);
+        let ri = info_rs(Some(input_rs));
+        let ro = Box::into_raw(AudioOutput::open_no_worker(&ri).expect("rust open")) as *mut c_void;
         let mut tag: usize = 0;
         c::oracle_audio_output_connect(
             co,
@@ -350,8 +352,7 @@ fn tick_is_identical() {
         (*ra).tick_for_test(MAGIC + 42_000_000, MAGIC);
         assert_eq!(c_tick, take_tick());
 
-        c::oracle_audio_output_close(co);
-        rs::audio_output_close(ro);
+        close_pair(co, ro);
     }
 }
 
@@ -460,11 +461,10 @@ proptest::proptest! {
             let mut ci = info_c(None);
             ci.input_callback = Some(input_marked_c);
             ci.input_param = marker;
-            assert_eq!(c::oracle_audio_output_open(&mut co, &mut ci), 0);
-            let mut ro: *mut c_void = ptr::null_mut();
+            assert_eq!(c::oracle_audio_output_open_no_thread(&mut co, &mut ci), 0);
             let mut ri = info_rs(Some(input_marked_rs));
             ri.input_param = marker;
-            assert_eq!(rs::audio_output_open(&mut ro, &mut ri), rs::AUDIO_OUTPUT_SUCCESS);
+            let ro = Box::into_raw(AudioOutput::open_no_worker(&ri).expect("rust open")) as *mut c_void;
 
             for (i, clip) in clip_flags.iter().enumerate().take(n_inputs) {
                 if *clip {
@@ -502,8 +502,7 @@ proptest::proptest! {
             let r_tick = take_tick();
             assert_eq!(c_tick, r_tick, "marker={marker_bits:#x} delta={prev_delta} n={n_inputs}");
 
-            c::oracle_audio_output_close(co);
-            rs::audio_output_close(ro);
+            close_pair(co, ro);
         }
     }
 }
@@ -513,7 +512,7 @@ proptest::proptest! {
 /* callback program runs on the oracle and on the port, and the        */
 /* recorded order must be identical. Each ctx carries the handle the    */
 /* re-entrant callback needs; everything is gated on is_magic_ts so    */
-/* the real worker ticks can never fire these paths.                    */
+/* stray ticks can never fire these paths.                             */
 
 // --- fresh clamp snapshot (item 2) ------------------------------------
 // The C's clamp pass checks `!mix->inputs.num` AFTER the input callback —
@@ -595,7 +594,7 @@ fn fresh_clamp_snapshot_parity() {
         ci.input_callback = Some(fs_input_c);
         ci.input_param = &*cctx as *const ReCtx as *mut c_void;
         let mut co: *mut c::OracleAudioOutput = ptr::null_mut();
-        assert_eq!(c::oracle_audio_output_open(&mut co, &mut ci), 0);
+        assert_eq!(c::oracle_audio_output_open_no_thread(&mut co, &mut ci), 0);
         cctx.audio = co as *mut c_void;
 
         let mut rctx = Box::new(ReCtx {
@@ -604,11 +603,7 @@ fn fresh_clamp_snapshot_parity() {
         });
         let mut ri = info_rs(Some(fs_input_rs));
         ri.input_param = &*rctx as *const ReCtx as *mut c_void;
-        let mut ro: *mut c_void = ptr::null_mut();
-        assert_eq!(
-            rs::audio_output_open(&mut ro, &mut ri),
-            rs::AUDIO_OUTPUT_SUCCESS
-        );
+        let ro = Box::into_raw(AudioOutput::open_no_worker(&ri).expect("rust open")) as *mut c_void;
         rctx.audio = ro;
 
         // One ordinary input on mix 0 so active_mixes is non-zero.
@@ -639,8 +634,7 @@ fn fresh_clamp_snapshot_parity() {
             .calls
             .iter()
             .any(|&(m, _, bits)| m == 1 && bits == 2.5f32.to_bits())));
-        c::oracle_audio_output_close(co);
-        rs::audio_output_close(ro);
+        close_pair(co, ro);
         // Contexts outlive close: their param pointers are what callbacks
         // dereferenced.
         let _ = (cctx, rctx);
@@ -697,8 +691,7 @@ fn resample_parity() {
         assert_eq!(c_tick, r_tick);
         // 48k -> 24k halves the frame count on both sides.
         assert!(c_tick.is_some_and(|t| t.calls.iter().any(|&(_, f, _)| f == 512)));
-        c::oracle_audio_output_close(co);
-        rs::audio_output_close(ro);
+        close_pair(co, ro);
     }
 }
 
@@ -798,8 +791,7 @@ fn self_disconnect_parity() {
         );
         // Only the self-disconnecting input is gone; `other` survives.
         assert_eq!(c::oracle_audio_mix_input_count(co, 0), 1);
-        c::oracle_audio_output_close(co);
-        rs::audio_output_close(ro);
+        close_pair(co, ro);
     }
 }
 
@@ -918,8 +910,7 @@ fn earlier_input_removal_parity() {
             c::oracle_audio_mix_input_count(co, 0),
             (*ra).mix_input_count_for_test(0)
         );
-        c::oracle_audio_output_close(co);
-        rs::audio_output_close(ro);
+        close_pair(co, ro);
     }
 }
 
@@ -1050,8 +1041,7 @@ fn vec_growth_parity() {
         let r_order = take_order();
         assert_eq!(c_order, r_order);
         assert_eq!(c_order, [5, 4, 3, 2, 1]);
-        c::oracle_audio_output_close(co);
-        rs::audio_output_close(ro);
+        close_pair(co, ro);
     }
 }
 
@@ -1162,7 +1152,6 @@ fn concurrent_connect_disconnect_parity() {
             c::oracle_audio_mix_input_count(co, 1),
             (*ra).mix_input_count_for_test(1)
         );
-        c::oracle_audio_output_close(co);
-        rs::audio_output_close(ro);
+        close_pair(co, ro);
     }
 }

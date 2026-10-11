@@ -119,6 +119,48 @@ void oracle_audio_tick(audio_t *audio, uint64_t audio_time, uint64_t prev_time)
 	input_and_output(audio, audio_time, prev_time);
 }
 
+/* No-worker fixture: an audio_output with no audio thread, so a test owns
+ * every tick via oracle_audio_tick — no worker races the driver. The
+ * recursive input_mutex is still real: connect/disconnect lock it. */
+int oracle_audio_output_open_no_thread(audio_t **audio, struct audio_output_info *info)
+{
+	struct audio_output *out;
+	bool planar;
+
+	if (!valid_audio_params(info))
+		return AUDIO_OUTPUT_INVALIDPARAM;
+
+	planar = is_audio_planar(info->format);
+	out = bzalloc(sizeof(struct audio_output));
+	if (!out)
+		return AUDIO_OUTPUT_FAIL;
+
+	memcpy(&out->info, info, sizeof(struct audio_output_info));
+	out->channels = get_audio_channels(info->speakers);
+	out->planes = planar ? out->channels : 1;
+	out->input_cb = info->input_callback;
+	out->input_param = info->input_param;
+	out->block_size = (planar ? 1 : out->channels) * get_audio_bytes_per_channel(info->format);
+
+	if (pthread_mutex_init_recursive(&out->input_mutex) != 0) {
+		bfree(out);
+		return AUDIO_OUTPUT_FAIL;
+	}
+
+	/* initialized stays false: no stop_event or thread exists; the close
+	 * below destroys the mutex itself then frees the inputs like the C. */
+	*audio = out;
+	return AUDIO_OUTPUT_SUCCESS;
+}
+
+void oracle_audio_output_close_no_thread(audio_t *audio)
+{
+	if (!audio)
+		return;
+	pthread_mutex_destroy(&audio->input_mutex);
+	audio_output_close(audio); /* initialized==false: frees inputs + bfree */
+}
+
 size_t oracle_audio_mix_input_count(audio_t *audio, size_t mix_idx)
 {
 	return audio->mixes[mix_idx].inputs.num;

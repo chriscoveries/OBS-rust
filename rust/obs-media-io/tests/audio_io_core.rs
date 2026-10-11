@@ -2,7 +2,7 @@
 //! safe methods — no `unsafe` at the call sites (the extern "C" callbacks
 //! themselves keep the `unsafe` marker their ABI requires).
 //!
-//! The audio thread and the callbacks run for real here: `os_*` timing and
+//! The no-worker fixtures make every tick explicit here: `os_*` timing and
 //! the profiler/resampler symbols resolve into the oracle staticlib's POSIX
 //! threading build plus its stubs, like the FFI-level Tier 1 file.
 //!
@@ -14,9 +14,9 @@ use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Serializes the explicit-tick tests: the real audio worker never produces a
-/// MAGIC start_ts, but the shared counters can still race across parallel
-/// test bodies (several `tick_for_test(MAGIC)` calls at once).
+/// Serializes the explicit-tick tests on no-worker fixtures: the shared
+/// counters can still race across parallel test bodies (several
+/// `tick_for_test(MAGIC)` calls at once).
 static DRIVER: Mutex<()> = Mutex::new(());
 
 use obs_c_oracle as _;
@@ -87,7 +87,7 @@ fn stereo_info() -> audio_output_info {
 fn output_callback_runs_each_tick() {
     let _drive = lock_driver();
     reset_counts();
-    let out = AudioOutput::open(&stereo_info()).expect("open");
+    let out = AudioOutput::open_no_worker(&stereo_info()).expect("open");
     assert!(out.connect(0, None, Some(counting_output), ptr::null_mut()));
 
     out.tick_for_test(MAGIC + 21_000_000, MAGIC);
@@ -105,7 +105,7 @@ fn tick_without_input_callback_is_noop() {
     let _drive = lock_driver();
     let mut info = stereo_info();
     info.input_callback = None;
-    let out = AudioOutput::open(&info).expect("open");
+    let out = AudioOutput::open_no_worker(&info).expect("open");
     out.tick_for_test(MAGIC + 21_000_000, MAGIC);
 }
 
@@ -117,7 +117,7 @@ fn tick_without_input_callback_is_noop() {
 fn null_output_callback_connects_and_stays_silent() {
     let _drive = lock_driver();
     reset_counts();
-    let out = AudioOutput::open(&stereo_info()).expect("open");
+    let out = AudioOutput::open_no_worker(&stereo_info()).expect("open");
     assert!(out.connect(0, None, None, ptr::null_mut()));
     assert!(out.active());
 
@@ -147,7 +147,7 @@ fn output_callback_may_disconnect_itself() {
         unsafe { &*ctx.audio }.disconnect(0, Some(self_disconnecting), param);
     }
 
-    let out = Box::new(AudioOutput::open(&stereo_info()).expect("open"));
+    let out = Box::new(AudioOutput::open_no_worker(&stereo_info()).expect("open"));
     let ctx = Ctx {
         audio: &**out,
         hits: AtomicUsize::new(0),
@@ -197,7 +197,7 @@ fn output_callback_may_connect_a_new_input() {
         unsafe { &*ctx.audio }.connect(0, None, Some(second_cb), param);
     }
 
-    let out = Box::new(AudioOutput::open(&stereo_info()).expect("open"));
+    let out = Box::new(AudioOutput::open_no_worker(&stereo_info()).expect("open"));
     let ctx = Box::new(Ctx {
         audio: &**out,
         second: AtomicUsize::new(0),
@@ -266,7 +266,7 @@ fn clamping_respects_allow_clipping() {
 
     let mut info = stereo_info();
     info.input_callback = Some(writing_input);
-    let out = AudioOutput::open(&info).expect("open");
+    let out = AudioOutput::open_no_worker(&info).expect("open");
     assert!(out.connect(0, None, Some(clipped_cb), ptr::null_mut()));
     let conv = audio_convert_info {
         samples_per_sec: 0,

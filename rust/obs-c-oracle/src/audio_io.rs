@@ -89,6 +89,13 @@ unsafe extern "C" {
     ) -> *const OracleAudioOutputInfo;
 
     pub fn oracle_audio_tick(audio: *mut OracleAudioOutput, audio_time: u64, prev_time: u64);
+    /// No-worker fixture: open/close an `audio_output` with no audio
+    /// thread — the driver owns every tick via `oracle_audio_tick`.
+    pub fn oracle_audio_output_open_no_thread(
+        audio: *mut *mut OracleAudioOutput,
+        info: *mut OracleAudioOutputInfo,
+    ) -> c_int;
+    pub fn oracle_audio_output_close_no_thread(audio: *mut OracleAudioOutput);
     pub fn oracle_audio_mix_input_count(audio: *mut OracleAudioOutput, mix_idx: usize) -> usize;
     pub fn oracle_audio_mix_input_resampled(
         audio: *mut OracleAudioOutput,
