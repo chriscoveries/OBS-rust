@@ -4611,7 +4611,7 @@ DecodeTEA(AVal *key, AVal *text)
         u = (HEX2BIN(ptr[0]) << 4) + HEX2BIN(ptr[1]);
         u |= ((HEX2BIN(ptr[2]) << 4) + HEX2BIN(ptr[3])) << 8;
         u |= ((HEX2BIN(ptr[4]) << 4) + HEX2BIN(ptr[5])) << 16;
-        u |= ((HEX2BIN(ptr[6]) << 4) + HEX2BIN(ptr[7])) << 24;
+        u |= (uint32_t)((HEX2BIN(ptr[6]) << 4) + HEX2BIN(ptr[7])) << 24;
         *v++ = u;
         ptr += 8;
     }
