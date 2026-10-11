@@ -99,15 +99,19 @@ mod unix {
     /// `audio` must point to writable `audio_t` storage and `info` to a valid
     /// `struct audio_output_info` for the duration of the call; the returned
     /// handle owns a thread that keeps calling `info.input_callback` until
-    /// `audio_output_close`.
+    /// `audio_output_close`. `info.name` must stay a valid NUL-terminated
+    /// string for the handle's whole life (the shallow info copy keeps the
+    /// pointer and the worker formats it), and `info.input_param` must stay
+    /// valid until close.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn audio_output_open(
         audio: *mut *mut c_void,
         info: *mut audio_output_info,
     ) -> c_int {
         // SAFETY: caller provides a valid info pointer per the C contract (a
-        // NULL info faults in the C and here alike).
-        match AudioOutput::open(unsafe { &*info }) {
+        // NULL info faults in the C and here alike); `info.name`/`input_param`
+        // validity is the caller's per the doc contract above.
+        match unsafe { AudioOutput::open(&*info) } {
             Ok(out) => {
                 // SAFETY: caller provides a valid out-pointer slot.
                 unsafe { *audio = Box::into_raw(out) as *mut c_void };
@@ -117,10 +121,14 @@ mod unix {
         }
     }
 
-    /// `audio_output_close`.
+    /// `audio_output_close`. Stops and joins the worker before freeing any
+    /// input state, so input callbacks are never invoked after close
+    /// returns.
     ///
     /// # Safety
-    /// `audio` must be a handle from `audio_output_open` not yet closed, or NULL.
+    /// `audio` must be a handle from `audio_output_open` not yet closed, or
+    /// NULL. Every context passed to `audio_output_connect` on this handle
+    /// must survive until close returns.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn audio_output_close(audio: *mut c_void) {
         if audio.is_null() {
@@ -133,8 +141,13 @@ mod unix {
     /// `audio_output_connect`.
     ///
     /// # Safety
-    /// `audio` must be a live handle; `conversion`, when non-NULL, must point to
-    /// a valid `struct audio_convert_info`.
+    /// `audio` must be a live handle; `conversion`, when non-NULL, must point
+    /// to a valid `struct audio_convert_info`. `param` must stay valid until
+    /// a matching `audio_output_disconnect` or `audio_output_close` — and
+    /// outlive any in-flight callback return. `callback` is invoked on the
+    /// audio worker thread with the recursive input lock held; it may
+    /// re-enter `audio_output_connect`/`disconnect`/`active` on the same
+    /// thread only (re-entry from another thread blocks on the lock).
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn audio_output_connect(
         audio: *mut c_void,
@@ -156,7 +169,9 @@ mod unix {
     /// `audio_output_disconnect`.
     ///
     /// # Safety
-    /// `audio` must be a live handle or NULL.
+    /// `audio` must be a live handle or NULL. Disconnecting frees the
+    /// input's resampler state; the `param` context itself must still
+    /// outlive any in-flight dispatch of `callback` on the worker thread.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn audio_output_disconnect(
         audio: *mut c_void,

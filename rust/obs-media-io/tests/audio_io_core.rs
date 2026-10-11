@@ -1,6 +1,9 @@
-//! Tier 1 on the safe core: every call below goes through [`AudioOutput`]'s
-//! safe methods — no `unsafe` at the call sites (the extern "C" callbacks
-//! themselves keep the `unsafe` marker their ABI requires).
+//! Tier 1 on the safe core: every call goes through [`AudioOutput`]'s raw
+//! boundary. `open`/`connect`/`tick_for_test` are `unsafe` with documented
+//! name/context/thread contracts, so the boundary calls sit inside
+//! `unsafe` here — the fixture arguments (no worker, one driver, `'static`
+//! name and context) are what satisfy them, argued once in the helpers
+//! below.
 //!
 //! The no-worker fixtures make every tick explicit here: `os_*` timing and
 //! the profiler/resampler symbols resolve into the oracle staticlib's POSIX
@@ -81,16 +84,46 @@ fn stereo_info() -> audio_output_info {
     }
 }
 
+/// Fixture open: SAFETY — `info.name` is a `'static` C string and every
+/// fixture has no worker, so no live worker ticks against these calls.
+fn open_fixture(info: &audio_output_info) -> Box<AudioOutput> {
+    unsafe { AudioOutput::open_no_worker(info) }.expect("open")
+}
+
+/// Fixture connect: SAFETY — the param points at a stack/heap context that
+/// outlives the output's drop, and the callbacks tolerate this thread.
+fn connect(
+    out: &AudioOutput,
+    mi: usize,
+    conv: Option<&audio_convert_info>,
+    cb: obs_media_io::ffi::audio_io::audio_output_callback_t,
+    param: *mut core::ffi::c_void,
+) -> bool {
+    unsafe { out.connect(mi, conv, cb, param) }
+}
+
+/// Fixture tick: SAFETY — no-worker object, and `lock_driver()` serializes
+/// the single driver across parallel test bodies.
+fn drive(out: &AudioOutput, now: u64, prev: u64) {
+    unsafe { out.tick_for_test(now, prev) };
+}
+
 /// Mutation guard: a tick must actually dispatch the output callback —
 /// deleting the call site in `do_audio_output` fails this test.
 #[test]
 fn output_callback_runs_each_tick() {
     let _drive = lock_driver();
     reset_counts();
-    let out = AudioOutput::open_no_worker(&stereo_info()).expect("open");
-    assert!(out.connect(0, None, Some(counting_output), ptr::null_mut()));
+    let out = open_fixture(&stereo_info());
+    assert!(connect(
+        &out,
+        0,
+        None,
+        Some(counting_output),
+        ptr::null_mut()
+    ));
 
-    out.tick_for_test(MAGIC + 21_000_000, MAGIC);
+    drive(&out, MAGIC + 21_000_000, MAGIC);
 
     assert_eq!(INPUT_CALLS.load(Ordering::SeqCst), 1);
     assert_eq!(OUTPUT_CALLS.load(Ordering::SeqCst), 1);
@@ -105,8 +138,8 @@ fn tick_without_input_callback_is_noop() {
     let _drive = lock_driver();
     let mut info = stereo_info();
     info.input_callback = None;
-    let out = AudioOutput::open_no_worker(&info).expect("open");
-    out.tick_for_test(MAGIC + 21_000_000, MAGIC);
+    let out = open_fixture(&info);
+    drive(&out, MAGIC + 21_000_000, MAGIC);
 }
 
 /// `callback == NULL` output input: the C accepts the connect and then
@@ -117,11 +150,11 @@ fn tick_without_input_callback_is_noop() {
 fn null_output_callback_connects_and_stays_silent() {
     let _drive = lock_driver();
     reset_counts();
-    let out = AudioOutput::open_no_worker(&stereo_info()).expect("open");
-    assert!(out.connect(0, None, None, ptr::null_mut()));
+    let out = open_fixture(&stereo_info());
+    assert!(connect(&out, 0, None, None, ptr::null_mut()));
     assert!(out.active());
 
-    out.tick_for_test(MAGIC + 21_000_000, MAGIC);
+    drive(&out, MAGIC + 21_000_000, MAGIC);
     assert_eq!(OUTPUT_CALLS.load(Ordering::SeqCst), 0);
 }
 
@@ -144,22 +177,24 @@ fn output_callback_may_disconnect_itself() {
     ) {
         let ctx = unsafe { &*(param as *const Ctx) };
         ctx.hits.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: `param` is this fixture's `ctx`, valid until drop.
         unsafe { &*ctx.audio }.disconnect(0, Some(self_disconnecting), param);
     }
 
-    let out = Box::new(AudioOutput::open_no_worker(&stereo_info()).expect("open"));
+    let out = Box::new(open_fixture(&stereo_info()));
     let ctx = Ctx {
         audio: &**out,
         hits: AtomicUsize::new(0),
     };
-    assert!(out.connect(
+    assert!(connect(
+        &out,
         0,
         None,
         Some(self_disconnecting),
         &ctx as *const Ctx as *mut core::ffi::c_void
     ));
 
-    out.tick_for_test(MAGIC + 21_000_000, MAGIC);
+    drive(&out, MAGIC + 21_000_000, MAGIC);
 
     assert_eq!(ctx.hits.load(Ordering::SeqCst), 1);
     assert!(!out.active());
@@ -194,23 +229,25 @@ fn output_callback_may_connect_a_new_input() {
         _data: *mut audio_data,
     ) {
         let ctx = unsafe { &*(param as *const Ctx) };
-        unsafe { &*ctx.audio }.connect(0, None, Some(second_cb), param);
+        // SAFETY: `param` is this fixture's `ctx`, valid until drop; this
+        // is a same-thread re-entrant connect under the held lock.
+        unsafe { (&*ctx.audio).connect(0, None, Some(second_cb), param) };
     }
 
-    let out = Box::new(AudioOutput::open_no_worker(&stereo_info()).expect("open"));
+    let out = Box::new(open_fixture(&stereo_info()));
     let ctx = Box::new(Ctx {
         audio: &**out,
         second: AtomicUsize::new(0),
     });
     let param = &*ctx as *const Ctx as *mut core::ffi::c_void;
-    assert!(out.connect(0, None, Some(connector), param));
+    assert!(connect(&out, 0, None, Some(connector), param));
 
-    out.tick_for_test(MAGIC + 21_000_000, MAGIC);
+    drive(&out, MAGIC + 21_000_000, MAGIC);
     // C's loop bound is fixed at dispatch start: the appended input is not
     // invoked this tick.
     assert_eq!(ctx.second.load(Ordering::SeqCst), 0);
 
-    out.tick_for_test(MAGIC + 42_000_000, MAGIC);
+    drive(&out, MAGIC + 42_000_000, MAGIC);
     assert!(ctx.second.load(Ordering::SeqCst) >= 1);
     // `ctx` must outlive the last tick: the callback param points at it.
     let _ = &ctx;
@@ -266,17 +303,17 @@ fn clamping_respects_allow_clipping() {
 
     let mut info = stereo_info();
     info.input_callback = Some(writing_input);
-    let out = AudioOutput::open_no_worker(&info).expect("open");
-    assert!(out.connect(0, None, Some(clipped_cb), ptr::null_mut()));
+    let out = open_fixture(&info);
+    assert!(connect(&out, 0, None, Some(clipped_cb), ptr::null_mut()));
     let conv = audio_convert_info {
         samples_per_sec: 0,
         format: 0,
         speakers: 0,
         allow_clipping: true,
     };
-    assert!(out.connect(0, Some(&conv), Some(raw_cb), ptr::null_mut()));
+    assert!(connect(&out, 0, Some(&conv), Some(raw_cb), ptr::null_mut()));
 
-    out.tick_for_test(MAGIC + 21_000_000, MAGIC);
+    drive(&out, MAGIC + 21_000_000, MAGIC);
 
     assert_eq!(SEEN[0].load(Ordering::SeqCst), 1.0f32.to_bits() as usize);
     assert_eq!(SEEN[1].load(Ordering::SeqCst), 2.5f32.to_bits() as usize);

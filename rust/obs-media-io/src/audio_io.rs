@@ -24,8 +24,10 @@
 //! Unsafe-location exception (policy §unsafe): the audio thread shares state
 //! with FFI callers, so `Shared` carries one `UnsafeCell` behind the lock —
 //! the C does the same with `pthread_mutex_*` on the same fields. All unsafe
-//! stays in single-statement accessors with SAFETY comments; the public core
-//! API (`open`/`connect`/`disconnect`/`active`/`tick_for_test`/drop) is safe.
+//! stays in single-statement accessors with SAFETY comments. The raw
+//! C-shaped boundary — `open`/`open_no_worker`/`connect`/`tick_for_test` —
+//! is `unsafe` with documented name/context/thread contracts; `disconnect`,
+//! `active` and drop retain nothing new and stay safe.
 //!
 //! Documented deviations from the C (all unreachable-but-defined inputs):
 //! - `input_callback == NULL`: the C calls the pointer unconditionally and
@@ -541,7 +543,25 @@ impl AudioOutput {
     /// `audio_output_open` body: validate, build, start the thread. On
     /// failure returns the C error code and — like the C — leaves nothing
     /// behind.
-    pub fn open(info: &audio_output_info) -> Result<Box<AudioOutput>, c_int> {
+    ///
+    /// # Safety
+    /// `info.name` must point to a valid NUL-terminated string that stays
+    /// valid for the output's whole life — the shallow `info` copy keeps
+    /// the pointer and the worker passes it to `%s` formatting. An input
+    /// callback/context given in `info` must stay callable until close.
+    ///
+    /// An unchecked safe call does not compile:
+    /// ```compile_fail
+    /// use obs_media_io::audio_io::AudioOutput;
+    /// use obs_media_io::ffi::audio_io::audio_output_info;
+    /// let info = audio_output_info {
+    ///     name: c"x".as_ptr(), samples_per_sec: 48000, format: 4,
+    ///     speakers: 2, input_callback: None,
+    ///     input_param: core::ptr::null_mut(),
+    /// };
+    /// let _ = AudioOutput::open(&info);
+    /// ```
+    pub unsafe fn open(info: &audio_output_info) -> Result<Box<AudioOutput>, c_int> {
         let mut out = Self::build(info)?;
 
         let ptr = SendShared(&*out.shared as *const Shared);
@@ -558,8 +578,12 @@ impl AudioOutput {
     /// Test-only fixture: the same object with no audio thread. A driver
     /// owns every tick via `tick_for_test`, so an explicit tick can never
     /// race the worker's buffer writes or lock acquisitions.
+    ///
+    /// # Safety
+    /// Same `info.name`/input-callback validity contract as `open`; every
+    /// `tick_for_test` must additionally come from one driver thread.
     #[doc(hidden)]
-    pub fn open_no_worker(info: &audio_output_info) -> Result<Box<AudioOutput>, c_int> {
+    pub unsafe fn open_no_worker(info: &audio_output_info) -> Result<Box<AudioOutput>, c_int> {
         Self::build(info)
     }
 
@@ -609,7 +633,28 @@ impl AudioOutput {
     /// `callback == NULL` is accepted like the C's connect, but the dead
     /// call is skipped at dispatch instead of faulting (documented
     /// deviation); the input stays active.
-    pub fn connect(
+    ///
+    /// # Safety
+    /// `param` must stay valid until a matching `disconnect` or the
+    /// output's close — and must outlive any in-flight callback return.
+    /// `callback` runs on the audio worker thread (or the single driver
+    /// thread in a no-worker fixture) with the recursive input lock held;
+    /// it may re-enter `connect`/`disconnect`/`active` on the same thread
+    /// only.
+    ///
+    /// An unchecked safe call does not compile:
+    /// ```compile_fail
+    /// use obs_media_io::audio_io::AudioOutput;
+    /// use obs_media_io::ffi::audio_io::audio_output_info;
+    /// let info = audio_output_info {
+    ///     name: c"x".as_ptr(), samples_per_sec: 48000, format: 4,
+    ///     speakers: 2, input_callback: None,
+    ///     input_param: core::ptr::null_mut(),
+    /// };
+    /// let out = unsafe { AudioOutput::open_no_worker(&info) }.unwrap();
+    /// let _ = out.connect(0, None, None, core::ptr::null_mut());
+    /// ```
+    pub unsafe fn connect(
         &self,
         mi: usize,
         conversion: Option<&crate::ffi::audio_io::audio_convert_info>,
@@ -708,8 +753,14 @@ impl AudioOutput {
 
     /// Test hooks for the Tier-3 parity test: the same tick and mix
     /// introspection the C oracle exports as `oracle_audio_*`.
+    ///
+    /// # Safety
+    /// Only on objects from `open_no_worker` — a live worker ticks
+    /// concurrently outside this call — and only from a single driver:
+    /// `AudioOutput` is `Sync`, so simultaneous `tick_for_test` calls on one
+    /// object would overlap buffer writes outside `input_mutex`.
     #[doc(hidden)]
-    pub fn tick_for_test(&self, audio_time: u64, prev_time: u64) {
+    pub unsafe fn tick_for_test(&self, audio_time: u64, prev_time: u64) {
         self.shared.input_and_output(audio_time, prev_time);
     }
 
