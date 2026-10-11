@@ -23,7 +23,7 @@ extern "C" {
 
 /* AVFoundation AudioBufferList::mNumberBuffers value that fits the fixed
  * plane table OBSAVCaptureAudioFrame carries. Extra device buffers are
- * dropped, mirroring MAX_AV_PLANES in libobs/audio-monitoring. */
+ * dropped, mirroring MAX_AV_PLANES in libobs media-io-defs.h. */
 size_t avcapture_audio_plane_count(size_t buffer_list_count);
 
 #ifdef __cplusplus

@@ -15,12 +15,11 @@
 
 #include "avcapture-audio-planes.h"
 
-/* Same plane table size as MAX_AV_PLANES in libobs/audio-monitoring: the
- * obs_source_audio data[] and OBSAVCaptureAudioFrame::data tables both
- * carry exactly this many plane pointers. */
-#define AVCAPTURE_MAX_AUDIO_PLANES 8
+#include <media-io/media-io-defs.h>
 
+/* obs_source_audio::data[] and OBSAVCaptureAudioFrame::data both carry a
+ * fixed table of MAX_AV_PLANES (media-io-defs.h) plane pointers. */
 size_t avcapture_audio_plane_count(size_t buffer_list_count)
 {
-	return buffer_list_count < AVCAPTURE_MAX_AUDIO_PLANES ? buffer_list_count : AVCAPTURE_MAX_AUDIO_PLANES;
+	return buffer_list_count < MAX_AV_PLANES ? buffer_list_count : MAX_AV_PLANES;
 }
