@@ -1177,9 +1177,9 @@ AMF3_DecodeDepth(AMFObject *obj, const char *pBuffer, int nSize, int bAMFData,
             /*std::string str = className; */
 
             RTMP_Log(RTMP_LOGDEBUG,
-                     "Class name: %s, externalizable: %d, dynamic: %d, classMembers: %d",
-                     cd.cd_name.av_val, cd.cd_externalizable, cd.cd_dynamic,
-                     cd.cd_num);
+                     "Class name: %.*s, externalizable: %d, dynamic: %d, classMembers: %d",
+                     (int)cd.cd_name.av_len, cd.cd_name.av_val, cd.cd_externalizable,
+                     cd.cd_dynamic, cd.cd_num);
 
             for (i = 0; i < cdnum; i++)
             {
