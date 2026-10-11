@@ -32,6 +32,7 @@ enum sck_stop_wait_result sck_wait_for_stop(os_event_t *stop_completed, unsigned
 
 bool sck_stop_may_free(enum sck_stop_wait_result result)
 {
-	UNUSED_PARAMETER(result);
-	return true;
+	/* On timeout the completion block can still fire and touch the
+	 * event, so the capture must be leaked rather than freed. */
+	return result != SCK_STOP_WAIT_TIMEOUT;
 }
