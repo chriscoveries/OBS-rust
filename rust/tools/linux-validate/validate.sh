@@ -39,6 +39,12 @@ git config --global --add safe.directory /src
 mkdir -p /src
 rsync -a --delete --exclude /target /ro/ /src/
 cd /src
+# The image ships only rustup's 'stable'; install the channel
+# rust-toolchain.toml pins so Corrosion's FindRust can resolve it.
+if [ -f rust-toolchain.toml ]; then
+  channel=$(grep -oE 'channel *= *"[^"]+"' rust-toolchain.toml | grep -oE '"[^"]+"' | tr -d '"')
+  rustup toolchain install --profile minimal "$channel"
+fi
 for sub in plugins/obs-browser plugins/obs-websocket; do
   if [ -z "$(ls -A "$sub" 2>/dev/null)" ]; then
     git submodule update --init --depth 1 "$sub"
