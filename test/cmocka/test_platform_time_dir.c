@@ -26,6 +26,8 @@
 #define P_GLOB_A ROOT "/glob/a.txt"
 #define P_GLOB_B ROOT "/glob/b.txt"
 #define P_GLOB_C ROOT "/glob/c.bin"
+#define D_GLOB2 ROOT "/glob2"
+#define P_GLOB2_A ROOT "/glob2/a.txt"
 
 static int group_setup(void **state)
 {
@@ -42,8 +44,10 @@ static int group_teardown(void **state)
 	os_unlink(P_GLOB_A);
 	os_unlink(P_GLOB_B);
 	os_unlink(P_GLOB_C);
+	os_unlink(P_GLOB2_A);
 	os_rmdir(D_GLOB_SUB);
 	os_rmdir(D_GLOB);
+	os_rmdir(D_GLOB2);
 	os_rmdir(ROOT);
 	return 0;
 }
@@ -175,13 +179,15 @@ static void test_glob_flags_ignored(void **state)
 {
 	UNUSED_PARAMETER(state);
 
-	assert_int_equal(os_mkdir(D_GLOB), MKDIR_SUCCESS);
-	assert_true(write_str(P_GLOB_A, "a"));
+	/* own fixture dir: fixtures are only removed in group_teardown, and
+	 * test_glob_matches_and_flags leaves D_GLOB populated */
+	assert_int_equal(os_mkdir(D_GLOB2), MKDIR_SUCCESS);
+	assert_true(write_str(P_GLOB2_A, "a"));
 
 	/* characterized, not endorsed: the flags argument is ignored entirely,
 	 * the call always passes 0 to glob(3) */
 	os_glob_t *g = NULL;
-	int ret = os_glob(ROOT "/glob/*.txt", 999, &g);
+	int ret = os_glob(ROOT "/glob2/*.txt", 999, &g);
 	assert_int_equal(ret, 0);
 	assert_non_null(g);
 	assert_int_equal(g->gl_pathc, 1);
