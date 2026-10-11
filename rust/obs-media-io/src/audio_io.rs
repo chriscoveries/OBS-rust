@@ -853,7 +853,8 @@ mod port {
         /// `callback` runs on the audio worker thread (or the single driver
         /// thread in a no-worker fixture) with the recursive input lock held;
         /// it may re-enter `connect`/`disconnect`/`active` on the same thread
-        /// only.
+        /// only — never drop/close the output from inside it (joining the
+        /// calling worker thread is UB, as it is in the C).
         ///
         /// An unchecked safe call does not compile:
         /// ```compile_fail

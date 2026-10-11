@@ -17,7 +17,7 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use obs_c_oracle as _;
 use obs_c_oracle::audio_io as c;
@@ -1382,12 +1382,13 @@ fn vec_growth_parity() {
 /// must survive any in-flight callback return. Calls are counted in the
 /// context itself so validity is observable after close.
 struct RealCtx {
-    audio: *mut c_void,
+    // Written after `open` returns (the worker may already run): atomic so
+    // the callback sees the published handle, not a torn/empty read.
+    audio: AtomicPtr<c_void>,
     input_calls: AtomicUsize,
     output_calls: AtomicUsize,
     self_disc_calls: AtomicUsize,
 }
-unsafe impl Sync for RealCtx {}
 
 unsafe extern "C" fn real_input(
     p: *mut c_void,
@@ -1416,15 +1417,20 @@ unsafe extern "C" fn real_self_disconnect(p: *mut c_void, m: usize, _d: *mut rs:
     ctx.self_disc_calls.fetch_add(1, Ordering::SeqCst);
     // In-flight callback disconnects itself, then must still return
     // through valid `ctx` — the param outlives the disconnect.
-    // SAFETY: same-thread re-entrant call under the held recursive lock.
-    unsafe { &*(ctx.audio as *const AudioOutput) }.disconnect(m, Some(real_self_disconnect), p);
+    // SAFETY: same-thread re-entrant call under the held recursive lock;
+    // `audio` was published before `connect` took the lock.
+    unsafe { &*(ctx.audio.load(Ordering::SeqCst) as *const AudioOutput) }.disconnect(
+        m,
+        Some(real_self_disconnect),
+        p,
+    );
 }
 
 #[test]
 fn real_worker_close_join() {
     let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
-    let mut ctx = Box::new(RealCtx {
-        audio: ptr::null_mut(),
+    let ctx = Box::new(RealCtx {
+        audio: AtomicPtr::new(ptr::null_mut()),
         input_calls: AtomicUsize::new(0),
         output_calls: AtomicUsize::new(0),
         self_disc_calls: AtomicUsize::new(0),
@@ -1440,7 +1446,12 @@ fn real_worker_close_join() {
     // SAFETY: `info.name` is a 'static string; `ctx` is boxed and read
     // only after drop returns (stop+join complete).
     let mut out = unsafe { AudioOutput::open(&info) }.expect("open");
-    ctx.audio = &mut *out as *mut AudioOutput as *mut c_void;
+    // Publish the handle before `connect` serializes it: the worker reads
+    // `ctx.audio` inside the dispatch callback under the input lock.
+    ctx.audio.store(
+        &mut *out as *mut AudioOutput as *mut c_void,
+        Ordering::SeqCst,
+    );
     // SAFETY: `ctx` outlives both the disconnect below and `out`'s drop.
     unsafe {
         out.connect(
@@ -1456,14 +1467,29 @@ fn real_worker_close_join() {
             &*ctx as *const RealCtx as *mut c_void,
         );
     }
-    // Let several real ticks run (~21.3ms each).
-    std::thread::sleep(std::time::Duration::from_millis(80));
+    // Scheduler-independent waits: spin on the counters the callbacks bump —
+    // a tick that never runs fails the test instead of guessing at timing.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while ctx.input_calls.load(Ordering::SeqCst) == 0
+        || ctx.output_calls.load(Ordering::SeqCst) == 0
+        || ctx.self_disc_calls.load(Ordering::SeqCst) == 0
+    {
+        std::hint::spin_loop();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "real worker never ticked: input={} output={} self_disc={}",
+            ctx.input_calls.load(Ordering::SeqCst),
+            ctx.output_calls.load(Ordering::SeqCst),
+            ctx.self_disc_calls.load(Ordering::SeqCst)
+        );
+    }
     let calls_before = ctx.self_disc_calls.load(Ordering::SeqCst);
     drop(out);
-    // After close/join: no further callbacks can run — counts are stable.
-    std::thread::sleep(std::time::Duration::from_millis(60));
-    assert!(ctx.input_calls.load(Ordering::SeqCst) > 0);
-    assert!(ctx.output_calls.load(Ordering::SeqCst) > 0);
+    // Close's join is complete: the worker is dead, so no callback can run
+    // during or after it — counts are frozen. A short window gives any
+    // (broken) stray callback a chance to trip the alarm; a correct close
+    // passes regardless of timing.
+    std::thread::sleep(std::time::Duration::from_millis(50));
     let calls_after = ctx.self_disc_calls.load(Ordering::SeqCst);
     assert!(calls_after >= 1 && calls_after == calls_before);
     // `ctx` itself is still valid here — input context survived stop/join,
@@ -1505,14 +1531,18 @@ unsafe extern "C" fn cd_b_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data)
 unsafe extern "C" fn cd_hammer_c(_p: *mut c_void, _m: usize, _d: *mut c::OracleAudioData) {}
 unsafe extern "C" fn cd_hammer_rs(_p: *mut c_void, _m: usize, _d: *mut rs::audio_data) {}
 
-/// Spin until `ctr` reaches `want`; bounded so a missed gate can't hang.
+/// Spin until both counters reach `want`; a gate that never arrives fails
+/// the test loudly instead of letting unsynchronized churn race on.
 fn wait_churn(c: &AtomicUsize, r: &AtomicUsize, want: usize) {
-    let mut spins = 0u64;
-    while (c.load(Ordering::SeqCst) < want || r.load(Ordering::SeqCst) < want)
-        && spins < 200_000_000
-    {
-        spins += 1;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while c.load(Ordering::SeqCst) < want || r.load(Ordering::SeqCst) < want {
         std::hint::spin_loop();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "churn gate timed out: c={} r={} want={want}",
+            c.load(Ordering::SeqCst),
+            r.load(Ordering::SeqCst)
+        );
     }
 }
 
@@ -1568,10 +1598,13 @@ fn concurrent_connect_disconnect_parity() {
                     // Only issue churn once this iteration's dispatch is
                     // underway (callback ran -> input lock held), so the
                     // ops queue on the mutex instead of racing a clamp.
-                    let mut spins = 0u64;
-                    while C_DISPATCHED.load(Ordering::SeqCst) <= iter && spins < 200_000_000 {
-                        spins += 1;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    while C_DISPATCHED.load(Ordering::SeqCst) <= iter {
                         std::hint::spin_loop();
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "c dispatch gate timed out at iter {iter}"
+                        );
                     }
                     for _ in 0..10 {
                         c::oracle_audio_output_connect(co, 1, ptr::null(), Some(cd_hammer_c), hp);
@@ -1584,10 +1617,13 @@ fn concurrent_connect_disconnect_parity() {
                 let ro = ro_addr as *mut c_void;
                 let hp = hp_addr as *mut c_void;
                 for iter in 0..10usize {
-                    let mut spins = 0u64;
-                    while RS_DISPATCHED.load(Ordering::SeqCst) <= iter && spins < 200_000_000 {
-                        spins += 1;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    while RS_DISPATCHED.load(Ordering::SeqCst) <= iter {
                         std::hint::spin_loop();
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "rs dispatch gate timed out at iter {iter}"
+                        );
                     }
                     for _ in 0..10 {
                         rs::audio_output_connect(ro, 1, ptr::null(), Some(cd_hammer_rs), hp);

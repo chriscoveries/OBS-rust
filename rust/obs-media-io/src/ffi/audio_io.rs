@@ -180,12 +180,16 @@ mod unix {
 
     /// `audio_output_close`. Stops and joins the worker before freeing any
     /// input state, so input callbacks are never invoked after close
-    /// returns.
+    /// returns. The join is a full barrier: callbacks run only on the
+    /// worker thread, so none can execute during or after the join.
     ///
     /// # Safety
     /// `audio` must be a handle from `audio_output_open` not yet closed, or
     /// NULL. Every context passed to `audio_output_connect` on this handle
-    /// must survive until close returns.
+    /// must survive until close returns. Must not be called from inside an
+    /// input or output callback — re-entrant close joins the calling
+    /// worker thread, UB here exactly as `pthread_join` on the calling
+    /// thread is UB in the C.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn audio_output_close(audio: *mut c_void) {
         if audio.is_null() {
@@ -204,7 +208,9 @@ mod unix {
     /// outlive any in-flight callback return. `callback` is invoked on the
     /// audio worker thread with the recursive input lock held; it may
     /// re-enter `audio_output_connect`/`disconnect`/`active` on the same
-    /// thread only (re-entry from another thread blocks on the lock).
+    /// thread only (re-entry from another thread blocks on the lock) —
+    /// never `audio_output_close`: joining the calling worker thread is
+    /// UB, as it is in the C.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn audio_output_connect(
         audio: *mut c_void,
