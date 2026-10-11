@@ -91,7 +91,14 @@ void profile_reenable_thread(void) {}
  * path — swapped data pointers and a rate-scaled frame count (the NULL
  * stub made every resampled connect fail). Nearest-sample conversion by
  * the src:dst rate ratio; the same code drives oracle and port, so
- * outputs match bit-for-bit. Models no latency: ts_offset is always 0. */
+ * outputs match bit-for-bit. A carried sub-frame remainder models
+ * latency: a non-integer rate ratio yields a nonzero ts_offset.
+ *
+ * Rate-only test double: it copies source planes using the destination
+ * plane count/stride, so a format/speaker-layout change would read the
+ * input with the wrong layout (interleaved-to-planar stereo has no
+ * input[1]). Such conversions are rejected at create time instead of
+ * pretending full conversion support. */
 struct oracle_resampler {
 	struct resample_info dst;
 	struct resample_info src;
@@ -99,6 +106,10 @@ struct oracle_resampler {
 	size_t buf_bytes[MAX_AV_PLANES];
 	size_t planes;
 	size_t frame_bytes;
+	/* carried sub-frame remainder, like a real resampler's: keeps the
+	 * deterministic out-frame count honest on non-integer rate ratios
+	 * and feeds the reported ts_offset */
+	uint64_t residue;
 };
 
 audio_resampler_t *audio_resampler_create(const struct resample_info *dst, const struct resample_info *src)
@@ -106,6 +117,11 @@ audio_resampler_t *audio_resampler_create(const struct resample_info *dst, const
 	struct oracle_resampler *r = bzalloc(sizeof(*r));
 	if (!r)
 		return NULL;
+
+	if (src->format != dst->format || src->speakers != dst->speakers) {
+		bfree(r);
+		return NULL;
+	}
 
 	r->dst = *dst;
 	r->src = *src;
@@ -133,7 +149,9 @@ bool audio_resampler_resample(audio_resampler_t *resampler, uint8_t *output[], u
 			      uint64_t *ts_offset, const uint8_t *const input[], uint32_t in_frames)
 {
 	struct oracle_resampler *r = resampler;
-	uint32_t out = (uint32_t)((uint64_t)in_frames * r->dst.samples_per_sec / r->src.samples_per_sec);
+	uint64_t acc = r->residue + (uint64_t)in_frames * r->dst.samples_per_sec;
+	uint32_t out = (uint32_t)(acc / r->src.samples_per_sec);
+	r->residue = acc % r->src.samples_per_sec;
 
 	for (size_t p = 0; p < r->planes; p++) {
 		size_t need = (size_t)out * r->frame_bytes;
@@ -153,7 +171,9 @@ bool audio_resampler_resample(audio_resampler_t *resampler, uint8_t *output[], u
 		output[p] = r->buf[p];
 	}
 	*out_frames = out;
-	*ts_offset = 0;
+	/* residue/src_rate of a dst frame, in ns — nonzero on non-integer
+	 * ratios, which is what the separate ts-offset parity case wants */
+	*ts_offset = r->residue * 1000000000ull / r->src.samples_per_sec / r->dst.samples_per_sec;
 	return true;
 }
 

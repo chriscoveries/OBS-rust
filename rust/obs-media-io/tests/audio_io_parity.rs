@@ -17,6 +17,7 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use obs_c_oracle as _;
 use obs_c_oracle::audio_io as c;
@@ -193,7 +194,7 @@ unsafe fn open_pair() -> (*mut c::OracleAudioOutput, *mut c_void) {
         0,
         "oracle open"
     );
-    let out = AudioOutput::open_no_worker(&info_rs(Some(input_rs))).expect("rust open");
+    let out = unsafe { AudioOutput::open_no_worker(&info_rs(Some(input_rs))) }.expect("rust open");
     let ro = Box::into_raw(out) as *mut c_void;
     (co, ro)
 }
@@ -527,6 +528,16 @@ unsafe extern "C" fn fs_new_rs(_p: *mut c_void, m: usize, d: *mut rs::audio_data
     let d = unsafe { &*d };
     record_output(m, d.timestamp, d.frames, d.data[0] as *const f32);
 }
+// A clamped sibling on the same mid-callback-connected mix: it must see
+// the [-1,1] clamped buffer where the allow_clipping input sees raw 2.5.
+unsafe extern "C" fn fs_clamped_c(_p: *mut c_void, m: usize, d: *mut c::OracleAudioData) {
+    let d = unsafe { &*d };
+    record_output(m, d.timestamp, d.frames, d.data[0] as *const f32);
+}
+unsafe extern "C" fn fs_clamped_rs(_p: *mut c_void, m: usize, d: *mut rs::audio_data) {
+    let d = unsafe { &*d };
+    record_output(m, d.timestamp, d.frames, d.data[0] as *const f32);
+}
 
 // Connect an allow_clipping input to the (initially empty) mix 1 during
 // the input callback, and write an out-of-range marker into its buffer.
@@ -553,6 +564,21 @@ unsafe extern "C" fn fs_input_c(
         unsafe {
             c::oracle_audio_output_connect(ctx.audio as _, 1, &conv, Some(fs_new_c), ctx.extra)
         };
+        let conv_clamped = c::OracleAudioConvertInfo {
+            samples_per_sec: 0,
+            format: 0,
+            speakers: 0,
+            allow_clipping: false,
+        };
+        unsafe {
+            c::oracle_audio_output_connect(
+                ctx.audio as _,
+                1,
+                &conv_clamped,
+                Some(fs_clamped_c),
+                ctx.extra,
+            )
+        };
     }
     true
 }
@@ -575,6 +601,15 @@ unsafe extern "C" fn fs_input_rs(
             allow_clipping: true,
         };
         unsafe { rs::audio_output_connect(ctx.audio, 1, &conv, Some(fs_new_rs), ctx.extra) };
+        let conv_clamped = rs::audio_convert_info {
+            samples_per_sec: 0,
+            format: 0,
+            speakers: 0,
+            allow_clipping: false,
+        };
+        unsafe {
+            rs::audio_output_connect(ctx.audio, 1, &conv_clamped, Some(fs_clamped_rs), ctx.extra)
+        };
     }
     true
 }
@@ -627,12 +662,18 @@ fn fresh_clamp_snapshot_parity() {
         (*ra).tick_for_test(MAGIC + 21_000_000, MAGIC);
         let r_tick = take_tick();
         assert_eq!(c_tick, r_tick);
-        // Mix 1's input joined after the mask snapshot; the C still clamps
-        // it, so the unclamped row carries the marker.
+        // Mix 1's inputs joined after the mask snapshot; the C still
+        // clamps it, so the allow_clipping row carries raw 2.5 while its
+        // clamped sibling sees 1.0 — and the recorded mask keeps only the
+        // originally-active mix 0.
         assert!(c_tick.is_some_and(|t| {
             t.calls
                 .iter()
                 .any(|&(m, _, bits)| m == 1 && bits == 2.5f32.to_bits())
+                && t.calls
+                    .iter()
+                    .any(|&(m, _, bits)| m == 1 && bits == 1.0f32.to_bits())
+                && t.active_mixes == 0b1
         }));
         close_pair(co, ro);
         // Contexts outlive close: their param pointers are what callbacks
@@ -699,10 +740,295 @@ fn resample_parity() {
     }
 }
 
+/// Failure cases, kept separate from the rate-only success case: the
+/// oracle's resampler double is rate-only — a format or speaker-layout
+/// conversion is rejected at resampler create, so connect fails
+/// identically on both sides and the mix stays empty.
+#[test]
+fn resample_failure_parity() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let (co, ro) = open_pair();
+        for (rate, format, speakers) in [
+            (24000u32, 8, SPEAKERS_STEREO), // format differs (planar f32)
+            (24000u32, FORMAT_FLOAT, 4),    // speaker layout differs
+            (48000u32, 8, 4),               // both differ
+        ] {
+            let conv = rs::audio_convert_info {
+                samples_per_sec: rate,
+                format,
+                speakers,
+                allow_clipping: false,
+            };
+            let cconv = c::OracleAudioConvertInfo {
+                samples_per_sec: rate,
+                format,
+                speakers,
+                allow_clipping: false,
+            };
+            let c_ok =
+                c::oracle_audio_output_connect(co, 0, &cconv, Some(output_c), ptr::null_mut());
+            let r_ok = rs::audio_output_connect(ro, 0, &conv, Some(output_rs), ptr::null_mut());
+            assert_eq!(
+                c_ok, r_ok,
+                "rate={rate} format={format} speakers={speakers}"
+            );
+            assert!(!c_ok);
+        }
+        let ra = ro as *mut AudioOutput;
+        assert_eq!(
+            c::oracle_audio_mix_input_count(co, 0),
+            (*ra).mix_input_count_for_test(0)
+        );
+        assert_eq!(c::oracle_audio_mix_input_count(co, 0), 0);
+        close_pair(co, ro);
+    }
+}
+
+/// Timestamp+frames recorder for the ts-offset case: unlike
+/// `record_output` it keeps `d.timestamp`, which the resample path shifts
+/// by the reported offset.
+static TS_LOG: Mutex<Vec<(usize, u32, u64)>> = Mutex::new(Vec::new());
+
+fn take_ts_log() -> Vec<(usize, u32, u64)> {
+    std::mem::take(&mut *TS_LOG.lock().unwrap())
+}
+
+unsafe extern "C" fn ts_output_rs(_p: *mut c_void, mix_idx: usize, data: *mut rs::audio_data) {
+    let d = unsafe { &*data };
+    TS_LOG
+        .lock()
+        .unwrap()
+        .push((mix_idx, d.frames, d.timestamp));
+}
+unsafe extern "C" fn ts_output_c(_p: *mut c_void, mix_idx: usize, data: *mut c::OracleAudioData) {
+    let d = unsafe { &*data };
+    TS_LOG
+        .lock()
+        .unwrap()
+        .push((mix_idx, d.frames, d.timestamp));
+}
+
+/// Nonzero timestamp-offset case, separate from the rate-only success
+/// case: a non-integer rate ratio makes the double's carried remainder
+/// report a nonzero ts_offset, exercising `data.timestamp -= offset`.
+#[test]
+fn resample_ts_offset_parity() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let (co, ro) = open_pair();
+        // 48k mix buffer resampled into a 44.1k input: 1024 in -> 940 out + residue.
+        let conv = rs::audio_convert_info {
+            samples_per_sec: 44100,
+            format: FORMAT_FLOAT,
+            speakers: SPEAKERS_STEREO,
+            allow_clipping: false,
+        };
+        let cconv = c::OracleAudioConvertInfo {
+            samples_per_sec: 44100,
+            format: FORMAT_FLOAT,
+            speakers: SPEAKERS_STEREO,
+            allow_clipping: false,
+        };
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            &cconv,
+            Some(ts_output_c),
+            ptr::null_mut()
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            &conv,
+            Some(ts_output_rs),
+            ptr::null_mut()
+        ));
+        let ra = ro as *mut AudioOutput;
+
+        c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
+        let c_log = take_ts_log();
+        (*ra).tick_for_test(MAGIC + 21_000_000, MAGIC);
+        let r_log = take_ts_log();
+        assert_eq!(c_log, r_log);
+        // 1024*44100/48000 = 940.8 -> 940 frames; residue 38400 gives
+        // ts_offset = 38400e9/(44100*48000) = 18140 ns shifted off new_ts.
+        assert_eq!(c_log, [(0usize, 940u32, MAGIC + 21_000_000 - 18140)]);
+        close_pair(co, ro);
+    }
+}
+
 /// Handle the re-entrant callbacks operate on (oracle or rust audio_t).
 struct ReCtx {
     audio: *mut c_void,
     extra: *mut c_void,
+}
+
+// --- activation during input ---------------------------------------------
+
+/// The mask the input callback already received and the tags the
+/// activated input pushed, in order.
+static AD_MASK: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+static AD_C_ARMED: AtomicUsize = AtomicUsize::new(0);
+static AD_RS_ARMED: AtomicUsize = AtomicUsize::new(0);
+
+fn take_ad_mask() -> Vec<u32> {
+    std::mem::take(&mut *AD_MASK.lock().unwrap())
+}
+
+unsafe extern "C" fn ad_base_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn ad_base_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn ad_new_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(9);
+    }
+}
+unsafe extern "C" fn ad_new_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(9);
+    }
+}
+
+unsafe extern "C" fn ad_input_c(
+    p: *mut c_void,
+    start: u64,
+    end: u64,
+    new_ts: *mut u64,
+    active: u32,
+    _mixes: *mut c::OracleAudioOutputData,
+) -> bool {
+    if start != MAGIC {
+        return true;
+    }
+    AD_MASK.lock().unwrap().push(active);
+    unsafe { *new_ts = end };
+    let ctx = unsafe { &*(p as *const ReCtx) };
+    if AD_C_ARMED.swap(1, Ordering::SeqCst) == 0 {
+        unsafe {
+            c::oracle_audio_output_connect(
+                ctx.audio as _,
+                1,
+                ptr::null(),
+                Some(ad_new_c),
+                ctx.extra,
+            )
+        };
+    }
+    true
+}
+
+unsafe extern "C" fn ad_input_rs(
+    p: *mut c_void,
+    start: u64,
+    end: u64,
+    new_ts: *mut u64,
+    active: u32,
+    _mixes: *mut rs::audio_output_data,
+) -> bool {
+    if start != MAGIC {
+        return true;
+    }
+    AD_MASK.lock().unwrap().push(active);
+    unsafe { *new_ts = end };
+    let ctx = unsafe { &*(p as *const ReCtx) };
+    if AD_RS_ARMED.swap(1, Ordering::SeqCst) == 0 {
+        unsafe { rs::audio_output_connect(ctx.audio, 1, ptr::null(), Some(ad_new_rs), ctx.extra) };
+    }
+    true
+}
+
+/// A connect issued inside the input callback activates an input on this
+/// same tick — the dispatch re-reads the registry after `input_cb`
+/// returns — while the `active` mask that call already received predates
+/// the connect. The C and the port must agree on both halves.
+#[test]
+fn activation_during_input_parity() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let mut cctx = ReCtx {
+            audio: ptr::null_mut(),
+            extra: ptr::null_mut(),
+        };
+        let mut rctx = ReCtx {
+            audio: ptr::null_mut(),
+            extra: ptr::null_mut(),
+        };
+        let mut co: *mut c::OracleAudioOutput = ptr::null_mut();
+        let mut cinfo = info_c(None);
+        cinfo.input_callback = Some(ad_input_c);
+        cinfo.input_param = &cctx as *const ReCtx as *mut c_void;
+        assert_eq!(
+            c::oracle_audio_output_open_no_thread(&mut co, &mut cinfo),
+            0
+        );
+        let mut rinfo = info_rs(Some(ad_input_rs));
+        rinfo.input_param = &rctx as *const ReCtx as *mut c_void;
+        let ro = Box::into_raw(AudioOutput::open_no_worker(&rinfo).unwrap()) as *mut c_void;
+        let ra = ro as *mut AudioOutput;
+        cctx.audio = co as *mut c_void;
+        rctx.audio = ro;
+        assert!(!cctx.audio.is_null() && !rctx.audio.is_null());
+
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(ad_base_c),
+            ptr::null_mut()
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(ad_base_rs),
+            ptr::null_mut()
+        ));
+
+        AD_C_ARMED.store(0, Ordering::SeqCst);
+        AD_RS_ARMED.store(0, Ordering::SeqCst);
+        // Tick 1: mask saw only mix 0, yet the just-connected mix-1 input
+        // still dispatches on this same tick.
+        take_ad_mask();
+        take_order();
+        c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
+        let c_order = take_order();
+        let c_mask = take_ad_mask();
+        take_ad_mask();
+        take_order();
+        (*ra).tick_for_test(MAGIC + 21_000_000, MAGIC);
+        let r_order = take_order();
+        let r_mask = take_ad_mask();
+        assert_eq!(c_order, r_order);
+        assert_eq!(c_mask, r_mask);
+        assert_eq!(c_order, [1, 9]);
+        assert_eq!(c_mask, [1]);
+
+        // Tick 2: the new input stays connected; now the mask lists both.
+        take_order();
+        take_ad_mask();
+        c::oracle_audio_tick(co, MAGIC + 31_000_000, MAGIC);
+        let c_order = take_order();
+        let c_mask = take_ad_mask();
+        take_order();
+        take_ad_mask();
+        (*ra).tick_for_test(MAGIC + 31_000_000, MAGIC);
+        let r_order = take_order();
+        let r_mask = take_ad_mask();
+        assert_eq!(c_order, r_order);
+        assert_eq!(c_mask, r_mask);
+        assert_eq!(c_order, [1, 9]);
+        assert_eq!(c_mask, [3]);
+
+        close_pair(co, ro);
+    }
 }
 
 // --- self-disconnect -------------------------------------------------
@@ -1048,6 +1374,103 @@ fn vec_growth_parity() {
     }
 }
 
+// --- real-worker close/join lifetime --------------------------------------
+
+/// Valid-context close/join fixture: a REAL worker (unsafe `open`, oracle
+/// timing is the real clock/nanosleep) ticks on its own thread. Contexts
+/// must survive stop+join at drop, and a disconnect'd output's context
+/// must survive any in-flight callback return. Calls are counted in the
+/// context itself so validity is observable after close.
+struct RealCtx {
+    audio: *mut c_void,
+    input_calls: AtomicUsize,
+    output_calls: AtomicUsize,
+    self_disc_calls: AtomicUsize,
+}
+unsafe impl Sync for RealCtx {}
+
+unsafe extern "C" fn real_input(
+    p: *mut c_void,
+    _start: u64,
+    end: u64,
+    new_ts: *mut u64,
+    _active: u32,
+    mixes: *mut rs::audio_output_data,
+) -> bool {
+    let ctx = unsafe { &*(p as *const RealCtx) };
+    ctx.input_calls.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        *new_ts = end;
+        *(*mixes).data[0] = 0.5f32;
+    }
+    true
+}
+
+unsafe extern "C" fn real_output(p: *mut c_void, _m: usize, _d: *mut rs::audio_data) {
+    let ctx = unsafe { &*(p as *const RealCtx) };
+    ctx.output_calls.fetch_add(1, Ordering::SeqCst);
+}
+
+unsafe extern "C" fn real_self_disconnect(p: *mut c_void, m: usize, _d: *mut rs::audio_data) {
+    let ctx = unsafe { &*(p as *const RealCtx) };
+    ctx.self_disc_calls.fetch_add(1, Ordering::SeqCst);
+    // In-flight callback disconnects itself, then must still return
+    // through valid `ctx` — the param outlives the disconnect.
+    // SAFETY: same-thread re-entrant call under the held recursive lock.
+    unsafe { &*(ctx.audio as *const AudioOutput) }.disconnect(m, Some(real_self_disconnect), p);
+}
+
+#[test]
+fn real_worker_close_join() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    let mut ctx = Box::new(RealCtx {
+        audio: ptr::null_mut(),
+        input_calls: AtomicUsize::new(0),
+        output_calls: AtomicUsize::new(0),
+        self_disc_calls: AtomicUsize::new(0),
+    });
+    let info = rs::audio_output_info {
+        name: c"real".as_ptr(),
+        samples_per_sec: 48000,
+        format: FORMAT_FLOAT,
+        speakers: SPEAKERS_STEREO,
+        input_callback: Some(real_input),
+        input_param: &*ctx as *const RealCtx as *mut c_void,
+    };
+    // SAFETY: `info.name` is a 'static string; `ctx` is boxed and read
+    // only after drop returns (stop+join complete).
+    let mut out = unsafe { AudioOutput::open(&info) }.expect("open");
+    ctx.audio = &mut *out as *mut AudioOutput as *mut c_void;
+    // SAFETY: `ctx` outlives both the disconnect below and `out`'s drop.
+    unsafe {
+        out.connect(
+            0,
+            None,
+            Some(real_output),
+            &*ctx as *const RealCtx as *mut c_void,
+        );
+        out.connect(
+            1,
+            None,
+            Some(real_self_disconnect),
+            &*ctx as *const RealCtx as *mut c_void,
+        );
+    }
+    // Let several real ticks run (~21.3ms each).
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let calls_before = ctx.self_disc_calls.load(Ordering::SeqCst);
+    drop(out);
+    // After close/join: no further callbacks can run — counts are stable.
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    assert!(ctx.input_calls.load(Ordering::SeqCst) > 0);
+    assert!(ctx.output_calls.load(Ordering::SeqCst) > 0);
+    let calls_after = ctx.self_disc_calls.load(Ordering::SeqCst);
+    assert!(calls_after >= 1 && calls_after == calls_before);
+    // `ctx` itself is still valid here — input context survived stop/join,
+    // output context survived disconnect + the in-flight callback return.
+    let _ = ctx;
+}
+
 // --- concurrent connect/disconnect -----------------------------------------
 
 unsafe extern "C" fn cd_a_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
@@ -1060,12 +1483,21 @@ unsafe extern "C" fn cd_a_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data)
         push_order(1);
     }
 }
+/// Dispatch counters: incremented inside a callback, i.e. while the
+/// recursive input lock is held by the dispatch — the churn gate below.
+static C_DISPATCHED: AtomicUsize = AtomicUsize::new(0);
+static RS_DISPATCHED: AtomicUsize = AtomicUsize::new(0);
+static C_CHURN_DONE: AtomicUsize = AtomicUsize::new(0);
+static RS_CHURN_DONE: AtomicUsize = AtomicUsize::new(0);
+
 unsafe extern "C" fn cd_b_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    C_DISPATCHED.fetch_add(1, Ordering::SeqCst);
     if is_magic_ts(unsafe { *d }.timestamp) {
         push_order(2);
     }
 }
 unsafe extern "C" fn cd_b_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    RS_DISPATCHED.fetch_add(1, Ordering::SeqCst);
     if is_magic_ts(unsafe { *d }.timestamp) {
         push_order(2);
     }
@@ -1073,10 +1505,24 @@ unsafe extern "C" fn cd_b_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data)
 unsafe extern "C" fn cd_hammer_c(_p: *mut c_void, _m: usize, _d: *mut c::OracleAudioData) {}
 unsafe extern "C" fn cd_hammer_rs(_p: *mut c_void, _m: usize, _d: *mut rs::audio_data) {}
 
-/// Connect/disconnect racing a dispatch from another thread: a hammer
-/// thread churns the list while the driver ticks; deterministic check —
-/// both sides survive and a quiesced final tick reproduces the same
-/// callback order.
+/// Spin until `ctr` reaches `want`; bounded so a missed gate can't hang.
+fn wait_churn(c: &AtomicUsize, r: &AtomicUsize, want: usize) {
+    let mut spins = 0u64;
+    while (c.load(Ordering::SeqCst) < want || r.load(Ordering::SeqCst) < want)
+        && spins < 200_000_000
+    {
+        spins += 1;
+        std::hint::spin_loop();
+    }
+}
+
+/// Connect/disconnect contention bounded to the locked dispatch window:
+/// churn threads only issue ops once a dispatch callback has run (the lock
+/// is held then), so every op contends on the held recursive mutex and
+/// completes between mix dispatches — never during the unlocked clamp,
+/// which reads `inputs.num` in the C and would race a mutating list. The
+/// driver joins each iteration's churn before the next tick (before the
+/// next clamp).
 #[test]
 fn concurrent_connect_disconnect_parity() {
     let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
@@ -1118,17 +1564,36 @@ fn concurrent_connect_disconnect_parity() {
             s.spawn(move || {
                 let co = co_addr as *mut c::OracleAudioOutput;
                 let hp = hp_addr as *mut c_void;
-                for _ in 0..100 {
-                    c::oracle_audio_output_connect(co, 1, ptr::null(), Some(cd_hammer_c), hp);
-                    c::oracle_audio_output_disconnect(co, 1, Some(cd_hammer_c), hp);
+                for iter in 0..10usize {
+                    // Only issue churn once this iteration's dispatch is
+                    // underway (callback ran -> input lock held), so the
+                    // ops queue on the mutex instead of racing a clamp.
+                    let mut spins = 0u64;
+                    while C_DISPATCHED.load(Ordering::SeqCst) <= iter && spins < 200_000_000 {
+                        spins += 1;
+                        std::hint::spin_loop();
+                    }
+                    for _ in 0..10 {
+                        c::oracle_audio_output_connect(co, 1, ptr::null(), Some(cd_hammer_c), hp);
+                        c::oracle_audio_output_disconnect(co, 1, Some(cd_hammer_c), hp);
+                    }
+                    C_CHURN_DONE.fetch_add(1, Ordering::SeqCst);
                 }
             });
             s.spawn(move || {
                 let ro = ro_addr as *mut c_void;
                 let hp = hp_addr as *mut c_void;
-                for _ in 0..100 {
-                    rs::audio_output_connect(ro, 1, ptr::null(), Some(cd_hammer_rs), hp);
-                    rs::audio_output_disconnect(ro, 1, Some(cd_hammer_rs), hp);
+                for iter in 0..10usize {
+                    let mut spins = 0u64;
+                    while RS_DISPATCHED.load(Ordering::SeqCst) <= iter && spins < 200_000_000 {
+                        spins += 1;
+                        std::hint::spin_loop();
+                    }
+                    for _ in 0..10 {
+                        rs::audio_output_connect(ro, 1, ptr::null(), Some(cd_hammer_rs), hp);
+                        rs::audio_output_disconnect(ro, 1, Some(cd_hammer_rs), hp);
+                    }
+                    RS_CHURN_DONE.fetch_add(1, Ordering::SeqCst);
                 }
             });
             let ra = ro as *mut AudioOutput;
@@ -1137,6 +1602,9 @@ fn concurrent_connect_disconnect_parity() {
                 take_order();
                 (*ra).tick_for_test(MAGIC + 21_000_000 + i * 10_000, MAGIC);
                 take_order();
+                // Join this tick's churn before the next tick — the next
+                // clamp reads `inputs.num` without the mutex.
+                wait_churn(&C_CHURN_DONE, &RS_CHURN_DONE, i as usize + 1);
             }
         });
 
