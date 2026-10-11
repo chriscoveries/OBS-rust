@@ -515,6 +515,194 @@ proptest::proptest! {
 /* re-entrant callback needs; everything is gated on is_magic_ts so    */
 /* the real worker ticks can never fire these paths.                    */
 
+// --- fresh clamp snapshot (item 2) ------------------------------------
+// The C's clamp pass checks `!mix->inputs.num` AFTER the input callback —
+// a mix that gained an input mid-callback is clamped anyway. A port that
+// reuses the pre-callback mask skips it: its buffer_unclamped stays zeroed
+// while the C's copies the marker the input cb wrote.
+
+unsafe extern "C" fn fs_new_c(_p: *mut c_void, m: usize, d: *mut c::OracleAudioData) {
+    let d = unsafe { &*d };
+    record_output(m, d.timestamp, d.frames, d.data[0] as *const f32);
+}
+unsafe extern "C" fn fs_new_rs(_p: *mut c_void, m: usize, d: *mut rs::audio_data) {
+    let d = unsafe { &*d };
+    record_output(m, d.timestamp, d.frames, d.data[0] as *const f32);
+}
+
+// Connect an allow_clipping input to the (initially empty) mix 1 during
+// the input callback, and write an out-of-range marker into its buffer.
+// Same (callback, param) on a later tick is refused as a duplicate, so
+// repeated ticks stay deterministic without a one-shot flag.
+unsafe extern "C" fn fs_input_c(
+    p: *mut c_void,
+    start: u64,
+    end: u64,
+    new_ts: *mut u64,
+    active: u32,
+    mixes: *mut c::OracleAudioOutputData,
+) -> bool {
+    if start == MAGIC {
+        record_input(start, end, new_ts, active);
+        let ctx = unsafe { &*(p as *const ReCtx) };
+        unsafe { *(*mixes.add(1)).data[0].cast::<f32>() = 2.5f32 };
+        let conv = c::OracleAudioConvertInfo {
+            samples_per_sec: 0,
+            format: 0,
+            speakers: 0,
+            allow_clipping: true,
+        };
+        unsafe {
+            c::oracle_audio_output_connect(ctx.audio as _, 1, &conv, Some(fs_new_c), ctx.extra)
+        };
+    }
+    true
+}
+unsafe extern "C" fn fs_input_rs(
+    p: *mut c_void,
+    start: u64,
+    end: u64,
+    new_ts: *mut u64,
+    active: u32,
+    mixes: *mut rs::audio_output_data,
+) -> bool {
+    if start == MAGIC {
+        record_input(start, end, new_ts, active);
+        let ctx = unsafe { &*(p as *const ReCtx) };
+        unsafe { *(*mixes.add(1)).data[0].cast::<f32>() = 2.5f32 };
+        let conv = rs::audio_convert_info {
+            samples_per_sec: 0,
+            format: 0,
+            speakers: 0,
+            allow_clipping: true,
+        };
+        unsafe { rs::audio_output_connect(ctx.audio, 1, &conv, Some(fs_new_rs), ctx.extra) };
+    }
+    true
+}
+
+/// The input callback needs the opened handle in its param: box the ctx,
+/// point `input_param` at the stable box, then fill `.audio` post-open.
+#[test]
+fn fresh_clamp_snapshot_parity() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let mut cctx = Box::new(ReCtx {
+            audio: ptr::null_mut(),
+            extra: 0x9usize as *mut c_void,
+        });
+        let mut ci = info_c(None);
+        ci.input_callback = Some(fs_input_c);
+        ci.input_param = &*cctx as *const ReCtx as *mut c_void;
+        let mut co: *mut c::OracleAudioOutput = ptr::null_mut();
+        assert_eq!(c::oracle_audio_output_open(&mut co, &mut ci), 0);
+        cctx.audio = co as *mut c_void;
+
+        let mut rctx = Box::new(ReCtx {
+            audio: ptr::null_mut(),
+            extra: 0x9usize as *mut c_void,
+        });
+        let mut ri = info_rs(Some(fs_input_rs));
+        ri.input_param = &*rctx as *const ReCtx as *mut c_void;
+        let mut ro: *mut c_void = ptr::null_mut();
+        assert_eq!(
+            rs::audio_output_open(&mut ro, &mut ri),
+            rs::AUDIO_OUTPUT_SUCCESS
+        );
+        rctx.audio = ro;
+
+        // One ordinary input on mix 0 so active_mixes is non-zero.
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(fs_new_c),
+            ptr::null_mut()
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(fs_new_rs),
+            ptr::null_mut()
+        ));
+
+        let ra = ro as *mut AudioOutput;
+        c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
+        let c_tick = take_tick();
+        (*ra).tick_for_test(MAGIC + 21_000_000, MAGIC);
+        let r_tick = take_tick();
+        assert_eq!(c_tick, r_tick);
+        // Mix 1's input joined after the mask snapshot; the C still clamps
+        // it, so the unclamped row carries the marker.
+        assert!(c_tick.is_some_and(|t| t
+            .calls
+            .iter()
+            .any(|&(m, _, bits)| m == 1 && bits == 2.5f32.to_bits())));
+        c::oracle_audio_output_close(co);
+        rs::audio_output_close(ro);
+        // Contexts outlive close: their param pointers are what callbacks
+        // dereferenced.
+        let _ = (cctx, rctx);
+    }
+}
+
+// --- real resampling parity (not NULL-resampler stubs) ------------------
+// The oracle supplies a deterministic resampler, so a conversion that
+// differs only in rate creates one on both sides and the resample path —
+// swapped data pointers, shortened frame count — is exercised end to end.
+
+#[test]
+fn resample_parity() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let (co, ro) = open_pair();
+        let conv = rs::audio_convert_info {
+            samples_per_sec: 24000,
+            format: FORMAT_FLOAT,
+            speakers: SPEAKERS_STEREO,
+            allow_clipping: false,
+        };
+        let cconv = c::OracleAudioConvertInfo {
+            samples_per_sec: 24000,
+            format: FORMAT_FLOAT,
+            speakers: SPEAKERS_STEREO,
+            allow_clipping: false,
+        };
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            &cconv,
+            Some(output_full_c),
+            ptr::null_mut()
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            &conv,
+            Some(output_full_rs),
+            ptr::null_mut()
+        ));
+        let ra = ro as *mut AudioOutput;
+        assert_eq!(
+            c::oracle_audio_mix_input_resampled(co, 0, 0),
+            (*ra).mix_input_resampled_for_test(0, 0)
+        );
+        assert!(c::oracle_audio_mix_input_resampled(co, 0, 0));
+
+        c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
+        let c_tick = take_tick();
+        (*ra).tick_for_test(MAGIC + 21_000_000, MAGIC);
+        let r_tick = take_tick();
+        assert_eq!(c_tick, r_tick);
+        // 48k -> 24k halves the frame count on both sides.
+        assert!(c_tick.is_some_and(|t| t.calls.iter().any(|&(_, f, _)| f == 512)));
+        c::oracle_audio_output_close(co);
+        rs::audio_output_close(ro);
+    }
+}
+
+
 /// Handle the re-entrant callbacks operate on (oracle or rust audio_t).
 struct ReCtx {
     audio: *mut c_void,
