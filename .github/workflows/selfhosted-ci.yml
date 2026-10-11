@@ -16,8 +16,8 @@ on:
         type: boolean
         default: true
       tier2_runner:
-        description: Runner label for Tier 2 (rd4 or claw; never the Mac)
-        default: rd4
+        description: Runner label for Tier 2 (claw, or rd4 as backup; never the Mac)
+        default: claw
   pull_request_target:
     branches: [ci-main]
 concurrency:
@@ -45,11 +45,12 @@ jobs:
       - name: Rust tiers 1-3
         run: soldr cargo test --workspace --locked
   # Tier 2 runs directly on the host, without Docker (owner, 2026-10-11).
-  # Only rd4 (and claw, once its runner is back) carry the C toolchain and
-  # the packages listed in rust/tools/linux-validate/Dockerfile.
+  # claw (Debian 13) matches the old container: all 65 tests, export parity.
+  # rd4 (Ubuntu 22.04) is the backup; it builds without PipeWire, so it
+  # skips test_pipewire_reconnect.
   tier2:
     if: ${{ inputs.tier2 != false }}
-    runs-on: [self-hosted, Linux, X64, "${{ inputs.tier2_runner || 'rd4' }}"]
+    runs-on: [self-hosted, Linux, X64, "${{ inputs.tier2_runner || 'claw' }}"]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -75,5 +76,5 @@ jobs:
           # rd4 runs Ubuntu 22.04: GIO is too old for PipeWire, there is no
           # librist, and GCC 11 raises a maybe-uninitialized warning in
           # DecodeTEA (rtmp.c, obs-rust/obs-studio#209) that newer GCC does not.
-          TIER2_EXTRA_CMAKE: ${{ (inputs.tier2_runner || 'rd4') == 'rd4' && '-DENABLE_PIPEWIRE=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DCMAKE_C_FLAGS=-Wno-error=maybe-uninitialized' || '' }}
+          TIER2_EXTRA_CMAKE: ${{ inputs.tier2_runner == 'rd4' && '-DENABLE_PIPEWIRE=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DCMAKE_C_FLAGS=-Wno-error=maybe-uninitialized' || '' }}
         run: .ci-main/.github/ci/tier2-native.sh "$GITHUB_WORKSPACE"
