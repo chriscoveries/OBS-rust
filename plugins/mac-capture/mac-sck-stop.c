@@ -30,9 +30,10 @@ enum sck_stop_wait_result sck_wait_for_stop(os_event_t *stop_completed, unsigned
 	return SCK_STOP_WAIT_ERROR;
 }
 
-bool sck_stop_may_free(enum sck_stop_wait_result result)
+bool sck_stop_may_destroy_event(enum sck_stop_wait_result result)
 {
 	/* On timeout the completion block can still fire and touch the
-	 * event, so the capture must be leaked rather than freed. */
+	 * event, so the event must be leaked rather than destroyed. The
+	 * rest of the teardown proceeds either way. */
 	return result != SCK_STOP_WAIT_TIMEOUT;
 }

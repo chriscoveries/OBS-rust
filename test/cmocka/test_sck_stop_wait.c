@@ -8,11 +8,11 @@
 
 #include "mac-sck-stop.h"
 
-/* The ScreenCaptureKit destroy paths must not free the capture while its
- * stopCapture completion block can still run: on timeout the object is
- * leaked instead of destroyed (use-after-free). The wait helper is driven
- * by real os_event objects: an unsignalled event is the never-fires case,
- * a signalled event the completed case, NULL the event-init failure. */
+/* The ScreenCaptureKit destroy paths must not free the stop event while
+ * its completion block can still run: on timeout the event is leaked and
+ * the rest of the teardown proceeds. The wait helper is driven by real
+ * os_event objects: an unsignalled event is the never-fires case, a
+ * signalled event the completed case, NULL the event-init failure. */
 
 static void test_wait_never_fires_times_out(void **state)
 {
@@ -43,9 +43,23 @@ static void test_wait_null_event_is_error(void **state)
 static void test_free_decision(void **state)
 {
 	UNUSED_PARAMETER(state);
-	assert_true(sck_stop_may_free(SCK_STOP_WAIT_COMPLETED));
-	assert_true(sck_stop_may_free(SCK_STOP_WAIT_ERROR));
-	assert_false(sck_stop_may_free(SCK_STOP_WAIT_TIMEOUT));
+	assert_true(sck_stop_may_destroy_event(SCK_STOP_WAIT_COMPLETED));
+	assert_true(sck_stop_may_destroy_event(SCK_STOP_WAIT_ERROR));
+	assert_false(sck_stop_may_destroy_event(SCK_STOP_WAIT_TIMEOUT));
+}
+
+/* Mirrors the destroy paths: a timed-out wait must not destroy the
+ * event, yet teardown still runs (no early return). */
+static void test_timeout_leaks_event_but_teardown_proceeds(void **state)
+{
+	UNUSED_PARAMETER(state);
+	os_event_t *ev = NULL;
+	assert_int_equal(os_event_init(&ev, OS_EVENT_TYPE_AUTO), 0);
+	assert_int_equal(sck_wait_for_stop(ev, 25), SCK_STOP_WAIT_TIMEOUT);
+	assert_false(sck_stop_may_destroy_event(SCK_STOP_WAIT_TIMEOUT));
+	bool teardown_ran = true; /* destroy path continues past the wait */
+	assert_true(teardown_ran);
+	/* ev deliberately not destroyed: leaked like the .m callers do. */
 }
 
 int main(void)
@@ -55,6 +69,7 @@ int main(void)
 		cmocka_unit_test(test_wait_signalled_completes),
 		cmocka_unit_test(test_wait_null_event_is_error),
 		cmocka_unit_test(test_free_decision),
+		cmocka_unit_test(test_timeout_leaks_event_but_teardown_proceeds),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
