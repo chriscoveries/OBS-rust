@@ -1,4 +1,5 @@
 #include "mac-sck-common.h"
+#include "mac-sck-stop.h"
 
 const char *sck_audio_capture_getname(void *unused __unused)
 {
@@ -17,15 +18,16 @@ API_AVAILABLE(macos(13.0)) static void destroy_audio_screen_stream(struct screen
                 }
                 os_event_signal(stop_completed);
             }];
-            /* The completion block must keep the event valid until it fires:
-               on timeout we leak rather than free memory the block may still
-               touch. */
-            if (os_event_timedwait(stop_completed, 2000) == ETIMEDOUT) {
+            enum sck_stop_wait_result wait_result = sck_wait_for_stop(stop_completed, SCK_STOP_TIMEOUT_MS);
+            if (wait_result == SCK_STOP_WAIT_TIMEOUT) {
                 MACCAP_ERR("destroy_audio_screen_stream: stream stop did not complete in 2 s; "
                            "leaking capture to avoid use-after-free\n");
+            }
+            if (sck_stop_may_free(wait_result)) {
+                os_event_destroy(stop_completed);
+            } else {
                 return;
             }
-            os_event_destroy(stop_completed);
         } else {
             [sc->disp stopCaptureWithCompletionHandler:^(NSError *_Nullable error) {
                 if (error && error.code != SCStreamErrorAttemptToStopStreamState) {

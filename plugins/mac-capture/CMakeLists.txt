@@ -13,6 +13,8 @@ target_sources(
     mac-sck-audio-capture.m
     mac-sck-common.h
     mac-sck-common.m
+    mac-sck-stop.c
+    mac-sck-stop.h
     mac-sck-video-capture.m
     mac-window-capture.m
     plugin-main.c
