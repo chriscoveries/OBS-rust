@@ -407,7 +407,9 @@ unsafe extern "C" fn output_full_rs(_p: *mut c_void, mix_idx: usize, data: *mut 
     }
     let mut acc = 0u32;
     for i in 0..d.frames as usize {
-        acc = acc.wrapping_mul(31).wrapping_add(unsafe { *d.data[0].cast::<f32>().add(i) }.to_bits());
+        acc = acc
+            .wrapping_mul(31)
+            .wrapping_add(unsafe { *d.data[0].cast::<f32>().add(i) }.to_bits());
     }
     let mut g = TICK.lock().unwrap();
     if let Some(t) = g.as_mut() {
@@ -422,7 +424,9 @@ unsafe extern "C" fn output_full_c(_p: *mut c_void, mix_idx: usize, data: *mut c
     }
     let mut acc = 0u32;
     for i in 0..d.frames as usize {
-        acc = acc.wrapping_mul(31).wrapping_add(unsafe { *d.data[0].cast::<f32>().add(i) }.to_bits());
+        acc = acc
+            .wrapping_mul(31)
+            .wrapping_add(unsafe { *d.data[0].cast::<f32>().add(i) }.to_bits());
     }
     let mut g = TICK.lock().unwrap();
     if let Some(t) = g.as_mut() {
@@ -462,8 +466,8 @@ proptest::proptest! {
             ri.input_param = marker;
             assert_eq!(rs::audio_output_open(&mut ro, &mut ri), rs::AUDIO_OUTPUT_SUCCESS);
 
-            for i in 0..n_inputs {
-                if clip_flags[i] {
+            for (i, clip) in clip_flags.iter().enumerate().take(n_inputs) {
+                if *clip {
                     let conv = rs::audio_convert_info {
                         samples_per_sec: 0,
                         format: 0,
@@ -564,10 +568,34 @@ fn self_disconnect_parity() {
         };
         let cp = &cctx as *const ReCtx as *mut c_void;
         let rp = &rctx as *const ReCtx as *mut c_void;
-        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(sd_other_c), ptr::null_mut()));
-        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(sd_other_rs), ptr::null_mut()));
-        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(sd_self_c), cp));
-        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(sd_self_rs), rp));
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(sd_other_c),
+            ptr::null_mut()
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(sd_other_rs),
+            ptr::null_mut()
+        ));
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(sd_self_c),
+            cp
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(sd_self_rs),
+            rp
+        ));
 
         c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
         let c_order = take_order();
@@ -648,12 +676,48 @@ fn earlier_input_removal_parity() {
         };
         let cp = &cctx as *const ReCtx as *mut c_void;
         let rp = &rctx as *const ReCtx as *mut c_void;
-        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(rm_a_c), a_param));
-        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(rm_a_rs), a_param));
-        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(rm_b_c), cp));
-        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(rm_b_rs), rp));
-        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(rm_c_c), ptr::null_mut()));
-        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(rm_c_rs), ptr::null_mut()));
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(rm_a_c),
+            a_param
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(rm_a_rs),
+            a_param
+        ));
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(rm_b_c),
+            cp
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(rm_b_rs),
+            rp
+        ));
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(rm_c_c),
+            ptr::null_mut()
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(rm_c_rs),
+            ptr::null_mut()
+        ));
 
         c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
         let c_order = take_order();
@@ -719,7 +783,9 @@ unsafe extern "C" fn gr_d_c(p: *mut c_void, _m: usize, d: *mut c::OracleAudioDat
     }
     push_order(4);
     let ctx = unsafe { &*(p as *const ReCtx) };
-    unsafe { c::oracle_audio_output_connect(ctx.audio as _, 0, ptr::null(), Some(gr_e_c), ctx.extra) };
+    unsafe {
+        c::oracle_audio_output_connect(ctx.audio as _, 0, ptr::null(), Some(gr_e_c), ctx.extra)
+    };
 }
 unsafe extern "C" fn gr_d_rs(p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
     if !is_magic_ts(unsafe { *d }.timestamp) {
@@ -762,8 +828,20 @@ fn vec_growth_parity() {
                 rs::audio_output_connect(ro, 0, ptr::null(), cb_rs, ptr::null_mut())
             );
         }
-        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(gr_d_c), cp));
-        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(gr_d_rs), rp));
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(gr_d_c),
+            cp
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(gr_d_rs),
+            rp
+        ));
 
         let ra = ro as *mut AudioOutput;
         c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
@@ -824,10 +902,34 @@ fn concurrent_connect_disconnect_parity() {
     unsafe {
         let (co, ro) = open_pair();
         let hp_addr = 0xfeedusize;
-        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(cd_a_c), ptr::null_mut()));
-        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(cd_a_rs), ptr::null_mut()));
-        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(cd_b_c), ptr::null_mut()));
-        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(cd_b_rs), ptr::null_mut()));
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(cd_a_c),
+            ptr::null_mut()
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(cd_a_rs),
+            ptr::null_mut()
+        ));
+        assert!(c::oracle_audio_output_connect(
+            co,
+            0,
+            ptr::null(),
+            Some(cd_b_c),
+            ptr::null_mut()
+        ));
+        assert!(rs::audio_output_connect(
+            ro,
+            0,
+            ptr::null(),
+            Some(cd_b_rs),
+            ptr::null_mut()
+        ));
 
         let co_addr = co as usize;
         let ro_addr = ro as usize;
@@ -836,20 +938,16 @@ fn concurrent_connect_disconnect_parity() {
                 let co = co_addr as *mut c::OracleAudioOutput;
                 let hp = hp_addr as *mut c_void;
                 for _ in 0..100 {
-                    unsafe {
-                        c::oracle_audio_output_connect(co, 1, ptr::null(), Some(cd_hammer_c), hp);
-                        c::oracle_audio_output_disconnect(co, 1, Some(cd_hammer_c), hp);
-                    }
+                    c::oracle_audio_output_connect(co, 1, ptr::null(), Some(cd_hammer_c), hp);
+                    c::oracle_audio_output_disconnect(co, 1, Some(cd_hammer_c), hp);
                 }
             });
             s.spawn(move || {
                 let ro = ro_addr as *mut c_void;
                 let hp = hp_addr as *mut c_void;
                 for _ in 0..100 {
-                    unsafe {
-                        rs::audio_output_connect(ro, 1, ptr::null(), Some(cd_hammer_rs), hp);
-                        rs::audio_output_disconnect(ro, 1, Some(cd_hammer_rs), hp);
-                    }
+                    rs::audio_output_connect(ro, 1, ptr::null(), Some(cd_hammer_rs), hp);
+                    rs::audio_output_disconnect(ro, 1, Some(cd_hammer_rs), hp);
                 }
             });
             let ra = ro as *mut AudioOutput;

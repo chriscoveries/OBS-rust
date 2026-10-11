@@ -694,7 +694,11 @@ impl AudioOutput {
         let shared = &*self.shared;
         shared.input_mutex.lock();
         // SAFETY: the lock is held; borrow ends before unlock.
-        let r = unsafe { !(&(*shared.mixes.get())[mix_idx].inputs)[input_idx].resampler.is_null() };
+        let r = unsafe {
+            !(&(*shared.mixes.get())[mix_idx].inputs)[input_idx]
+                .resampler
+                .is_null()
+        };
         shared.input_mutex.unlock();
         r
     }

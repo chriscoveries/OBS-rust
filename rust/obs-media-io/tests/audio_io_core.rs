@@ -22,7 +22,7 @@ static DRIVER: Mutex<()> = Mutex::new(());
 use obs_c_oracle as _;
 use obs_media_io::audio_io::AudioOutput;
 use obs_media_io::ffi::audio_io::{
-    audio_data, audio_convert_info, audio_output_data, audio_output_info,
+    audio_convert_info, audio_data, audio_output_data, audio_output_info,
 };
 use obs_util as _;
 
@@ -87,7 +87,7 @@ fn stereo_info() -> audio_output_info {
 fn output_callback_runs_each_tick() {
     let _drive = lock_driver();
     reset_counts();
-    let mut out = AudioOutput::open(&stereo_info()).expect("open");
+    let out = AudioOutput::open(&stereo_info()).expect("open");
     assert!(out.connect(0, None, Some(counting_output), ptr::null_mut()));
 
     out.tick_for_test(MAGIC + 21_000_000, MAGIC);
@@ -105,7 +105,7 @@ fn tick_without_input_callback_is_noop() {
     let _drive = lock_driver();
     let mut info = stereo_info();
     info.input_callback = None;
-    let mut out = AudioOutput::open(&info).expect("open");
+    let out = AudioOutput::open(&info).expect("open");
     out.tick_for_test(MAGIC + 21_000_000, MAGIC);
 }
 
@@ -117,7 +117,7 @@ fn tick_without_input_callback_is_noop() {
 fn null_output_callback_connects_and_stays_silent() {
     let _drive = lock_driver();
     reset_counts();
-    let mut out = AudioOutput::open(&stereo_info()).expect("open");
+    let out = AudioOutput::open(&stereo_info()).expect("open");
     assert!(out.connect(0, None, None, ptr::null_mut()));
     assert!(out.active());
 
@@ -147,7 +147,7 @@ fn output_callback_may_disconnect_itself() {
         unsafe { &*ctx.audio }.disconnect(0, Some(self_disconnecting), param);
     }
 
-    let mut out = Box::new(AudioOutput::open(&stereo_info()).expect("open"));
+    let out = Box::new(AudioOutput::open(&stereo_info()).expect("open"));
     let ctx = Ctx {
         audio: &**out,
         hits: AtomicUsize::new(0),
@@ -163,7 +163,8 @@ fn output_callback_may_disconnect_itself() {
 
     assert_eq!(ctx.hits.load(Ordering::SeqCst), 1);
     assert!(!out.active());
-    drop(ctx);
+    // `ctx` stays live in this frame until here: the callback param points at it.
+    let _ = &ctx;
 }
 
 /// An output callback may connect a new input mid-dispatch (recursive lock
@@ -196,7 +197,7 @@ fn output_callback_may_connect_a_new_input() {
         unsafe { &*ctx.audio }.connect(0, None, Some(second_cb), param);
     }
 
-    let mut out = Box::new(AudioOutput::open(&stereo_info()).expect("open"));
+    let out = Box::new(AudioOutput::open(&stereo_info()).expect("open"));
     let ctx = Box::new(Ctx {
         audio: &**out,
         second: AtomicUsize::new(0),
@@ -211,7 +212,8 @@ fn output_callback_may_connect_a_new_input() {
 
     out.tick_for_test(MAGIC + 42_000_000, MAGIC);
     assert!(ctx.second.load(Ordering::SeqCst) >= 1);
-    drop(ctx);
+    // `ctx` must outlive the last tick: the callback param points at it.
+    let _ = &ctx;
 }
 
 /// The clamp pass: an unclamped input (allow_clipping=false, the default)
@@ -240,12 +242,7 @@ fn clamping_respects_allow_clipping() {
         true
     }
 
-    unsafe extern "C" fn record(
-        slot: usize,
-        _mix_idx: usize,
-        data: *mut audio_data,
-        dst: &AtomicUsize,
-    ) {
+    fn record(slot: usize, _mix_idx: usize, data: *mut audio_data, dst: &AtomicUsize) {
         let bits = unsafe { *(*data).data[0].cast::<f32>() }.to_bits() as usize;
         dst.store(bits, Ordering::SeqCst);
         let _ = slot;
@@ -269,7 +266,7 @@ fn clamping_respects_allow_clipping() {
 
     let mut info = stereo_info();
     info.input_callback = Some(writing_input);
-    let mut out = AudioOutput::open(&info).expect("open");
+    let out = AudioOutput::open(&info).expect("open");
     assert!(out.connect(0, None, Some(clipped_cb), ptr::null_mut()));
     let conv = audio_convert_info {
         samples_per_sec: 0,

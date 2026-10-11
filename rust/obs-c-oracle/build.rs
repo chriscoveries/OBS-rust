@@ -74,9 +74,7 @@ fn main() {
     // threading surface has no libc equivalent on Windows (the port is
     // Unix-first: Windows keeps media-io/audio-io.c in C).
     if std::env::var_os("CARGO_CFG_UNIX").is_some() {
-        oracle
-            .file("oracle/pipe_posix.c")
-            .file("oracle/audio_io.c");
+        oracle.file("oracle/pipe_posix.c").file("oracle/audio_io.c");
     }
     oracle
         .include(&libobs)

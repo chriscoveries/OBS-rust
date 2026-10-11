@@ -55,46 +55,51 @@ pub struct audio_output_info {
     pub input_param: *mut c_void,
 }
 
-/// Mirrors `struct audio_convert_info`. The enums are `c_int`s.
-#[repr(C)]
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy)]
-pub struct audio_convert_info {
-    pub samples_per_sec: u32,
-    pub format: c_int,
-    pub speakers: c_int,
-    pub allow_clipping: bool,
-}
-
-/// Mirrors `struct resample_info` (`media-io/audio-resampler.h`).
-#[repr(C)]
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy)]
-pub struct resample_info {
-    pub samples_per_sec: u32,
-    pub format: c_int,
-    pub speakers: c_int,
-}
-
-/// Mirrors `audio_output_callback_t`.
-#[allow(non_camel_case_types)]
-pub type audio_output_callback_t =
-    Option<unsafe extern "C" fn(param: *mut c_void, mix_idx: usize, data: *mut audio_data)>;
-
-/// `audio_output_open`. On `AUDIO_OUTPUT_INVALIDPARAM`/`AUDIO_OUTPUT_FAIL`
-/// `*audio` is left untouched, like the C.
-///
-/// # Safety
-/// `audio` must point to writable `audio_t` storage and `info` to a valid
-/// `struct audio_output_info` for the duration of the call; the returned
-/// handle owns a thread that keeps calling `info.input_callback` until
-/// `audio_output_close`.#[cfg(unix)]
+/// Unix-first: every audio-io shim is `#[cfg(unix)]`. libc exposes no
+/// pthread API on Windows, so Windows keeps `media-io/audio-io.c` — these
+/// exports carry the ` unix` marker in rust-exports.txt and are not
+/// compiled there. See `crate::audio_io` for the module-level design.
+#[cfg(unix)]
 pub use unix::*;
 
 #[cfg(unix)]
 mod unix {
     use super::*;
 
+    /// Mirrors `struct audio_convert_info`. The enums are `c_int`s.
+    #[repr(C)]
+    #[allow(non_camel_case_types)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct audio_convert_info {
+        pub samples_per_sec: u32,
+        pub format: c_int,
+        pub speakers: c_int,
+        pub allow_clipping: bool,
+    }
+
+    /// Mirrors `struct resample_info` (`media-io/audio-resampler.h`).
+    #[repr(C)]
+    #[allow(non_camel_case_types)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct resample_info {
+        pub samples_per_sec: u32,
+        pub format: c_int,
+        pub speakers: c_int,
+    }
+
+    /// Mirrors `audio_output_callback_t`.
+    #[allow(non_camel_case_types)]
+    pub type audio_output_callback_t =
+        Option<unsafe extern "C" fn(param: *mut c_void, mix_idx: usize, data: *mut audio_data)>;
+
+    /// `audio_output_open`. On `AUDIO_OUTPUT_INVALIDPARAM`/`AUDIO_OUTPUT_FAIL`
+    /// `*audio` is left untouched, like the C.
+    ///
+    /// # Safety
+    /// `audio` must point to writable `audio_t` storage and `info` to a valid
+    /// `struct audio_output_info` for the duration of the call; the returned
+    /// handle owns a thread that keeps calling `info.input_callback` until
+    /// `audio_output_close`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn audio_output_open(
         audio: *mut *mut c_void,
@@ -171,7 +176,9 @@ mod unix {
     /// # Safety
     /// `audio` must be a live handle or NULL.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn audio_output_get_info(audio: *const c_void) -> *const audio_output_info {
+    pub unsafe extern "C" fn audio_output_get_info(
+        audio: *const c_void,
+    ) -> *const audio_output_info {
         if audio.is_null() {
             return core::ptr::null();
         }
