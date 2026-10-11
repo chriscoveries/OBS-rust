@@ -73,7 +73,7 @@ fn stereo_info() -> audio_output_info {
 fn output_callback_runs_each_tick() {
     reset_counts();
     let mut out = AudioOutput::open(&stereo_info()).expect("open");
-    assert!(out.connect(0, ptr::null(), Some(counting_output), ptr::null_mut()));
+    assert!(out.connect(0, None, Some(counting_output), ptr::null_mut()));
 
     out.tick_for_test(MAGIC + 21_000_000, MAGIC);
 
@@ -101,7 +101,7 @@ fn tick_without_input_callback_is_noop() {
 fn null_output_callback_connects_and_stays_silent() {
     reset_counts();
     let mut out = AudioOutput::open(&stereo_info()).expect("open");
-    assert!(out.connect(0, ptr::null(), None, ptr::null_mut()));
+    assert!(out.connect(0, None, None, ptr::null_mut()));
     assert!(out.active());
 
     out.tick_for_test(MAGIC + 21_000_000, MAGIC);
@@ -136,7 +136,7 @@ fn output_callback_may_disconnect_itself() {
     };
     assert!(out.connect(
         0,
-        ptr::null(),
+        None,
         Some(self_disconnecting),
         &ctx as *const Ctx as *mut core::ffi::c_void
     ));
@@ -174,12 +174,7 @@ fn output_callback_may_connect_a_new_input() {
         _data: *mut audio_data,
     ) {
         let ctx = unsafe { &*(param as *const Ctx) };
-        unsafe { &*ctx.audio }.connect(
-            0,
-            ptr::null(),
-            Some(second_cb),
-            param,
-        );
+        unsafe { &*ctx.audio }.connect(0, None, Some(second_cb), param);
     }
 
     let mut out = Box::new(AudioOutput::open(&stereo_info()).expect("open"));
@@ -188,7 +183,7 @@ fn output_callback_may_connect_a_new_input() {
         second: AtomicUsize::new(0),
     });
     let param = &*ctx as *const Ctx as *mut core::ffi::c_void;
-    assert!(out.connect(0, ptr::null(), Some(connector), param));
+    assert!(out.connect(0, None, Some(connector), param));
 
     out.tick_for_test(MAGIC + 21_000_000, MAGIC);
     // C's loop bound is fixed at dispatch start: the appended input is not
@@ -255,14 +250,14 @@ fn clamping_respects_allow_clipping() {
     let mut info = stereo_info();
     info.input_callback = Some(writing_input);
     let mut out = AudioOutput::open(&info).expect("open");
-    assert!(out.connect(0, ptr::null(), Some(clipped_cb), ptr::null_mut()));
+    assert!(out.connect(0, None, Some(clipped_cb), ptr::null_mut()));
     let conv = audio_convert_info {
         samples_per_sec: 0,
         format: 0,
         speakers: 0,
         allow_clipping: true,
     };
-    assert!(out.connect(0, &conv, Some(raw_cb), ptr::null_mut()));
+    assert!(out.connect(0, Some(&conv), Some(raw_cb), ptr::null_mut()));
 
     out.tick_for_test(MAGIC + 21_000_000, MAGIC);
 

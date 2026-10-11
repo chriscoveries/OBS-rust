@@ -196,7 +196,7 @@ unsafe fn open_pair() -> (*mut c::OracleAudioOutput, *mut c_void) {
 /// The C ABI in parameter order on both sides.
 #[test]
 fn getters_match() {
-    let _drive = DRIVER.lock().unwrap();
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         let (co, ro) = open_pair();
         assert_eq!(
@@ -231,7 +231,7 @@ fn getters_match() {
 
 #[test]
 fn connect_disconnect_match() {
-    let _drive = DRIVER.lock().unwrap();
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         let (co, ro) = open_pair();
         // NULL conversion + NULL param: connects, no resampler.
@@ -300,7 +300,7 @@ fn connect_disconnect_match() {
 
 #[test]
 fn tick_is_identical() {
-    let _drive = DRIVER.lock().unwrap();
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
     // Real input callbacks everywhere; only explicit MAGIC-timed ticks are
     // recorded, so the real threads' asynchronous ticks are ignored.
     unsafe {
@@ -443,7 +443,7 @@ proptest::proptest! {
         n_inputs in 1usize..=3,
         clip_flags in prop::collection::vec(any::<bool>(), 3),
     ) {
-        let _drive = DRIVER.lock().unwrap();
+        let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             let marker = marker_bits as usize as *mut c_void;
             let mut co: *mut c::OracleAudioOutput = ptr::null_mut();
@@ -495,5 +495,381 @@ proptest::proptest! {
             c::oracle_audio_output_close(co);
             rs::audio_output_close(ro);
         }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Reentrancy regressions (fork PR #35 review acceptance): the same     */
+/* callback program runs on the oracle and on the port, and the        */
+/* recorded order must be identical. Each ctx carries the handle the    */
+/* re-entrant callback needs; everything is gated on is_magic_ts so    */
+/* the real worker ticks can never fire these paths.                    */
+
+/// Handle the re-entrant callbacks operate on (oracle or rust audio_t).
+struct ReCtx {
+    audio: *mut c_void,
+    extra: *mut c_void,
+}
+
+// --- self-disconnect -------------------------------------------------
+
+unsafe extern "C" fn sd_other_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn sd_other_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn sd_self_c(p: *mut c_void, m: usize, d: *mut c::OracleAudioData) {
+    if !is_magic_ts(unsafe { *d }.timestamp) {
+        return;
+    }
+    push_order(2);
+    let ctx = unsafe { &*(p as *const ReCtx) };
+    unsafe { c::oracle_audio_output_disconnect(ctx.audio as _, m, Some(sd_self_c), p) };
+}
+unsafe extern "C" fn sd_self_rs(p: *mut c_void, m: usize, d: *mut rs::audio_data) {
+    if !is_magic_ts(unsafe { *d }.timestamp) {
+        return;
+    }
+    push_order(2);
+    let ctx = unsafe { &*(p as *const ReCtx) };
+    unsafe { rs::audio_output_disconnect(ctx.audio, m, Some(sd_self_rs), p) };
+}
+
+/// An output callback disconnects its own input mid-dispatch: the C's
+/// recursive input_mutex exists for this; the walk continues at the next
+/// index and must not corrupt or re-run the remaining input.
+#[test]
+fn self_disconnect_parity() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let (co, ro) = open_pair();
+        let cctx = ReCtx {
+            audio: co as *mut c_void,
+            extra: ptr::null_mut(),
+        };
+        let rctx = ReCtx {
+            audio: ro,
+            extra: ptr::null_mut(),
+        };
+        let cp = &cctx as *const ReCtx as *mut c_void;
+        let rp = &rctx as *const ReCtx as *mut c_void;
+        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(sd_other_c), ptr::null_mut()));
+        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(sd_other_rs), ptr::null_mut()));
+        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(sd_self_c), cp));
+        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(sd_self_rs), rp));
+
+        c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
+        let c_order = take_order();
+        let ra = ro as *mut AudioOutput;
+        (*ra).tick_for_test(MAGIC + 21_000_000, MAGIC);
+        let r_order = take_order();
+        assert_eq!(c_order, r_order);
+        assert_eq!(c_order, [2, 1]);
+        assert_eq!(
+            c::oracle_audio_mix_input_count(co, 0),
+            (*ra).mix_input_count_for_test(0)
+        );
+        assert_eq!(c::oracle_audio_mix_input_count(co, 0), 0);
+        c::oracle_audio_output_close(co);
+        rs::audio_output_close(ro);
+    }
+}
+
+// --- earlier-input removal ----------------------------------------------
+
+static A_TAG: u8 = 0;
+
+unsafe extern "C" fn rm_a_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn rm_a_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn rm_c_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(3);
+    }
+}
+unsafe extern "C" fn rm_c_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(3);
+    }
+}
+unsafe extern "C" fn rm_b_c(p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if !is_magic_ts(unsafe { *d }.timestamp) {
+        return;
+    }
+    push_order(2);
+    let ctx = unsafe { &*(p as *const ReCtx) };
+    unsafe { c::oracle_audio_output_disconnect(ctx.audio as _, 0, Some(rm_a_c), ctx.extra) };
+}
+unsafe extern "C" fn rm_b_rs(p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if !is_magic_ts(unsafe { *d }.timestamp) {
+        return;
+    }
+    push_order(2);
+    let ctx = unsafe { &*(p as *const ReCtx) };
+    unsafe { rs::audio_output_disconnect(ctx.audio, 0, Some(rm_a_rs), ctx.extra) };
+}
+
+/// A callback removes an EARLIER input: the shifted tail element slides
+/// into the not-yet-visited index and is invoked a second time — the C
+/// re-reads array[i-1] each iteration, so [A,B,C] with B removing A
+/// produces C,B,B. The port must reproduce this index-for-index.
+#[test]
+fn earlier_input_removal_parity() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let (co, ro) = open_pair();
+        let a_param = &A_TAG as *const u8 as *mut c_void;
+        let cctx = ReCtx {
+            audio: co as *mut c_void,
+            extra: a_param,
+        };
+        let rctx = ReCtx {
+            audio: ro,
+            extra: a_param,
+        };
+        let cp = &cctx as *const ReCtx as *mut c_void;
+        let rp = &rctx as *const ReCtx as *mut c_void;
+        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(rm_a_c), a_param));
+        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(rm_a_rs), a_param));
+        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(rm_b_c), cp));
+        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(rm_b_rs), rp));
+        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(rm_c_c), ptr::null_mut()));
+        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(rm_c_rs), ptr::null_mut()));
+
+        c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
+        let c_order = take_order();
+        let ra = ro as *mut AudioOutput;
+        (*ra).tick_for_test(MAGIC + 21_000_000, MAGIC);
+        let r_order = take_order();
+        assert_eq!(c_order, r_order);
+        assert_eq!(c_order, [3, 2, 2]);
+        assert_eq!(
+            c::oracle_audio_mix_input_count(co, 0),
+            (*ra).mix_input_count_for_test(0)
+        );
+        c::oracle_audio_output_close(co);
+        rs::audio_output_close(ro);
+    }
+}
+
+// --- connect grows the Vec mid-dispatch -----------------------------------
+
+unsafe extern "C" fn gr_a_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn gr_a_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn gr_b_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(2);
+    }
+}
+unsafe extern "C" fn gr_b_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(2);
+    }
+}
+unsafe extern "C" fn gr_c_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(3);
+    }
+}
+unsafe extern "C" fn gr_c_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(3);
+    }
+}
+unsafe extern "C" fn gr_e_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(5);
+    }
+}
+unsafe extern "C" fn gr_e_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(5);
+    }
+}
+unsafe extern "C" fn gr_d_c(p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if !is_magic_ts(unsafe { *d }.timestamp) {
+        return;
+    }
+    push_order(4);
+    let ctx = unsafe { &*(p as *const ReCtx) };
+    unsafe { c::oracle_audio_output_connect(ctx.audio as _, 0, ptr::null(), Some(gr_e_c), ctx.extra) };
+}
+unsafe extern "C" fn gr_d_rs(p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if !is_magic_ts(unsafe { *d }.timestamp) {
+        return;
+    }
+    push_order(4);
+    let ctx = unsafe { &*(p as *const ReCtx) };
+    unsafe { rs::audio_output_connect(ctx.audio, 0, ptr::null(), Some(gr_e_rs), ctx.extra) };
+}
+
+/// A callback connects a new input while the mix already holds four —
+/// pushing reallocs the Vec mid-dispatch. The C's fixed loop bound means
+/// the appended input is not called this tick; first-tick order is
+/// D,C,B,A, second tick E,D,C,B,A (reconnect refused as a duplicate).
+#[test]
+fn vec_growth_parity() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let (co, ro) = open_pair();
+        let e_param = 0xe as *mut c_void;
+        let cctx = ReCtx {
+            audio: co as *mut c_void,
+            extra: e_param,
+        };
+        let rctx = ReCtx {
+            audio: ro,
+            extra: e_param,
+        };
+        let cp = &cctx as *const ReCtx as *mut c_void;
+        let rp = &rctx as *const ReCtx as *mut c_void;
+        for (cb_c, cb_rs) in [
+            (gr_a_c as _, gr_a_rs as _),
+            (gr_b_c as _, gr_b_rs as _),
+            (gr_c_c as _, gr_c_rs as _),
+        ] {
+            let cb_c: c::OracleAudioOutputCallback = Some(cb_c);
+            let cb_rs: rs::audio_output_callback_t = Some(cb_rs);
+            assert_eq!(
+                c::oracle_audio_output_connect(co, 0, ptr::null(), cb_c, ptr::null_mut()),
+                rs::audio_output_connect(ro, 0, ptr::null(), cb_rs, ptr::null_mut())
+            );
+        }
+        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(gr_d_c), cp));
+        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(gr_d_rs), rp));
+
+        let ra = ro as *mut AudioOutput;
+        c::oracle_audio_tick(co, MAGIC + 21_000_000, MAGIC);
+        let c_order = take_order();
+        (*ra).tick_for_test(MAGIC + 21_000_000, MAGIC);
+        let r_order = take_order();
+        assert_eq!(c_order, r_order);
+        assert_eq!(c_order, [4, 3, 2, 1]);
+        assert_eq!(
+            c::oracle_audio_mix_input_count(co, 0),
+            (*ra).mix_input_count_for_test(0)
+        );
+        assert_eq!(c::oracle_audio_mix_input_count(co, 0), 5);
+
+        c::oracle_audio_tick(co, MAGIC + 42_000_000, MAGIC);
+        let c_order = take_order();
+        (*ra).tick_for_test(MAGIC + 42_000_000, MAGIC);
+        let r_order = take_order();
+        assert_eq!(c_order, r_order);
+        assert_eq!(c_order, [5, 4, 3, 2, 1]);
+        c::oracle_audio_output_close(co);
+        rs::audio_output_close(ro);
+    }
+}
+
+// --- concurrent connect/disconnect -----------------------------------------
+
+unsafe extern "C" fn cd_a_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn cd_a_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(1);
+    }
+}
+unsafe extern "C" fn cd_b_c(_p: *mut c_void, _m: usize, d: *mut c::OracleAudioData) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(2);
+    }
+}
+unsafe extern "C" fn cd_b_rs(_p: *mut c_void, _m: usize, d: *mut rs::audio_data) {
+    if is_magic_ts(unsafe { *d }.timestamp) {
+        push_order(2);
+    }
+}
+unsafe extern "C" fn cd_hammer_c(_p: *mut c_void, _m: usize, _d: *mut c::OracleAudioData) {}
+unsafe extern "C" fn cd_hammer_rs(_p: *mut c_void, _m: usize, _d: *mut rs::audio_data) {}
+
+/// Connect/disconnect racing a dispatch from another thread: a hammer
+/// thread churns the list while the driver ticks; deterministic check —
+/// both sides survive and a quiesced final tick reproduces the same
+/// callback order.
+#[test]
+fn concurrent_connect_disconnect_parity() {
+    let _drive = DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let (co, ro) = open_pair();
+        let hp_addr = 0xfeedusize;
+        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(cd_a_c), ptr::null_mut()));
+        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(cd_a_rs), ptr::null_mut()));
+        assert!(c::oracle_audio_output_connect(co, 0, ptr::null(), Some(cd_b_c), ptr::null_mut()));
+        assert!(rs::audio_output_connect(ro, 0, ptr::null(), Some(cd_b_rs), ptr::null_mut()));
+
+        let co_addr = co as usize;
+        let ro_addr = ro as usize;
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                let co = co_addr as *mut c::OracleAudioOutput;
+                let hp = hp_addr as *mut c_void;
+                for _ in 0..100 {
+                    unsafe {
+                        c::oracle_audio_output_connect(co, 1, ptr::null(), Some(cd_hammer_c), hp);
+                        c::oracle_audio_output_disconnect(co, 1, Some(cd_hammer_c), hp);
+                    }
+                }
+            });
+            s.spawn(move || {
+                let ro = ro_addr as *mut c_void;
+                let hp = hp_addr as *mut c_void;
+                for _ in 0..100 {
+                    unsafe {
+                        rs::audio_output_connect(ro, 1, ptr::null(), Some(cd_hammer_rs), hp);
+                        rs::audio_output_disconnect(ro, 1, Some(cd_hammer_rs), hp);
+                    }
+                }
+            });
+            let ra = ro as *mut AudioOutput;
+            for i in 0..10u64 {
+                c::oracle_audio_tick(co, MAGIC + 21_000_000 + i * 10_000, MAGIC);
+                take_order();
+                (*ra).tick_for_test(MAGIC + 21_000_000 + i * 10_000, MAGIC);
+                take_order();
+            }
+        });
+
+        let ra = ro as *mut AudioOutput;
+        c::oracle_audio_tick(co, MAGIC + 63_000_000, MAGIC);
+        let c_order = take_order();
+        (*ra).tick_for_test(MAGIC + 63_000_000, MAGIC);
+        let r_order = take_order();
+        assert_eq!(c_order, r_order);
+        assert_eq!(c_order, [2, 1]);
+        assert_eq!(
+            c::oracle_audio_mix_input_count(co, 0),
+            (*ra).mix_input_count_for_test(0)
+        );
+        assert_eq!(
+            c::oracle_audio_mix_input_count(co, 1),
+            (*ra).mix_input_count_for_test(1)
+        );
+        c::oracle_audio_output_close(co);
+        rs::audio_output_close(ro);
     }
 }
