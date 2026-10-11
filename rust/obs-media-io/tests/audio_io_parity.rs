@@ -72,13 +72,15 @@ fn record_input(start: u64, end: u64, new_ts: *mut u64, active: u32) {
     // known sample per output mix below (done in the output callback).
     unsafe { *new_ts = end };
     let mut g = TICK.lock().unwrap();
-    g.get_or_insert(TickRecord {
+    // Each driven tick starts a fresh record: tests that never `take_tick()`
+    // would otherwise leave a stale record behind, silently merging its
+    // end_ts/active_mixes/calls into the next test's oracle record.
+    *g = Some(TickRecord {
         end_ts: end,
-        new_ts: 0,
+        new_ts: end,
         active_mixes: active,
         calls: Vec::new(),
-    })
-    .new_ts = end;
+    });
 }
 
 unsafe extern "C" fn input_rs(
@@ -574,7 +576,8 @@ fn self_disconnect_parity() {
             c::oracle_audio_mix_input_count(co, 0),
             (*ra).mix_input_count_for_test(0)
         );
-        assert_eq!(c::oracle_audio_mix_input_count(co, 0), 0);
+        // Only the self-disconnecting input is gone; `other` survives.
+        assert_eq!(c::oracle_audio_mix_input_count(co, 0), 1);
         c::oracle_audio_output_close(co);
         rs::audio_output_close(ro);
     }

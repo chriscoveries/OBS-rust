@@ -10,6 +10,37 @@
 //! `frames * block_size` bytes starting at a plane row — it deliberately
 //! walks past the row boundary into the following rows. The C does the same
 //! arithmetic on `float *`.
+//!
+//! Ownership (fork PR #35 review): `AudioOutput` is the owner — it holds the
+//! `JoinHandle` — and `Shared` is the state the audio thread and concurrent
+//! `connect`/`disconnect` callers reach at the same time. No `&mut
+//! AudioOutput` and no `&mut Shared` is ever created after `open`; the worker
+//! gets a `&Shared` for its whole life and every mutation goes through the
+//! recursive `input_mutex` plus `UnsafeCell`, scoped to a single statement.
+//! `Shared` is heap-allocated before the pthread mutex is initialized, so the
+//! mutex is created at its final address (POSIX forbids moving an
+//! initialized mutex).
+//!
+//! Unsafe-location exception (policy §unsafe): the audio thread shares state
+//! with FFI callers, so `Shared` carries one `UnsafeCell` behind the lock —
+//! the C does the same with `pthread_mutex_*` on the same fields. All unsafe
+//! stays in single-statement accessors with SAFETY comments; the public core
+//! API (`open`/`connect`/`disconnect`/`active`/`tick_for_test`/drop) is safe.
+//!
+//! Documented deviations from the C (all unreachable-but-defined inputs):
+//! - `input_callback == NULL`: the C calls the pointer unconditionally and
+//!   faults; the port treats the tick as failed and returns, like a callback
+//!   that returned false.
+//! - Output `callback == NULL`: the C accepts the connect then faults on the
+//!   next dispatch; the port accepts the connect (same return value) but
+//!   skips the dead call, keeping the input active.
+//! - Mid-dispatch removals that shrink the list below the loop's current
+//!   index: the C reads the stale darray tail (freed-capacity bytes) and
+//!   invokes it; the port skips — no defined C equivalent to reproduce.
+//! - Unix-first: gated `#[cfg(unix)]` at the module level — libc exposes no
+//!   pthread API on Windows, so Windows keeps `media-io/audio-io.c` (its
+//!   exports stay marked C-side); the oracle's POSIX timing is gated the
+//!   same way. A Windows backend is separate work.
 
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
@@ -87,47 +118,76 @@ fn is_audio_planar(format: c_int) -> bool {
     matches!(format, 5..=8)
 }
 
-/// A recursive mutex: `audio_output_connect`/`disconnect` lock `input_mutex`
-/// and the C comments in `do_audio_output` let an output callback disconnect
-/// or connect again from inside the audio thread, which only works because
-/// `pthread_mutex_init_recursive` allows same-thread re-lock.
-struct RecursiveMutex(UnsafeCell<libc::pthread_mutex_t>);
+/// `pthread_mutex_init_recursive`: `audio_output_connect`/`disconnect` lock
+/// `input_mutex` and the C comments in `do_audio_output` let an output
+/// callback disconnect or connect again from inside the audio thread, which
+/// only works because the mutex is recursive.
+///
+/// The `pthread_mutex_t` lives in the `Shared` box: `init()` runs only after
+/// boxing, at the mutex's final address — POSIX forbids moving an
+/// initialized mutex, so the previous stack-`new()`-then-move was unsound.
+struct InputMutex {
+    inner: UnsafeCell<libc::pthread_mutex_t>,
+    initialized: bool,
+}
 
-unsafe impl Send for RecursiveMutex {}
-unsafe impl Sync for RecursiveMutex {}
+// Same-thread re-lock is the point; cross-thread sharing is serialized by
+// the mutex itself.
+unsafe impl Send for InputMutex {}
+unsafe impl Sync for InputMutex {}
 
-impl RecursiveMutex {
-    fn new() -> Result<Self, c_int> {
+impl InputMutex {
+    /// Zeroed storage; `init()` must run once at the object's final address
+    /// before any `lock`/`unlock`.
+    fn uninit() -> Self {
+        // SAFETY: pthread_mutex_t is plain POD; zeroed bytes are a valid
+        // pre-init representation.
+        Self {
+            inner: UnsafeCell::new(unsafe { std::mem::zeroed() }),
+            initialized: false,
+        }
+    }
+
+    /// `pthread_mutex_init_recursive` at the object's final address.
+    /// # Safety
+    /// Call exactly once, before the mutex is shared.
+    unsafe fn init(&mut self) -> Result<(), c_int> {
         unsafe {
-            let mut mutex: libc::pthread_mutex_t = std::mem::zeroed();
             let mut attr: libc::pthread_mutexattr_t = std::mem::zeroed();
             if libc::pthread_mutexattr_init(&mut attr) != 0 {
                 return Err(-1);
             }
             libc::pthread_mutexattr_settype(&mut attr, libc::PTHREAD_MUTEX_RECURSIVE);
-            let rc = libc::pthread_mutex_init(&mut mutex, &attr);
+            let rc = libc::pthread_mutex_init(self.inner.get(), &attr);
             libc::pthread_mutexattr_destroy(&mut attr);
             if rc != 0 {
                 return Err(-1);
             }
-            Ok(Self(UnsafeCell::new(mutex)))
+            self.initialized = true;
+            Ok(())
         }
     }
 
     #[inline]
     fn lock(&self) {
-        unsafe { libc::pthread_mutex_lock(self.0.get()) };
+        // SAFETY: initialized in open before the mutex is shared.
+        unsafe { libc::pthread_mutex_lock(self.inner.get()) };
     }
 
     #[inline]
     fn unlock(&self) {
-        unsafe { libc::pthread_mutex_unlock(self.0.get()) };
+        // SAFETY: see lock.
+        unsafe { libc::pthread_mutex_unlock(self.inner.get()) };
     }
 }
 
-impl Drop for RecursiveMutex {
+impl Drop for InputMutex {
     fn drop(&mut self) {
-        unsafe { libc::pthread_mutex_destroy(self.0.get()) };
+        if self.initialized {
+            // SAFETY: initialized in open; only destroyed after the audio
+            // thread joined (nothing can hold the lock).
+            unsafe { libc::pthread_mutex_destroy(self.inner.get()) };
+        }
     }
 }
 
@@ -147,74 +207,104 @@ struct AudioMix {
     buffer_unclamped: [f32; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES],
 }
 
-/// `struct audio_output`. `info` keeps the caller's `struct audio_output_info`
-/// verbatim so `audio_output_get_info` echoes it — including `name`'s pointer,
-/// like the C's `memcpy`.
-pub struct AudioOutput {
+/// The state the audio thread and concurrent FFI callers share. Everything
+/// except `mixes` and `stop` is immutable after `open` (plain reads need no
+/// lock); `mixes` is reached only under `input_mutex`. The box never moves,
+/// so raw pointers into `buffer`/`buffer_unclamped` stay valid across
+/// re-entrant `connect`/`disconnect` calls (those only touch `inputs`).
+///
+/// Borrow discipline: every `&`/`&mut` into `self.mixes` is created inside a
+/// single expression and never held across a statement that can run a
+/// callback or release the lock — so no borrow is ever live while a
+/// re-entrant call creates another one.
+pub(crate) struct Shared {
     pub(crate) info: audio_output_info,
     pub(crate) block_size: usize,
     pub(crate) channels: usize,
     pub(crate) planes: usize,
 
-    stop: AtomicBool,
-    thread: Option<JoinHandle<()>>,
-    initialized: bool,
-
     input_cb: audio_input_callback_t,
     input_param: *mut c_void,
-    input_mutex: RecursiveMutex,
-    mixes: [AudioMix; MAX_AUDIO_MIXES],
+
+    stop: AtomicBool,
+    input_mutex: InputMutex,
+    mixes: UnsafeCell<[AudioMix; MAX_AUDIO_MIXES]>,
 }
 
 // Raw C pointers are passed across the API (param, callback, resampler); the
-// audio thread and callers share the struct exactly like the C does.
-unsafe impl Send for AudioOutput {}
+// audio thread and callers share `Shared` exactly like the C shares
+// `struct audio_output`.
+unsafe impl Send for Shared {}
+unsafe impl Sync for Shared {}
 
-struct SendOutput(*mut AudioOutput);
-unsafe impl Send for SendOutput {}
+struct SendShared(*const Shared);
+unsafe impl Send for SendShared {}
 
-impl SendOutput {
-    fn into_inner(self) -> *mut AudioOutput {
+impl SendShared {
+    fn into_inner(self) -> *const Shared {
         self.0
     }
 }
 
-fn resample_audio_output(input: &mut AudioInput, data: &mut audio_data) -> bool {
-    let mut success = true;
+/// `struct audio_output` — the owner. `audio_t` handles point at this; the
+/// join handle stays here (never inside `Shared`) so `drop` can stop and
+/// join the worker before the shared box is torn down, without holding the
+/// input lock.
+pub struct AudioOutput {
+    pub(crate) shared: Box<Shared>,
+    thread: Option<JoinHandle<()>>,
+    initialized: bool,
+}
 
-    if !input.resampler.is_null() {
-        let mut output: [*mut u8; MAX_AV_PLANES] = [ptr::null_mut(); MAX_AV_PLANES];
-        let mut frames: u32 = 0;
-        let mut offset: u64 = 0;
+// FFI callers move handles across threads; all shared state sits behind
+// `Shared`'s lock or its immutable fields.
+unsafe impl Send for AudioOutput {}
+unsafe impl Sync for AudioOutput {}
 
-        success = unsafe {
-            audio_resampler_resample(
-                input.resampler,
-                output.as_mut_ptr(),
-                &mut frames,
-                &mut offset,
-                data.data.as_ptr() as *const *const u8,
-                data.frames,
-            )
-        };
-
-        data.data = output;
-        data.frames = frames;
-        data.timestamp = data.timestamp.wrapping_sub(offset);
+fn resample_audio_output(resampler: *mut c_void, data: &mut audio_data) -> bool {
+    if resampler.is_null() {
+        return true;
     }
 
+    let mut output: [*mut u8; MAX_AV_PLANES] = [ptr::null_mut(); MAX_AV_PLANES];
+    let mut frames: u32 = 0;
+    let mut offset: u64 = 0;
+
+    let success = unsafe {
+        // SAFETY: `resampler` was returned by audio_resampler_create for this
+        // input; output/frames/offset are valid out-params for the call.
+        audio_resampler_resample(
+            resampler,
+            output.as_mut_ptr(),
+            &mut frames,
+            &mut offset,
+            data.data.as_ptr() as *const *const u8,
+            data.frames,
+        )
+    };
+
+    data.data = output;
+    data.frames = frames;
+    data.timestamp = data.timestamp.wrapping_sub(offset);
     success
 }
 
 /// `audio_input_free`.
 fn audio_input_free(input: &mut AudioInput) {
+    // SAFETY: resampler is either NULL or a live audio_resampler_create
+    // handle destroyed exactly once (disconnect erases, close frees all).
     unsafe { audio_resampler_destroy(input.resampler) };
 }
 
-impl AudioOutput {
-    fn do_audio_output(&mut self, mix_idx: usize, timestamp: u64, frames: u32) {
+impl Shared {
+    /// One `do_audio_output` mix dispatch, C shape: lock the recursive mutex
+    /// for the whole walk; the loop bound is fixed at entry
+    /// (`for (i = inputs.num; i > 0; i--)`) and index `i-1` is re-read each
+    /// iteration, so a callback that removes an earlier input re-invokes the
+    /// element that shifts into the visited slot, and a callback that
+    /// appends is not called this tick.
+    fn do_audio_output(&self, mix_idx: usize, timestamp: u64, frames: u32) {
         let planes = self.planes;
-        let mix = &mut self.mixes[mix_idx];
 
         self.input_mutex.lock();
 
@@ -224,41 +314,78 @@ impl AudioOutput {
             timestamp: 0,
         };
 
-        for input in mix.inputs.iter_mut().rev() {
-            let buf: &mut [f32] = if input.conversion.allow_clipping {
-                &mut mix.buffer_unclamped
-            } else {
-                &mut mix.buffer
+        let mut i = {
+            // SAFETY: the lock is held; no other accessor is live.
+            unsafe { (*self.mixes.get())[mix_idx].inputs.len() }
+        };
+        while i > 0 {
+            i -= 1;
+            // Re-read index i into locals and end every list/element borrow
+            // before the callback runs: the callback may re-enter
+            // connect/disconnect under this same recursive lock.
+            let Some((resampler, callback, param, buf_ptr)) = ({
+                // SAFETY: the lock is held; this borrow ends before the
+                // callback below.
+                let mix = unsafe { &mut (*self.mixes.get())[mix_idx] };
+                mix.inputs.get(i).map(|input| {
+                    let buf = if input.conversion.allow_clipping {
+                        &mut mix.buffer_unclamped
+                    } else {
+                        &mut mix.buffer
+                    };
+                    (
+                        input.resampler,
+                        input.callback,
+                        input.param,
+                        buf.as_mut_ptr(),
+                    )
+                })
+            }) else {
+                // More inputs were removed than the loop has left to visit;
+                // the C would call into freed darray tail — skip (documented
+                // deviation).
+                continue;
             };
-            let buf_ptr = buf.as_mut_ptr();
-            for (i, slot) in data.data.iter_mut().enumerate().take(planes) {
-                *slot = unsafe { buf_ptr.add(i * AUDIO_OUTPUT_FRAMES) } as *mut u8;
+
+            for (p, slot) in data.data.iter_mut().enumerate().take(planes) {
+                // SAFETY: buf_ptr points into the mix's fixed buffer rows,
+                // stable for the Shared box's life.
+                *slot = unsafe { buf_ptr.add(p * AUDIO_OUTPUT_FRAMES) } as *mut u8;
             }
 
             data.frames = frames;
             data.timestamp = timestamp;
 
-            if resample_audio_output(input, &mut data)
-                && let Some(callback) = input.callback
+            if resample_audio_output(resampler, &mut data)
+                && let Some(callback) = callback
             {
-                unsafe { callback(input.param, mix_idx, &mut data) };
+                // Still under the recursive lock: re-entrant
+                // connect/disconnect is legal, like the C's.
+                unsafe { callback(param, mix_idx, &mut data) };
             }
         }
 
         self.input_mutex.unlock();
     }
 
-    fn clamp_audio_output(&mut self, bytes: usize) {
+    /// `clamp_audio_output`. `active_mixes` is the bitmask already computed
+    /// under the lock for this tick, matching the C's `!mix->inputs.num`
+    /// skip — a mix that gained an input since the snapshot is skipped just
+    /// like the C's racy check.
+    fn clamp_audio_output(&self, bytes: usize, active_mixes: u32) {
         let float_size = bytes / core::mem::size_of::<f32>();
 
-        for mix in &mut self.mixes {
-            if mix.inputs.is_empty() {
+        for mix_idx in 0..MAX_AUDIO_MIXES {
+            if active_mixes & (1 << mix_idx) == 0 {
                 continue;
             }
 
             for plane in 0..self.planes {
                 let start = plane * AUDIO_OUTPUT_FRAMES;
                 let end = start + float_size;
+                // SAFETY: scoped borrow of two disjoint fields of this mix;
+                // buffers are only touched by this thread's tick path.
+                let mix = unsafe { &mut (*self.mixes.get())[mix_idx] };
                 mix.buffer_unclamped[start..end].copy_from_slice(&mix.buffer[start..end]);
                 for val in &mut mix.buffer[start..end] {
                     let mut v = *val;
@@ -272,7 +399,7 @@ impl AudioOutput {
     }
 
     /// `input_and_output`: one audio-thread tick.
-    fn input_and_output(&mut self, audio_time: u64, prev_time: u64) {
+    fn input_and_output(&self, audio_time: u64, prev_time: u64) {
         let bytes = AUDIO_OUTPUT_FRAMES * self.block_size;
         let mut data = [audio_output_data {
             data: [ptr::null_mut(); MAX_AUDIO_CHANNELS],
@@ -281,22 +408,36 @@ impl AudioOutput {
         let mut new_ts: u64 = 0;
 
         self.input_mutex.lock();
-        for (i, mix) in self.mixes.iter().enumerate() {
-            if !mix.inputs.is_empty() {
+        for i in 0..MAX_AUDIO_MIXES {
+            // SAFETY: the lock is held; this borrow ends each statement.
+            if unsafe { !(*self.mixes.get())[i].inputs.is_empty() } {
                 active_mixes |= 1 << i;
             }
         }
         self.input_mutex.unlock();
 
-        for (mix_idx, mix) in self.mixes.iter_mut().enumerate() {
-            mix.buffer.fill(0.0);
-            for (i, slot) in data[mix_idx].data.iter_mut().enumerate().take(self.planes) {
-                *slot = unsafe { mix.buffer.as_mut_ptr().add(i * AUDIO_OUTPUT_FRAMES) };
+        for (mix_idx, out) in data.iter_mut().enumerate() {
+            let buf_ptr = {
+                // SAFETY: field-scoped borrow of this mix's buffer only.
+                let mix = unsafe { &mut (*self.mixes.get())[mix_idx] };
+                mix.buffer.fill(0.0);
+                mix.buffer.as_mut_ptr()
+            };
+            for (i, slot) in out.data.iter_mut().enumerate().take(self.planes) {
+                // SAFETY: fixed buffer rows, stable for the Shared box's life.
+                *slot = unsafe { buf_ptr.add(i * AUDIO_OUTPUT_FRAMES) };
             }
         }
 
+        // `input_cb == NULL`: the C calls it unconditionally and faults; the
+        // port treats the tick as failed and returns (documented deviation).
+        let Some(input_cb) = self.input_cb else {
+            return;
+        };
         let success = unsafe {
-            (self.input_cb.unwrap())(
+            // SAFETY: callback + param come verbatim from the caller's
+            // audio_output_info; data points at `data` above for the call.
+            input_cb(
                 self.input_param,
                 prev_time,
                 audio_time,
@@ -309,113 +450,115 @@ impl AudioOutput {
             return;
         }
 
-        self.clamp_audio_output(bytes);
+        self.clamp_audio_output(bytes, active_mixes);
 
         for i in 0..MAX_AUDIO_MIXES {
             self.do_audio_output(i, new_ts, AUDIO_OUTPUT_FRAMES as u32);
         }
     }
+}
 
-    /// `audio_get_input_idx`: position of (callback, param) in a mix, or None
-    /// like the C's `DARRAY_INVALID`.
-    fn get_input_idx(
-        &self,
-        mix_idx: usize,
-        callback: audio_output_callback_t,
-        param: *mut c_void,
-    ) -> Option<usize> {
-        self.mixes[mix_idx].inputs.iter().position(|i| {
-            let same_fn = match (i.callback, callback) {
-                (Some(a), Some(b)) => std::ptr::fn_addr_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            };
-            same_fn && i.param == param
-        })
-    }
+/// `audio_get_input_idx`: position of (callback, param) in a mix, or None
+/// like the C's `DARRAY_INVALID`.
+fn input_index(
+    inputs: &[AudioInput],
+    callback: audio_output_callback_t,
+    param: *mut c_void,
+) -> Option<usize> {
+    inputs.iter().position(|i| {
+        let same_fn = match (i.callback, callback) {
+            (Some(a), Some(b)) => std::ptr::fn_addr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        same_fn && i.param == param
+    })
+}
 
-    /// `audio_input_init`: create a resampler only when the conversion differs
-    /// from the output format/rate/layout.
-    fn audio_input_init(input: &mut AudioInput, audio: &AudioOutput) -> bool {
-        if input.conversion.format != audio.info.format
-            || input.conversion.samples_per_sec != audio.info.samples_per_sec
-            || input.conversion.speakers != audio.info.speakers
-        {
-            let from = resample_info {
-                format: audio.info.format,
-                samples_per_sec: audio.info.samples_per_sec,
-                speakers: audio.info.speakers,
-            };
-            let to = resample_info {
-                format: input.conversion.format,
-                samples_per_sec: input.conversion.samples_per_sec,
-                speakers: input.conversion.speakers,
-            };
+/// `audio_input_init`: create a resampler only when the conversion differs
+/// from the output format/rate/layout.
+fn audio_input_init(input: &mut AudioInput, info: &audio_output_info) -> bool {
+    if input.conversion.format != info.format
+        || input.conversion.samples_per_sec != info.samples_per_sec
+        || input.conversion.speakers != info.speakers
+    {
+        let from = resample_info {
+            format: info.format,
+            samples_per_sec: info.samples_per_sec,
+            speakers: info.speakers,
+        };
+        let to = resample_info {
+            format: input.conversion.format,
+            samples_per_sec: input.conversion.samples_per_sec,
+            speakers: input.conversion.speakers,
+        };
 
-            input.resampler = unsafe { audio_resampler_create(&to, &from) };
-            if input.resampler.is_null() {
-                unsafe {
-                    blog(
-                        LOG_ERROR,
-                        c"audio_input_init: Failed to create resampler".as_ptr(),
-                    )
-                };
-                return false;
-            }
-        } else {
-            input.resampler = ptr::null_mut();
+        // SAFETY: both info structs are valid for the call.
+        input.resampler = unsafe { audio_resampler_create(&to, &from) };
+        if input.resampler.is_null() {
+            unsafe {
+                blog(
+                    LOG_ERROR,
+                    c"audio_input_init: Failed to create resampler".as_ptr(),
+                )
+            };
+            return false;
         }
-
-        true
+    } else {
+        input.resampler = ptr::null_mut();
     }
 
+    true
+}
+
+impl AudioOutput {
     /// `valid_audio_params`.
     fn valid_audio_params(info: &audio_output_info) -> bool {
         info.format != 0 && !info.name.is_null() && info.samples_per_sec > 0 && info.speakers > 0
     }
 
-    /// `audio_output_open` body: validate, build, start the thread. On failure
-    /// returns the C error code and — like the C — leaves `*audio` untouched.
-    /// # Safety
-    /// `info` must point to a valid `struct audio_output_info`.
-    pub unsafe fn open(info: *mut audio_output_info) -> Result<Box<AudioOutput>, c_int> {
-        let i = unsafe { &*info };
-        if !Self::valid_audio_params(i) {
+    /// `audio_output_open` body: validate, build, start the thread. On
+    /// failure returns the C error code and — like the C — leaves nothing
+    /// behind.
+    pub fn open(info: &audio_output_info) -> Result<Box<AudioOutput>, c_int> {
+        if !Self::valid_audio_params(info) {
             return Err(AUDIO_OUTPUT_INVALIDPARAM);
         }
 
-        let planar = is_audio_planar(i.format);
-        let channels = get_audio_channels(i.speakers);
+        let planar = is_audio_planar(info.format);
+        let channels = get_audio_channels(info.speakers);
         let planes = if planar { channels } else { 1 };
         let block_size =
-            (if planar { 1 } else { channels }) * get_audio_bytes_per_channel(i.format);
+            (if planar { 1 } else { channels }) * get_audio_bytes_per_channel(info.format);
 
-        let input_mutex = match RecursiveMutex::new() {
-            Ok(m) => m,
-            Err(_) => return Err(AUDIO_OUTPUT_FAIL),
-        };
-
-        let mut out = Box::new(AudioOutput {
-            info: *i,
+        let mut shared = Box::new(Shared {
+            info: *info,
             channels,
             planes,
             block_size,
+            input_cb: info.input_callback,
+            input_param: info.input_param,
             stop: AtomicBool::new(false),
-            thread: None,
-            initialized: false,
-            input_cb: i.input_callback,
-            input_param: i.input_param,
-            input_mutex,
-            mixes: std::array::from_fn(|_| AudioMix {
+            input_mutex: InputMutex::uninit(),
+            mixes: UnsafeCell::new(std::array::from_fn(|_| AudioMix {
                 inputs: Vec::new(),
                 buffer: [0.0; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES],
                 buffer_unclamped: [0.0; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES],
-            }),
+            })),
+        });
+        // SAFETY: first and only init, at the mutex's final (boxed) address.
+        if unsafe { shared.input_mutex.init() }.is_err() {
+            return Err(AUDIO_OUTPUT_FAIL);
+        }
+
+        let mut out = Box::new(AudioOutput {
+            shared,
+            thread: None,
+            initialized: false,
         });
 
-        let ptr = SendOutput(&mut *out as *mut AudioOutput);
-        let handle =
-            std::thread::Builder::new().spawn(move || unsafe { audio_thread(ptr.into_inner()) });
+        let ptr = SendShared(&*out.shared as *const Shared);
+        let handle = std::thread::Builder::new().spawn(move || audio_thread(ptr.into_inner()));
         match handle {
             Ok(h) => out.thread = Some(h),
             Err(_) => return Err(AUDIO_OUTPUT_FAIL),
@@ -425,14 +568,17 @@ impl AudioOutput {
         Ok(out)
     }
 
-    /// `audio_output_connect`.
+    /// `audio_output_connect`. `&self`: the input list lives behind the
+    /// shared recursive lock, so callers (including output callbacks on the
+    /// audio thread) share one object — never an exclusive `&mut`.
     ///
-    /// # Safety
-    /// `conversion`, when non-NULL, must point to a valid `struct audio_convert_info`.
-    pub unsafe fn connect(
-        &mut self,
+    /// `callback == NULL` is accepted like the C's connect, but the dead
+    /// call is skipped at dispatch instead of faulting (documented
+    /// deviation); the input stays active.
+    pub fn connect(
+        &self,
         mi: usize,
-        conversion: *const crate::ffi::audio_io::audio_convert_info,
+        conversion: Option<&crate::ffi::audio_io::audio_convert_info>,
         callback: audio_output_callback_t,
         param: *mut c_void,
     ) -> bool {
@@ -440,53 +586,59 @@ impl AudioOutput {
             return false;
         }
 
-        self.input_mutex.lock();
+        let shared = &*self.shared;
+        shared.input_mutex.lock();
 
         let mut success = false;
-        if self.get_input_idx(mi, callback, param).is_none() {
-            let mut input = AudioInput {
-                conversion: crate::ffi::audio_io::audio_convert_info {
-                    samples_per_sec: 0,
-                    format: 0,
-                    speakers: 0,
-                    allow_clipping: false,
-                },
-                resampler: ptr::null_mut(),
-                callback,
-                param,
-            };
+        {
+            // SAFETY: the lock is held; this borrow ends before unlock.
+            let mixes = unsafe { &mut *shared.mixes.get() };
+            if input_index(&mixes[mi].inputs, callback, param).is_none() {
+                let mut input = AudioInput {
+                    conversion: crate::ffi::audio_io::audio_convert_info {
+                        samples_per_sec: 0,
+                        format: 0,
+                        speakers: 0,
+                        allow_clipping: false,
+                    },
+                    resampler: ptr::null_mut(),
+                    callback,
+                    param,
+                };
 
-            if conversion.is_null() {
-                input.conversion.format = self.info.format;
-                input.conversion.speakers = self.info.speakers;
-                input.conversion.samples_per_sec = self.info.samples_per_sec;
-            } else {
-                input.conversion = unsafe { *conversion };
-            }
+                match conversion {
+                    None => {
+                        input.conversion.format = shared.info.format;
+                        input.conversion.speakers = shared.info.speakers;
+                        input.conversion.samples_per_sec = shared.info.samples_per_sec;
+                    }
+                    Some(c) => input.conversion = *c,
+                }
 
-            if input.conversion.format == 0 {
-                input.conversion.format = self.info.format;
-            }
-            if input.conversion.speakers == 0 {
-                input.conversion.speakers = self.info.speakers;
-            }
-            if input.conversion.samples_per_sec == 0 {
-                input.conversion.samples_per_sec = self.info.samples_per_sec;
-            }
+                if input.conversion.format == 0 {
+                    input.conversion.format = shared.info.format;
+                }
+                if input.conversion.speakers == 0 {
+                    input.conversion.speakers = shared.info.speakers;
+                }
+                if input.conversion.samples_per_sec == 0 {
+                    input.conversion.samples_per_sec = shared.info.samples_per_sec;
+                }
 
-            success = Self::audio_input_init(&mut input, self);
-            if success {
-                self.mixes[mi].inputs.push(input);
+                success = audio_input_init(&mut input, &shared.info);
+                if success {
+                    mixes[mi].inputs.push(input);
+                }
             }
         }
 
-        self.input_mutex.unlock();
+        shared.input_mutex.unlock();
         success
     }
 
     /// `audio_output_disconnect`.
     pub fn disconnect(
-        &mut self,
+        &self,
         mix_idx: usize,
         callback: audio_output_callback_t,
         param: *mut c_void,
@@ -495,36 +647,56 @@ impl AudioOutput {
             return;
         }
 
-        self.input_mutex.lock();
+        let shared = &*self.shared;
+        shared.input_mutex.lock();
 
-        if let Some(idx) = self.get_input_idx(mix_idx, callback, param) {
-            let mut input = self.mixes[mix_idx].inputs.remove(idx);
-            audio_input_free(&mut input);
+        {
+            // SAFETY: the lock is held; this borrow ends before unlock.
+            let mixes = unsafe { &mut *shared.mixes.get() };
+            if let Some(idx) = input_index(&mixes[mix_idx].inputs, callback, param) {
+                let mut input = mixes[mix_idx].inputs.remove(idx);
+                audio_input_free(&mut input);
+            }
         }
 
-        self.input_mutex.unlock();
+        shared.input_mutex.unlock();
     }
 
     /// `audio_output_active`.
     pub fn active(&self) -> bool {
-        self.mixes.iter().any(|m| !m.inputs.is_empty())
+        let shared = &*self.shared;
+        shared.input_mutex.lock();
+        // SAFETY: the lock is held; borrow ends before unlock.
+        let active = unsafe { (*shared.mixes.get()).iter().any(|m| !m.inputs.is_empty()) };
+        shared.input_mutex.unlock();
+        active
     }
 
     /// Test hooks for the Tier-3 parity test: the same tick and mix
     /// introspection the C oracle exports as `oracle_audio_*`.
     #[doc(hidden)]
-    pub fn tick_for_test(&mut self, audio_time: u64, prev_time: u64) {
-        self.input_and_output(audio_time, prev_time);
+    pub fn tick_for_test(&self, audio_time: u64, prev_time: u64) {
+        self.shared.input_and_output(audio_time, prev_time);
     }
 
     #[doc(hidden)]
     pub fn mix_input_count_for_test(&self, mix_idx: usize) -> usize {
-        self.mixes[mix_idx].inputs.len()
+        let shared = &*self.shared;
+        shared.input_mutex.lock();
+        // SAFETY: the lock is held; borrow ends before unlock.
+        let n = unsafe { (*shared.mixes.get())[mix_idx].inputs.len() };
+        shared.input_mutex.unlock();
+        n
     }
 
     #[doc(hidden)]
     pub fn mix_input_resampled_for_test(&self, mix_idx: usize, input_idx: usize) -> bool {
-        !self.mixes[mix_idx].inputs[input_idx].resampler.is_null()
+        let shared = &*self.shared;
+        shared.input_mutex.lock();
+        // SAFETY: the lock is held; borrow ends before unlock.
+        let r = unsafe { !(&(*shared.mixes.get())[mix_idx].inputs)[input_idx].resampler.is_null() };
+        shared.input_mutex.unlock();
+        r
     }
 
     #[doc(hidden)]
@@ -532,22 +704,29 @@ impl AudioOutput {
         &self,
         mix_idx: usize,
         input_idx: usize,
-    ) -> &crate::ffi::audio_io::audio_convert_info {
-        &self.mixes[mix_idx].inputs[input_idx].conversion
+    ) -> crate::ffi::audio_io::audio_convert_info {
+        let shared = &*self.shared;
+        shared.input_mutex.lock();
+        // SAFETY: the lock is held; the struct is copied out before unlock.
+        let conv = unsafe { (&(*shared.mixes.get())[mix_idx].inputs)[input_idx].conversion };
+        shared.input_mutex.unlock();
+        conv
     }
 }
 
 impl Drop for AudioOutput {
     /// `audio_output_close`: stop the thread, join it, then free every mix's
-    /// resamplers (in mix order, like the C).
+    /// resamplers (in mix order, like the C). Stop/join completes before the
+    /// shared box is destroyed and never holds the input lock.
     fn drop(&mut self) {
         if self.initialized {
-            self.stop.store(true, Ordering::SeqCst);
+            self.shared.stop.store(true, Ordering::SeqCst);
             if let Some(h) = self.thread.take() {
                 let _ = h.join();
             }
         }
-        for mix in &mut self.mixes {
+        // Worker is dead; exclusive access again.
+        for mix in unsafe { &mut *self.shared.mixes.get() }.iter_mut() {
             for input in &mut mix.inputs {
                 audio_input_free(input);
             }
@@ -555,9 +734,13 @@ impl Drop for AudioOutput {
     }
 }
 
-unsafe fn audio_thread(audio: *mut AudioOutput) {
-    let a = unsafe { &mut *audio };
-    let rate = a.info.samples_per_sec as usize;
+/// The audio thread: `&Shared` for its whole life — never `&mut` and never
+/// the owner object.
+fn audio_thread(shared: *const Shared) {
+    // SAFETY: the Shared box outlives the thread — AudioOutput::drop joins
+    // before tearing it down.
+    let s = unsafe { &*shared };
+    let rate = s.info.samples_per_sec as usize;
     let mut samples: u64 = 0;
     let start_time = unsafe { os_gettime_ns() };
     let mut prev_time = start_time;
@@ -568,11 +751,11 @@ unsafe fn audio_thread(audio: *mut AudioOutput) {
         profile_store_name(
             obs_get_profiler_name_store(),
             c"audio_thread(%s)".as_ptr(),
-            a.info.name,
+            s.info.name,
         )
     };
 
-    while !a.stop.load(Ordering::SeqCst) {
+    while !s.stop.load(Ordering::SeqCst) {
         samples += AUDIO_OUTPUT_FRAMES as u64;
         let audio_time =
             start_time.wrapping_add(util_mul_div64(samples, 1_000_000_000, rate as u64));
@@ -581,7 +764,7 @@ unsafe fn audio_thread(audio: *mut AudioOutput) {
 
         unsafe { profile_start(audio_thread_name) };
 
-        a.input_and_output(audio_time, prev_time);
+        s.input_and_output(audio_time, prev_time);
         prev_time = audio_time;
 
         unsafe { profile_end(audio_thread_name) };

@@ -94,8 +94,9 @@ pub unsafe extern "C" fn audio_output_open(
     audio: *mut *mut c_void,
     info: *mut audio_output_info,
 ) -> c_int {
-    // SAFETY: caller provides a valid info pointer per the C contract.
-    match unsafe { AudioOutput::open(info) } {
+    // SAFETY: caller provides a valid info pointer per the C contract (a
+    // NULL info faults in the C and here alike).
+    match AudioOutput::open(unsafe { &*info }) {
         Ok(out) => {
             // SAFETY: caller provides a valid out-pointer slot.
             unsafe { *audio = Box::into_raw(out) as *mut c_void };
@@ -134,8 +135,11 @@ pub unsafe extern "C" fn audio_output_connect(
     if audio.is_null() {
         return false;
     }
-    // SAFETY: live handle; the lock inside `connect` serializes the list.
-    unsafe { (&mut *(audio as *mut AudioOutput)).connect(mix_idx, conversion, callback, param) }
+    // SAFETY: live handle; `conversion` is valid per the C contract (NULL ->
+    // None). The lock inside `connect` serializes the list; `&self` — no
+    // exclusive reference is ever created on a live handle.
+    let conversion = unsafe { conversion.as_ref() };
+    unsafe { (&*(audio as *const AudioOutput)).connect(mix_idx, conversion, callback, param) }
 }
 
 /// `audio_output_disconnect`.
@@ -153,7 +157,7 @@ pub unsafe extern "C" fn audio_output_disconnect(
         return;
     }
     // SAFETY: live handle; the lock inside `disconnect` serializes the list.
-    unsafe { (&mut *(audio as *mut AudioOutput)).disconnect(mix_idx, callback, param) }
+    unsafe { (&*(audio as *const AudioOutput)).disconnect(mix_idx, callback, param) }
 }
 
 /// `audio_output_get_info`.
@@ -165,8 +169,9 @@ pub unsafe extern "C" fn audio_output_get_info(audio: *const c_void) -> *const a
     if audio.is_null() {
         return core::ptr::null();
     }
-    // SAFETY: live handle; `info` lives inside it (the C returns the same pointer).
-    unsafe { &(*(audio as *const AudioOutput)).info as *const audio_output_info }
+    // SAFETY: live handle; `info` lives inside the shared state (the C
+    // returns the same pointer).
+    unsafe { &(*(audio as *const AudioOutput)).shared.info as *const audio_output_info }
 }
 
 /// `audio_output_active`.
@@ -190,7 +195,7 @@ pub unsafe extern "C" fn audio_output_active(audio: *const c_void) -> bool {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn audio_output_get_block_size(audio: *const c_void) -> usize {
     // SAFETY: C pins a NULL deref; reading a field off the handle preserves it.
-    unsafe { (*(audio as *const AudioOutput)).block_size }
+    unsafe { (*(audio as *const AudioOutput)).shared.block_size }
 }
 
 /// `audio_output_get_planes`.
@@ -200,7 +205,7 @@ pub unsafe extern "C" fn audio_output_get_block_size(audio: *const c_void) -> us
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn audio_output_get_planes(audio: *const c_void) -> usize {
     // SAFETY: see get_block_size.
-    unsafe { (*(audio as *const AudioOutput)).planes }
+    unsafe { (*(audio as *const AudioOutput)).shared.planes }
 }
 
 /// `audio_output_get_channels`.
@@ -210,7 +215,7 @@ pub unsafe extern "C" fn audio_output_get_planes(audio: *const c_void) -> usize 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn audio_output_get_channels(audio: *const c_void) -> usize {
     // SAFETY: see get_block_size.
-    unsafe { (*(audio as *const AudioOutput)).channels }
+    unsafe { (*(audio as *const AudioOutput)).shared.channels }
 }
 
 /// `audio_output_get_sample_rate`.
@@ -220,5 +225,5 @@ pub unsafe extern "C" fn audio_output_get_channels(audio: *const c_void) -> usiz
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn audio_output_get_sample_rate(audio: *const c_void) -> u32 {
     // SAFETY: see get_block_size.
-    unsafe { (*(audio as *const AudioOutput)).info.samples_per_sec }
+    unsafe { (*(audio as *const AudioOutput)).shared.info.samples_per_sec }
 }

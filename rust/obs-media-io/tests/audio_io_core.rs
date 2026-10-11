@@ -7,7 +7,13 @@
 //! threading build plus its stubs, like the FFI-level Tier 1 file.
 
 use std::ptr;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Serializes the explicit-tick tests: the real audio worker never produces a
+/// MAGIC start_ts, but the shared counters can still race across parallel
+/// test bodies (several `tick_for_test(MAGIC)` calls at once).
+static DRIVER: Mutex<()> = Mutex::new(());
 
 use obs_c_oracle as _;
 use obs_media_io::audio_io::AudioOutput;
@@ -24,6 +30,10 @@ const MAGIC: u64 = 0x1eaf_dead_beef;
 
 static INPUT_CALLS: AtomicUsize = AtomicUsize::new(0);
 static OUTPUT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn lock_driver() -> std::sync::MutexGuard<'static, ()> {
+    DRIVER.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn reset_counts() {
     INPUT_CALLS.store(0, Ordering::SeqCst);
@@ -71,6 +81,7 @@ fn stereo_info() -> audio_output_info {
 /// deleting the call site in `do_audio_output` fails this test.
 #[test]
 fn output_callback_runs_each_tick() {
+    let _drive = lock_driver();
     reset_counts();
     let mut out = AudioOutput::open(&stereo_info()).expect("open");
     assert!(out.connect(0, None, Some(counting_output), ptr::null_mut()));
@@ -87,6 +98,7 @@ fn output_callback_runs_each_tick() {
 /// no-op tick — it must never panic.
 #[test]
 fn tick_without_input_callback_is_noop() {
+    let _drive = lock_driver();
     let mut info = stereo_info();
     info.input_callback = None;
     let mut out = AudioOutput::open(&info).expect("open");
@@ -99,6 +111,7 @@ fn tick_without_input_callback_is_noop() {
 /// documented deviation.
 #[test]
 fn null_output_callback_connects_and_stays_silent() {
+    let _drive = lock_driver();
     reset_counts();
     let mut out = AudioOutput::open(&stereo_info()).expect("open");
     assert!(out.connect(0, None, None, ptr::null_mut()));
@@ -113,6 +126,7 @@ fn null_output_callback_connects_and_stays_silent() {
 /// not corrupt or double-run a remaining input.
 #[test]
 fn output_callback_may_disconnect_itself() {
+    let _drive = lock_driver();
     struct Ctx {
         audio: *const AudioOutput,
         hits: AtomicUsize,
@@ -131,7 +145,7 @@ fn output_callback_may_disconnect_itself() {
 
     let mut out = Box::new(AudioOutput::open(&stereo_info()).expect("open"));
     let ctx = Ctx {
-        audio: &*out,
+        audio: &**out,
         hits: AtomicUsize::new(0),
     };
     assert!(out.connect(
@@ -153,6 +167,7 @@ fn output_callback_may_disconnect_itself() {
 /// NEXT tick, like the C's fixed loop bound.
 #[test]
 fn output_callback_may_connect_a_new_input() {
+    let _drive = lock_driver();
     struct Ctx {
         audio: *const AudioOutput,
         second: AtomicUsize,
@@ -179,7 +194,7 @@ fn output_callback_may_connect_a_new_input() {
 
     let mut out = Box::new(AudioOutput::open(&stereo_info()).expect("open"));
     let ctx = Box::new(Ctx {
-        audio: &*out,
+        audio: &**out,
         second: AtomicUsize::new(0),
     });
     let param = &*ctx as *const Ctx as *mut core::ffi::c_void;
@@ -200,6 +215,7 @@ fn output_callback_may_connect_a_new_input() {
 /// input sees the raw unclamped copy. Deleting the clamp fails this test.
 #[test]
 fn clamping_respects_allow_clipping() {
+    let _drive = lock_driver();
     static SEEN: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 
     unsafe extern "C" fn writing_input(
