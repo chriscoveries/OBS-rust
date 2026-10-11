@@ -12,6 +12,7 @@
 !/plugins
 !/shared
 !/test
+!/tools
 !.cirrus.xml
 !.clang-format
 !.editorconfig
@@ -49,6 +50,8 @@
 !lint
 !local-gate.toml
 !unittest
+__pycache__/
+*.py[cod]
 
 # Exclude lock files
 *.lock.json

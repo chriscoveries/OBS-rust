@@ -20,6 +20,12 @@ pub struct axisang {
     pub w: f32,
 }
 
+impl From<axisang> for AxisAng {
+    fn from(a: axisang) -> Self {
+        Self::new(a.x, a.y, a.z, a.w)
+    }
+}
+
 impl From<AxisAng> for axisang {
     fn from(a: AxisAng) -> Self {
         Self {

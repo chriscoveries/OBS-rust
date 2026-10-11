@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Coordination rules
+    url: https://github.com/obs-rust/obs-studio/blob/master/docs/rust-port/coordination.md
+    about: How to claim issues and avoid duplicate pull requests.

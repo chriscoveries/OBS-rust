@@ -1,0 +1,8 @@
+vec3_from_vec4
+vec3_mirror
+vec3_mirrorv
+vec3_plane_dist
+vec3_rand
+vec3_rotate
+vec3_transform
+vec3_transform3x4

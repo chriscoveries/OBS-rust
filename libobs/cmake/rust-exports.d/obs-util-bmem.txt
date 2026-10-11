@@ -1,0 +1,6 @@
+base_get_alignment
+bfree
+bmalloc
+bmemdup
+bnum_allocs
+brealloc

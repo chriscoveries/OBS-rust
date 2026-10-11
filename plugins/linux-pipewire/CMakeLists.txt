@@ -32,6 +32,8 @@ target_sources(
     pipewire.h
     portal.c
     portal.h
+    reconnect-policy.c
+    reconnect-policy.h
     screencast-portal.c
     screencast-portal.h
 )

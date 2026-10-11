@@ -17,12 +17,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <util/platform.h>
 #include <util/bmem.h>
-#include <util/util_uint64.h>
 #include <obs-module.h>
 
+#include "pulse-reconnect.h"
+#include "pulse-timing.h"
 #include "pulse-wrapper.h"
 
-#define NSEC_PER_SEC 1000000000LL
 #define NSEC_PER_MSEC 1000000L
 
 #define PULSE_DATA(voidptr) struct pulse_data *data = voidptr;
@@ -30,6 +30,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 struct pulse_data {
 	obs_source_t *source;
+	obs_weak_source_t *weak_source;
 	pa_stream *stream;
 
 	/* user settings */
@@ -44,6 +45,9 @@ struct pulse_data {
 	uint_fast32_t bytes_per_frame;
 	uint_fast8_t channels;
 	uint64_t first_ts;
+	struct pulse_timing timing;
+	bool reconnected;
+	uint32_t restart_attempts;
 
 	/* statistics */
 	uint_fast32_t packets;
@@ -160,16 +164,6 @@ static pa_channel_map pulse_channel_map(enum speaker_layout layout)
 	return ret;
 }
 
-static inline uint64_t samples_to_ns(size_t frames, uint_fast32_t rate)
-{
-	return util_mul_div64(frames, NSEC_PER_SEC, rate);
-}
-
-static inline uint64_t get_sample_time(size_t frames, uint_fast32_t rate)
-{
-	return os_gettime_ns() - samples_to_ns(frames, rate);
-}
-
 #define STARTUP_TIMEOUT_NS (500 * NSEC_PER_MSEC)
 
 /**
@@ -207,10 +201,12 @@ static void pulse_stream_read(pa_stream *p, size_t nbytes, void *userdata)
 	out.format = pulse_to_obs_audio_format(data->format);
 	out.data[0] = (uint8_t *)frames;
 	out.frames = bytes / data->bytes_per_frame;
-	out.timestamp = get_sample_time(out.frames, out.samples_per_sec);
+	out.timestamp = pulse_timing_packet_ts(&data->timing, os_gettime_ns(), out.frames, out.samples_per_sec);
 
+	/* Skip the startup period after a reconnect: the audio was already
+	 * running and every dropped packet lengthens the gap. */
 	if (!data->first_ts)
-		data->first_ts = out.timestamp + STARTUP_TIMEOUT_NS;
+		data->first_ts = data->reconnected ? out.timestamp - 1 : out.timestamp + STARTUP_TIMEOUT_NS;
 
 	if (out.timestamp > data->first_ts)
 		obs_source_output_audio(data->source, &out);
@@ -234,20 +230,16 @@ static void pulse_server_info(pa_context *c, const pa_server_info *i, void *user
 	blog(LOG_INFO, "Server name: '%s %s'", i->server_name, i->server_version);
 
 	if (data->is_default) {
-		bfree(data->device);
-		if (data->input) {
-			data->device = bstrdup(i->default_source_name);
+		char *device = pulse_default_device(i, data->input);
 
-			blog(LOG_DEBUG, "Default input device: '%s'", data->device);
+		/* The server may have no default device, e.g. right after it
+		 * restarted. Keep the previous one then. */
+		if (device) {
+			bfree(data->device);
+			data->device = device;
+			blog(LOG_DEBUG, "Default %s device: '%s'", data->input ? "input" : "output", data->device);
 		} else {
-			char *monitor = bzalloc(strlen(i->default_sink_name) + 9);
-			strcat(monitor, i->default_sink_name);
-			strcat(monitor, ".monitor");
-
-			data->device = bstrdup(monitor);
-
-			blog(LOG_DEBUG, "Default output device: '%s'", data->device);
-			bfree(monitor);
+			blog(LOG_DEBUG, "No default device yet");
 		}
 	}
 
@@ -400,8 +392,69 @@ static void pulse_stop_recording(struct pulse_data *data)
 	blog(LOG_INFO, "Got %" PRIuFAST32 " packets with %" PRIuFAST64 " frames", data->packets, data->frames);
 
 	data->first_ts = 0;
+	pulse_timing_reset(&data->timing);
 	data->packets = 0;
 	data->frames = 0;
+}
+
+/**
+ * Restart recording on the new connection after the server came back.
+ * Runs on the UI thread: starting a stream blocks on the pulse mainloop.
+ */
+static void pulse_retry_restart(void *userdata);
+
+static void pulse_release_weak_source(void *userdata)
+{
+	obs_weak_source_release(userdata);
+}
+
+static void pulse_restart_recording_task(void *param)
+{
+	obs_weak_source_t *weak_source = param;
+	obs_source_t *source = obs_weak_source_get_source(weak_source);
+
+	obs_weak_source_release(weak_source);
+	if (!source)
+		return;
+
+	struct pulse_data *data = obs_obj_get_data(source);
+	if (data) {
+		if (data->stream)
+			pulse_stop_recording(data);
+		data->reconnected = true;
+		if (pulse_start_recording(data) == 0) {
+			data->restart_attempts = 0;
+		} else if (pulse_restart_should_retry(&data->restart_attempts)) {
+			obs_weak_source_addref(data->weak_source);
+			pulse_lock();
+			pulse_call_later(pulse_retry_restart, data->weak_source, pulse_release_weak_source,
+					 PULSE_RESTART_RETRY_USEC);
+			pulse_unlock();
+		} else {
+			blog(LOG_WARNING, "Giving up restarting '%s' after the server reconnected", data->device);
+		}
+	}
+
+	obs_source_release(source);
+}
+
+/**
+ * Retry timer fired; called on the pulse mainloop thread, owns a weak ref
+ */
+static void pulse_retry_restart(void *userdata)
+{
+	obs_queue_task(OBS_TASK_UI, pulse_restart_recording_task, userdata, false);
+}
+
+/**
+ * Server reconnected; called on the pulse mainloop thread
+ */
+static void pulse_reconnected(void *userdata)
+{
+	obs_weak_source_t *weak_source = userdata;
+
+	obs_weak_source_addref(weak_source);
+	obs_queue_task(OBS_TASK_UI, pulse_restart_recording_task, weak_source, false);
 }
 
 /**
@@ -505,6 +558,10 @@ static void pulse_destroy(void *vptr)
 	if (!data)
 		return;
 
+	pulse_lock();
+	pulse_remove_reconnected_callback(pulse_reconnected, data->weak_source);
+	pulse_unlock();
+
 	if (data->stream)
 		pulse_stop_recording(data);
 
@@ -516,6 +573,7 @@ static void pulse_destroy(void *vptr)
 
 	if (data->device)
 		bfree(data->device);
+	obs_weak_source_release(data->weak_source);
 	bfree(data);
 }
 
@@ -545,6 +603,7 @@ static void pulse_update(void *vptr, obs_data_t *settings)
 
 	if (data->stream)
 		pulse_stop_recording(data);
+	data->reconnected = false;
 	pulse_start_recording(data);
 }
 
@@ -557,8 +616,13 @@ static void *pulse_create(obs_data_t *settings, obs_source_t *source, bool input
 
 	data->input = input;
 	data->source = source;
+	data->weak_source = obs_source_get_weak_source(source);
 
 	pulse_init();
+
+	pulse_lock();
+	pulse_add_reconnected_callback(pulse_reconnected, data->weak_source);
+	pulse_unlock();
 	pulse_update(data, settings);
 
 	return data;

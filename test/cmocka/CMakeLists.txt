@@ -293,6 +293,9 @@ add_test(test_platform ${CMAKE_CURRENT_BINARY_DIR}/test_platform)
 add_executable(test_quat test_quat.c)
 target_include_directories(test_quat PRIVATE ${CMOCKA_INCLUDE_DIR})
 target_link_libraries(test_quat PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+if(NOT MSVC)
+  target_link_libraries(test_quat PRIVATE m)
+endif()
 
 add_dependencies(cmocka-tests test_quat)
 add_test(test_quat ${CMAKE_CURRENT_BINARY_DIR}/test_quat)
@@ -357,6 +360,22 @@ target_link_libraries(test_video_matrices PRIVATE OBS::libobs ${CMOCKA_LIBRARIES
 add_dependencies(cmocka-tests test_video_matrices)
 add_test(test_video_matrices ${CMAKE_CURRENT_BINARY_DIR}/test_video_matrices)
 
+# video-io.h and frame-rate.h header-inline helpers
+add_executable(test_video_io_inlines test_video_io_inlines.c)
+target_include_directories(test_video_io_inlines PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_video_io_inlines PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+
+add_dependencies(cmocka-tests test_video_io_inlines)
+add_test(test_video_io_inlines ${CMAKE_CURRENT_BINARY_DIR}/test_video_io_inlines)
+
+# util_uint64.h header-inline helper
+add_executable(test_util_uint64 test_util_uint64.c)
+target_include_directories(test_util_uint64 PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_util_uint64 PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+
+add_dependencies(cmocka-tests test_util_uint64)
+add_test(test_util_uint64 ${CMAKE_CURRENT_BINARY_DIR}/test_util_uint64)
+
 # Exercise AV1 encoder configuration against real FFmpeg options without a
 # running OBS video session, then encode a small synthetic sequence with SVT.
 find_package(FFmpeg 8.0 REQUIRED avcodec avformat avutil)
@@ -385,43 +404,51 @@ add_dependencies(cmocka-tests test_svt_av1)
 add_test(test_svt_av1 ${CMAKE_CURRENT_BINARY_DIR}/test_svt_av1)
 set_tests_properties(test_svt_av1 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 
-# Decode RTMP server errors through the same authentication-enabled sources
-# as obs-outputs, without starting OBS or connecting to a server.
+# Exercise AMF decoding and RTMP server messages through the same
+# authentication-enabled sources as obs-outputs, without starting OBS or
+# connecting to a server.
 if(TARGET OBS::outputs)
-  add_executable(
-    test_rtmp_error
-    test_rtmp_error.c
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/rtmp.c"
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/amf.c"
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/log.c"
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/parseurl.c"
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/hashswf.c"
-  )
-  target_compile_definitions(test_rtmp_error PRIVATE USE_MBEDTLS CRYPTO)
-  target_compile_options(
-    test_rtmp_error
-    PRIVATE
-      $<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang>:-Wno-comma>
-      $<$<AND:$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>,$<COMPILE_LANG_AND_ID:C,Clang>>:-Wno-error=unreachable-code>
-  )
-  target_include_directories(test_rtmp_error PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/obs-outputs")
-  target_link_libraries(
-    test_rtmp_error
-    PRIVATE
-      OBS::libobs
-      OBS::happy-eyeballs
-      MbedTLS::mbedtls
-      ZLIB::ZLIB
-      ${CMOCKA_LIBRARIES}
-      $<$<PLATFORM_ID:Windows>:crypt32>
-      $<$<PLATFORM_ID:Windows>:iphlpapi>
-      $<$<PLATFORM_ID:Windows>:winmm>
-      $<$<PLATFORM_ID:Windows>:ws2_32>
-      "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Foundation.framework>>"
-      "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Security.framework>>"
-  )
-  add_dependencies(cmocka-tests test_rtmp_error)
-  add_test(test_rtmp_error ${CMAKE_CURRENT_BINARY_DIR}/test_rtmp_error)
+  foreach(test_name IN ITEMS test_rtmp_error test_rtmp_chunk_size test_amf_decode)
+    add_executable(
+      ${test_name}
+      ${test_name}.c
+      "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/rtmp.c"
+      "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/amf.c"
+      "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/log.c"
+      "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/parseurl.c"
+      "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/hashswf.c"
+    )
+    target_compile_definitions(${test_name} PRIVATE USE_MBEDTLS CRYPTO)
+    target_compile_options(
+      ${test_name}
+      PRIVATE
+        $<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang>:-Wno-comma>
+        $<$<AND:$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>,$<COMPILE_LANG_AND_ID:C,Clang>>:-Wno-error=unreachable-code>
+    )
+    target_include_directories(${test_name} PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/obs-outputs")
+    target_link_libraries(
+      ${test_name}
+      PRIVATE
+        OBS::libobs
+        OBS::happy-eyeballs
+        MbedTLS::mbedtls
+        ZLIB::ZLIB
+        ${CMOCKA_LIBRARIES}
+        $<$<PLATFORM_ID:Windows>:crypt32>
+        $<$<PLATFORM_ID:Windows>:iphlpapi>
+        $<$<PLATFORM_ID:Windows>:winmm>
+        $<$<PLATFORM_ID:Windows>:ws2_32>
+        "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Foundation.framework>>"
+        "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Security.framework>>"
+    )
+    add_dependencies(cmocka-tests ${test_name})
+    add_test(${test_name} ${CMAKE_CURRENT_BINARY_DIR}/${test_name})
+  endforeach()
+
+  if(NOT MSVC)
+    target_compile_options(test_amf_decode PRIVATE -fsigned-char -fsanitize=undefined -fno-sanitize-recover=undefined)
+    target_link_options(test_amf_decode PRIVATE -fsanitize=undefined)
+  endif()
 endif()
 
 # Build obs-outputs' FLV tags from flv-mux.c, without librtmp's network code.
@@ -450,18 +477,53 @@ if(TARGET OBS::filters)
   add_test(test_cube_lut ${CMAKE_CURRENT_BINARY_DIR}/test_cube_lut)
 endif()
 
-# Audio plane count for the mac-avcapture device path (helper is plain C).
-if(TARGET OBS::libobs)
+# Linux capture reconnection after a PipeWire restart (obs-rust/obs-studio#108).
+# The decisions are compiled into the tests directly; no PipeWire daemon,
+# portal or PulseAudio server is needed.
+if(TARGET OBS::pipewire)
   add_executable(
-    test_avcapture_audio_planes
-    test_avcapture_audio_planes.c
-    "${CMAKE_SOURCE_DIR}/plugins/mac-avcapture/avcapture-audio-planes.c"
+    test_pipewire_reconnect
+    test_pipewire_reconnect.c
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c"
   )
   target_include_directories(
-    test_avcapture_audio_planes
-    PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/mac-avcapture"
+    test_pipewire_reconnect
+    PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire"
   )
-  target_link_libraries(test_avcapture_audio_planes PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
-  add_dependencies(cmocka-tests test_avcapture_audio_planes)
-  add_test(test_avcapture_audio_planes ${CMAKE_CURRENT_BINARY_DIR}/test_avcapture_audio_planes)
+  target_link_libraries(test_pipewire_reconnect PRIVATE OBS::libobs PipeWire::PipeWire ${CMOCKA_LIBRARIES})
+  add_dependencies(cmocka-tests test_pipewire_reconnect)
+  add_test(test_pipewire_reconnect ${CMAKE_CURRENT_BINARY_DIR}/test_pipewire_reconnect)
 endif()
+
+if(TARGET OBS::pulseaudio)
+  add_executable(
+    test_pulse_reconnect
+    test_pulse_reconnect.c
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pulseaudio/pulse-reconnect.c"
+  )
+  target_include_directories(
+    test_pulse_reconnect
+    PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/linux-pulseaudio"
+  )
+  target_link_libraries(test_pulse_reconnect PRIVATE OBS::libobs PulseAudio::PulseAudio ${CMOCKA_LIBRARIES})
+  add_dependencies(cmocka-tests test_pulse_reconnect)
+  add_test(test_pulse_reconnect ${CMAKE_CURRENT_BINARY_DIR}/test_pulse_reconnect)
+endif()
+
+# video frame test (media-io/video-frame.c + video-frame.h inlines)
+add_executable(test_video_frame test_video_frame.c)
+target_include_directories(test_video_frame PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_video_frame PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+
+add_dependencies(cmocka-tests test_video_frame)
+add_test(test_video_frame ${CMAKE_CURRENT_BINARY_DIR}/test_video_frame)
+
+# One file per test from here on (obs-rust/obs-studio#137): add
+# tests.d/<test>.cmake instead of appending to this file, so concurrent PRs
+# that add tests do not conflict. Included in this directory's scope, so
+# relative source paths and CMAKE_CURRENT_SOURCE_DIR are test/cmocka.
+file(GLOB _cmocka_test_fragments CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests.d/*.cmake")
+list(SORT _cmocka_test_fragments)
+foreach(_fragment IN LISTS _cmocka_test_fragments)
+  include("${_fragment}")
+endforeach()

@@ -20,6 +20,7 @@
 
 #include "media-playback.h"
 #include "media.h"
+#include "network-timeout.h"
 #include "closest-format.h"
 
 #include <libavdevice/avdevice.h>
@@ -687,7 +688,7 @@ static bool init_avformat(mp_media_t *m)
 		m->fmt->flags |= AVFMT_FLAG_NOBUFFER;
 	}
 	if (!m->is_local_file) {
-		av_dict_set(&opts, "stimeout", "30000000", 0);
+		mp_media_set_network_timeouts(&opts, m->path);
 		m->fmt->interrupt_callback.callback = interrupt_callback;
 		m->fmt->interrupt_callback.opaque = m;
 	}

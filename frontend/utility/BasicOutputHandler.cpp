@@ -521,6 +521,12 @@ std::shared_future<void> BasicOutputHandler::SetupMultitrackVideo(obs_service_t 
 						      main->Config(), "Stream1", "MultitrackVideoMaximumVideoTracks"));
 
 	auto stream_dump_config = GenerateMultitrackVideoStreamDumpConfig();
+	bool disable_b_frames = config_get_bool(main->Config(), "Stream1", "MultitrackVideoDisableBFrames");
+	bool disable_lookahead = config_get_bool(main->Config(), "Stream1", "MultitrackVideoDisableLookahead");
+	const char *preset_value = config_get_string(main->Config(), "Stream1", "MultitrackVideoPreset");
+	const char *tune_value = config_get_string(main->Config(), "Stream1", "MultitrackVideoTune");
+	std::string preset_override = preset_value ? preset_value : "";
+	std::string tune_override = tune_value ? tune_value : "";
 
 	auto continue_on_main_thread = [&, start_streaming_guard, service = OBSService{service},
 					continuation =
@@ -560,8 +566,9 @@ std::shared_future<void> BasicOutputHandler::SetupMultitrackVideo(obs_service_t 
 			multitrackVideo->PrepareStreaming(main, service_name.c_str(), service, custom_rtmp_url, key,
 							  audio_encoder_id.c_str(), maximum_aggregate_bitrate,
 							  maximum_video_tracks, custom_config, stream_dump_config,
-							  main_audio_mixer, vod_track_mixer, use_rtmps,
-							  extraCanvasUUID);
+							  main_audio_mixer, vod_track_mixer, use_rtmps, extraCanvasUUID,
+							  disable_b_frames, disable_lookahead, preset_override.c_str(),
+							  tune_override.c_str());
 		} catch (const MultitrackVideoError &error_) {
 			error.emplace(error_);
 		}

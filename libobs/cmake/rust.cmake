@@ -31,15 +31,20 @@ if(OS_LINUX OR OS_FREEBSD OR OS_OPENBSD)
   target_link_options(libobs PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/rust-exports.map")
   set_property(TARGET libobs APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/rust-exports.map")
 elseif(OS_WINDOWS)
-  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/rust-exports.txt" _obs_rust_exports REGEX "^[A-Za-z_]")
-  foreach(sym IN LISTS _obs_rust_exports)
-    # "name unix" shims are not compiled on Windows; the C file exports them.
-    if(sym MATCHES " unix$")
-      continue()
-    endif()
-    target_link_options(libobs PRIVATE "LINKER:/EXPORT:${sym}")
+  # One fragment per FFI module (cmake/rust-exports.d/README.md).
+  file(GLOB _obs_rust_export_fragments CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/rust-exports.d/*.txt")
+  list(SORT _obs_rust_export_fragments)
+  foreach(fragment IN LISTS _obs_rust_export_fragments)
+    file(STRINGS "${fragment}" _obs_rust_exports REGEX "^[A-Za-z_]")
+    foreach(sym IN LISTS _obs_rust_exports)
+      # "name unix" shims are not compiled on Windows; the C file exports them.
+      if(sym MATCHES " unix$")
+        continue()
+      endif()
+      target_link_options(libobs PRIVATE "LINKER:/EXPORT:${sym}")
+    endforeach()
+    set_property(TARGET libobs APPEND PROPERTY LINK_DEPENDS "${fragment}")
   endforeach()
-  set_property(TARGET libobs APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/rust-exports.txt")
 elseif(OS_MACOS)
   target_link_options(
     libobs

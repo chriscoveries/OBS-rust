@@ -1,0 +1,10 @@
+# matrix3 test (graphics/matrix3.c)
+add_executable(test_matrix3 test_matrix3.c)
+target_include_directories(test_matrix3 PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_matrix3 PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+if(NOT MSVC)
+  target_link_libraries(test_matrix3 PRIVATE m)
+endif()
+
+add_dependencies(cmocka-tests test_matrix3)
+add_test(test_matrix3 ${CMAKE_CURRENT_BINARY_DIR}/test_matrix3)

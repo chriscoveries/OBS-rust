@@ -43,6 +43,7 @@
 #include <pci/pci.h>
 
 #include "vaapi-utils.h"
+#include "vaapi-device-select.h"
 #include "obs-ffmpeg-formats.h"
 
 #include <va/va_drmcommon.h>
@@ -235,11 +236,32 @@ static const rc_mode_t *get_rc_mode(const char *name)
 	return rc_mode ? rc_mode : RC_MODES;
 }
 
+static bool vaapi_device_codec_supported(const char *path, enum codec_type codec);
+static inline const char *vaapi_default_device(enum codec_type codec);
+
+static bool vaapi_device_usable(const char *path, void *param)
+{
+	const enum codec_type *codec = param;
+	return vaapi_device_codec_supported(path, *codec);
+}
+
+static const char *vaapi_choose_device(struct vaapi_encoder *enc, const char *configured)
+{
+	const char *const candidates[] = {vaapi_default_device(enc->codec)};
+	const char *device = vaapi_select_device(configured, candidates, sizeof(candidates) / sizeof(candidates[0]),
+						 vaapi_device_usable, &enc->codec);
+
+	if (device != configured)
+		warn("Device '%s' is not usable, falling back to '%s'", configured, device);
+
+	return device;
+}
+
 static bool vaapi_update(void *data, obs_data_t *settings)
 {
 	struct vaapi_encoder *enc = data;
 
-	const char *device = obs_data_get_string(settings, "vaapi_device");
+	const char *device = vaapi_choose_device(enc, obs_data_get_string(settings, "vaapi_device"));
 
 	const char *rate_control = obs_data_get_string(settings, "rate_control");
 	const rc_mode_t *rc_mode = get_rc_mode(rate_control);

@@ -26,6 +26,8 @@ target_sources(
     $<$<PLATFORM_ID:Windows,Darwin>:find-font.c>
     $<$<PLATFORM_ID:Windows>:find-font-windows.c>
     find-font.h
+    glyph-atlas.c
+    glyph-atlas.h
     obs-convenience.c
     obs-convenience.h
     text-freetype2.c

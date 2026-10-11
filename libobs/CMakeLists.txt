@@ -168,14 +168,14 @@ target_sources(
     media-io/audio-math.h
     media-io/audio-resampler-ffmpeg.c
     media-io/audio-resampler.h
-    media-io/format-conversion.c
+    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/format-conversion.c>
     media-io/format-conversion.h
     media-io/frame-rate.h
     media-io/media-io-defs.h
     media-io/media-remux.c
     media-io/media-remux.h
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-fourcc.c>
-    media-io/video-frame.c
+    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-frame.c>
     media-io/video-frame.h
     media-io/video-io.c
     media-io/video-io.h
@@ -212,13 +212,13 @@ target_sources(
     graphics/math-defs.h
     graphics/math-extra.c
     graphics/math-extra.h
-    graphics/matrix3.c
+    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/matrix3.c>
     graphics/matrix3.h
     graphics/matrix4.c
     graphics/matrix4.h
     graphics/plane.c
     graphics/plane.h
-    graphics/quat.c
+    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/quat.c>
     graphics/quat.h
     graphics/shader-parser.c
     graphics/shader-parser.h

@@ -1,0 +1,8 @@
+# linux-v4l2 framerate list values (obsproject/obs-studio#13388, #13896)
+if(TARGET OBS::v4l2)
+  add_executable(test_v4l2_framerate test_v4l2_framerate.c "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-framerate.c")
+  target_include_directories(test_v4l2_framerate PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2")
+  target_link_libraries(test_v4l2_framerate PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+  add_dependencies(cmocka-tests test_v4l2_framerate)
+  add_test(test_v4l2_framerate ${CMAKE_CURRENT_BINARY_DIR}/test_v4l2_framerate)
+endif()

@@ -1,0 +1,10 @@
+error_data_add
+error_data_buildstring
+lexer_getbasetoken
+lexer_getstroffset
+strref_cmp
+strref_cmp_strref
+strref_cmpi
+strref_cmpi_strref
+valid_float_str
+valid_int_str

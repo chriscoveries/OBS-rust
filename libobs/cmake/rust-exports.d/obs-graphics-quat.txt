@@ -1,0 +1,11 @@
+quat_exp
+quat_from_axisang
+quat_from_matrix3
+quat_from_matrix4
+quat_get_dir
+quat_get_tangent
+quat_interpolate
+quat_interpolate_cubic
+quat_log
+quat_mul
+quat_set_look_dir

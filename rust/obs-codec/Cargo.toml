@@ -3,6 +3,7 @@ name = "obs-codec"
 version = "0.1.0"
 description = "Rust ports of the libobs codec bitstream helpers (obs-nal, obs-avc, obs-hevc, obs-av1)"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

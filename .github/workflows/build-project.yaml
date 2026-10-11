@@ -213,11 +213,14 @@ jobs:
           key: ${{ runner.os }}-xcode-${{ matrix.target }}-${{ needs.check-event.outputs.config }}-${{ github.sha }}
 
   ubuntu-build:
-    name: Ubuntu 🐧
+    name: Ubuntu 🐧 ${{ matrix.rust == 'ON' && '(Rust libobs) ' || '' }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-26.04]
+        # ON builds the app with ENABLE_RUST_LIBOBS: the only CI job that runs
+        # the Rust ports inside OBS itself (obs-rust/obs-studio#140).
+        rust: ['OFF', 'ON']
     runs-on: ${{ matrix.os }}
     needs: check-event
     if: fromJSON(needs.check-event.outputs.native)
@@ -235,10 +238,10 @@ jobs:
       - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-rust${{ matrix.rust }}-${{ needs.check-event.outputs.config }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}-
-            ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-
+            ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-rust${{ matrix.rust }}-${{ needs.check-event.outputs.config }}-
+            ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-rust${{ matrix.rust }}-
 
       - name: Record Start Time ⏱️
         id: start
@@ -247,6 +250,7 @@ jobs:
       - name: Build OBS Studio 🧱
         uses: ./.github/actions/build-obs
         env:
+          ENABLE_RUST_LIBOBS: ${{ matrix.rust }}
           TWITCH_CLIENTID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_HASH: ${{ secrets.TWITCH_HASH }}
           RESTREAM_CLIENTID: ${{ secrets.RESTREAM_CLIENTID }}
@@ -258,6 +262,16 @@ jobs:
         with:
           target: x86_64
           config: ${{ needs.check-event.outputs.config }}
+
+      - name: Smoke Test Rust libobs 🦀
+        if: matrix.rust == 'ON'
+        run: |
+          : Smoke Test Rust libobs 🦀
+          prefix="${GITHUB_WORKSPACE}/build_ubuntu/install/${{ needs.check-event.outputs.config }}"
+          version=$(LD_LIBRARY_PATH="${prefix}/lib:${prefix}/lib/x86_64-linux-gnu" "${prefix}/bin/obs" --version)
+          echo "${version}"
+          # Only an ENABLE_RUST_LIBOBS build names itself OBS-Studio-Rust (#112).
+          [[ "${version}" == OBS-Studio-Rust* ]]
 
       - name: Package OBS Studio 📀
         uses: ./.github/actions/package-obs
@@ -271,21 +285,21 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ fromJSON(needs.check-event.outputs.package) }}
         with:
-          name: obs-studio-${{ matrix.os }}-sources-${{ needs.check-event.outputs.commitHash }}
+          name: obs-studio-${{ matrix.os }}${{ matrix.rust == 'ON' && '-rust' || '' }}-sources-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/build_ubuntu/obs-studio-*-sources.*
 
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ fromJSON(needs.check-event.outputs.package) }}
         with:
-          name: obs-studio-${{ matrix.os }}-x86_64-${{ needs.check-event.outputs.commitHash }}
+          name: obs-studio-${{ matrix.os }}${{ matrix.rust == 'ON' && '-rust' || '' }}-x86_64-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/build_ubuntu/obs-studio-*-x86_64-ubuntu-gnu.*
 
       - name: Upload Debug Symbol Artifacts 🪲
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ fromJSON(needs.check-event.outputs.package) }}
         with:
-          name: obs-studio-${{ matrix.os }}-x86_64-${{ needs.check-event.outputs.commitHash }}-dbgsym
+          name: obs-studio-${{ matrix.os }}${{ matrix.rust == 'ON' && '-rust' || '' }}-x86_64-${{ needs.check-event.outputs.commitHash }}-dbgsym
           path: ${{ github.workspace }}/build_ubuntu/obs-studio-*-x86_64-ubuntu-gnu-dbgsym.ddeb
 
       # Drop entries this build did not use so the saved cache stays the size
@@ -300,7 +314,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-rust${{ matrix.rust }}-${{ needs.check-event.outputs.config }}-${{ github.sha }}
 
   flatpak-build:
     name: Flatpak 📦

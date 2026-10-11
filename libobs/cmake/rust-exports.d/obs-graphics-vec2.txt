@@ -1,0 +1,5 @@
+vec2_abs
+vec2_ceil
+vec2_close
+vec2_floor
+vec2_norm

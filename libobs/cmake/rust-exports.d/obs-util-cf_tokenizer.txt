@@ -1,0 +1,4 @@
+cf_lexer_free
+cf_lexer_init
+cf_lexer_lex
+cf_literal_to_str

@@ -275,6 +275,7 @@ version = "0.1.0"
 dependencies = [
  "obs-c-oracle",
  "obs-graphics",
+ "obs-util",
  "proptest",
 ]
 

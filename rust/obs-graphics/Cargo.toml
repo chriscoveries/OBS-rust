@@ -3,6 +3,7 @@ name = "obs-graphics"
 version = "0.1.0"
 description = "Rust ports of libobs/graphics"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

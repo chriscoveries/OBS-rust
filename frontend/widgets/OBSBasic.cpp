@@ -629,6 +629,10 @@ bool OBSBasic::InitBasicConfigDefaults()
 	config_set_default_bool(activeConfiguration, "Stream1", "EnableMultitrackVideo", false);
 	config_set_default_bool(activeConfiguration, "Stream1", "MultitrackVideoMaximumAggregateBitrateAuto", true);
 	config_set_default_bool(activeConfiguration, "Stream1", "MultitrackVideoMaximumVideoTracksAuto", true);
+	config_set_default_bool(activeConfiguration, "Stream1", "MultitrackVideoDisableBFrames", false);
+	config_set_default_bool(activeConfiguration, "Stream1", "MultitrackVideoDisableLookahead", false);
+	config_set_default_string(activeConfiguration, "Stream1", "MultitrackVideoPreset", "");
+	config_set_default_string(activeConfiguration, "Stream1", "MultitrackVideoTune", "");
 
 	config_set_default_string(activeConfiguration, "SimpleOutput", "FilePath", GetDefaultVideoSavePath().c_str());
 	config_set_default_string(activeConfiguration, "SimpleOutput", "RecFormat2", DEFAULT_CONTAINER);
