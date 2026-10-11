@@ -17,6 +17,13 @@ target_link_libraries(test_serializer PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
 add_dependencies(cmocka-tests test_serializer)
 add_test(test_serializer ${CMAKE_CURRENT_BINARY_DIR}/test_serializer)
 
+# V210 zero-stride boundary regression (fork #14 preservation)
+add_executable(test_v210_zero_stride test_v210_zero_stride.c)
+target_include_directories(test_v210_zero_stride PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_v210_zero_stride PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+add_dependencies(cmocka-tests test_v210_zero_stride)
+add_test(test_v210_zero_stride ${CMAKE_CURRENT_BINARY_DIR}/test_v210_zero_stride)
+
 # darray test
 add_executable(test_darray test_darray.c)
 target_include_directories(test_darray PRIVATE ${CMOCKA_INCLUDE_DIR})
