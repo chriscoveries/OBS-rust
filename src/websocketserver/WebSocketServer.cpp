@@ -30,9 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "../utils/Platform.h"
 #include "../utils/Compat.h"
 
-
 #include "NestingDepth.h"
-
 
 WebSocketServer::WebSocketServer() : QObject(nullptr)
 {
