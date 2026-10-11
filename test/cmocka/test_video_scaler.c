@@ -180,7 +180,7 @@ static void plane_rows(uint32_t rows[MAX_AV_PLANES], enum video_format fmt, uint
 	}
 }
 
-static void fill_pattern(struct video_frame *f, enum video_format fmt, uint32_t width, uint32_t height)
+static void fill_pattern(struct video_frame *f, enum video_format fmt, uint32_t height)
 {
 	uint32_t rows[MAX_AV_PLANES];
 	plane_rows(rows, fmt, height);
@@ -237,8 +237,8 @@ static void free_canary_dst(struct canary_dst *d)
 
 /* Visible bytes plus canary slack behind the last row. Returns false and
  * prints context on mismatch. */
-static bool dst_matches(const struct canary_dst *a, const struct canary_dst *b, enum video_format fmt,
-			uint32_t width, uint32_t height)
+static bool dst_matches(const struct canary_dst *a, const struct canary_dst *b, enum video_format fmt, uint32_t width,
+			uint32_t height)
 {
 	uint32_t rows[MAX_AV_PLANES] = {0};
 	uint32_t packed[MAX_AV_PLANES] = {0};
@@ -267,8 +267,7 @@ static bool canary_intact(const struct canary_dst *d)
 	for (int p = 0; p < MAX_AV_PLANES; p++) {
 		if (!d->base[p])
 			continue;
-		const uint8_t *canary = d->base[p] + (d->data[p] - d->base[p]) +
-					(size_t)d->linesize[p] * d->height[p];
+		const uint8_t *canary = d->base[p] + (d->data[p] - d->base[p]) + (size_t)d->linesize[p] * d->height[p];
 		for (int i = 0; i < SLACK; i++) {
 			if (canary[i] != CANARY) {
 				print_error("plane %d canary byte %d clobbered (0x%02x)\n", p, i, canary[i]);
@@ -282,8 +281,7 @@ static bool canary_intact(const struct canary_dst *d)
 /* Bytes beyond the copied extent inside the buffer (e.g. the ceil-allocated
  * final chroma row on odd heights) must be untouched: the C copy path never
  * writes them. */
-static bool tail_rows_untouched(const struct canary_dst *d, enum video_format fmt, uint32_t width,
-				uint32_t height)
+static bool tail_rows_untouched(const struct canary_dst *d, enum video_format fmt, uint32_t width, uint32_t height)
 {
 	uint32_t copied[MAX_AV_PLANES] = {0};
 	uint32_t alloc_rows[MAX_AV_PLANES] = {0};
@@ -310,20 +308,25 @@ static bool tail_rows_untouched(const struct canary_dst *d, enum video_format fm
 static void run_scale_case(enum video_format fmt, uint32_t width, uint32_t height)
 {
 	struct video_scale_info dst = {
-		.format = fmt, .width = width, .height = height,
-		.range = VIDEO_RANGE_DEFAULT, .colorspace = VIDEO_CS_DEFAULT,
+		.format = fmt,
+		.width = width,
+		.height = height,
+		.range = VIDEO_RANGE_DEFAULT,
+		.colorspace = VIDEO_CS_DEFAULT,
 	};
 	struct video_scale_info src = {
-		.format = VIDEO_FORMAT_BGRA, .width = 640, .height = 360,
-		.range = VIDEO_RANGE_DEFAULT, .colorspace = VIDEO_CS_DEFAULT,
+		.format = VIDEO_FORMAT_BGRA,
+		.width = 640,
+		.height = 360,
+		.range = VIDEO_RANGE_DEFAULT,
+		.colorspace = VIDEO_CS_DEFAULT,
 	};
 	struct video_frame in;
 	video_frame_init(&in, src.format, src.width, src.height);
-	fill_pattern(&in, src.format, src.width, src.height);
+	fill_pattern(&in, src.format, src.height);
 
 	video_scaler_t *scaler;
-	assert_int_equal(video_scaler_create(&scaler, &dst, &src, VIDEO_SCALE_BILINEAR),
-			 VIDEO_SCALER_SUCCESS);
+	assert_int_equal(video_scaler_create(&scaler, &dst, &src, VIDEO_SCALE_FAST_BILINEAR), VIDEO_SCALER_SUCCESS);
 
 	/* padded-stride destination is the reference layout: it always takes
 	 * the same path as today (scratch + per-row copy). */
@@ -340,8 +343,7 @@ static void run_scale_case(enum video_format fmt, uint32_t width, uint32_t heigh
 	for (size_t i = 0; i < sizeof(layouts) / sizeof(layouts[0]); i++) {
 		struct canary_dst out;
 		alloc_canary_dst(&out, fmt, width, height, layouts[i], misaligns[i]);
-		assert_true(video_scaler_scale(scaler, out.data, out.linesize,
-					       (const uint8_t *const *)in.data,
+		assert_true(video_scaler_scale(scaler, out.data, out.linesize, (const uint8_t *const *)in.data,
 					       (const uint32_t *)in.linesize));
 		assert_true(canary_intact(&out));
 		assert_true(tail_rows_untouched(&out, fmt, width, height));
@@ -354,8 +356,7 @@ static void run_scale_case(enum video_format fmt, uint32_t width, uint32_t heigh
 	alloc_canary_dst(&again, fmt, width, height, LAYOUT_PADDED, 0);
 	for (int i = 0; i < 4; i++) {
 		memset(again.data[0], CANARY, (size_t)again.linesize[0] * again.height[0]);
-		assert_true(video_scaler_scale(scaler, again.data, again.linesize,
-					       (const uint8_t *const *)in.data,
+		assert_true(video_scaler_scale(scaler, again.data, again.linesize, (const uint8_t *const *)in.data,
 					       (const uint32_t *)in.linesize));
 		assert_true(dst_matches(&again, &ref, fmt, width, height));
 	}
@@ -363,15 +364,14 @@ static void run_scale_case(enum video_format fmt, uint32_t width, uint32_t heigh
 	free_canary_dst(&again);
 	free_canary_dst(&ref);
 	video_scaler_destroy(scaler);
-	video_frame_destroy(&in);
+	video_frame_free(&in);
 }
 
 static void scaler_even_sizes(void **state)
 {
 	(void)state;
-	const enum video_format fmts[] = {VIDEO_FORMAT_I420, VIDEO_FORMAT_NV12, VIDEO_FORMAT_I444,
-					  VIDEO_FORMAT_YUVA, VIDEO_FORMAT_P010, VIDEO_FORMAT_BGRA,
-					  VIDEO_FORMAT_Y800};
+	const enum video_format fmts[] = {VIDEO_FORMAT_I420, VIDEO_FORMAT_NV12, VIDEO_FORMAT_I444, VIDEO_FORMAT_YUVA,
+					  VIDEO_FORMAT_P010, VIDEO_FORMAT_BGRA, VIDEO_FORMAT_Y800};
 	const uint32_t sizes[][2] = {{128, 64}, {322, 242}, {160, 120}};
 	for (size_t f = 0; f < sizeof(fmts) / sizeof(fmts[0]); f++)
 		for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++)
@@ -381,8 +381,8 @@ static void scaler_even_sizes(void **state)
 static void scaler_odd_geometry(void **state)
 {
 	(void)state;
-	const enum video_format fmts[] = {VIDEO_FORMAT_I420, VIDEO_FORMAT_NV12, VIDEO_FORMAT_P010,
-					  VIDEO_FORMAT_I40A, VIDEO_FORMAT_BGRA};
+	const enum video_format fmts[] = {VIDEO_FORMAT_I420, VIDEO_FORMAT_NV12, VIDEO_FORMAT_P010, VIDEO_FORMAT_I40A,
+					  VIDEO_FORMAT_BGRA};
 	const uint32_t sizes[][2] = {{161, 121}, {160, 121}, {161, 122}};
 	for (size_t f = 0; f < sizeof(fmts) / sizeof(fmts[0]); f++)
 		for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++)
