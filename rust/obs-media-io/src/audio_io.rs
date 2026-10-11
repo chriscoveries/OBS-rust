@@ -368,15 +368,14 @@ impl Shared {
         self.input_mutex.unlock();
     }
 
-    /// `clamp_audio_output`. `active_mixes` is the bitmask already computed
-    /// under the lock for this tick, matching the C's `!mix->inputs.num`
-    /// skip — a mix that gained an input since the snapshot is skipped just
-    /// like the C's racy check.
-    fn clamp_audio_output(&self, bytes: usize, active_mixes: u32) {
+    /// `clamp_audio_output`. `clamp_mixes` is the mask re-read under the
+    /// lock right after the input callback — the C's post-callback
+    /// `!mix->inputs.num` check, not the mask the callback received.
+    fn clamp_audio_output(&self, bytes: usize, clamp_mixes: u32) {
         let float_size = bytes / core::mem::size_of::<f32>();
 
         for mix_idx in 0..MAX_AUDIO_MIXES {
-            if active_mixes & (1 << mix_idx) == 0 {
+            if clamp_mixes & (1 << mix_idx) == 0 {
                 continue;
             }
 
@@ -450,7 +449,20 @@ impl Shared {
             return;
         }
 
-        self.clamp_audio_output(bytes, active_mixes);
+        // Clamp activity is re-read after the input callback, like the C's
+        // `!mix->inputs.num` check: a mix that gained an input mid-callback
+        // is clamped anyway. `active_mixes` stays the callback's mask.
+        self.input_mutex.lock();
+        let mut clamp_mixes: u32 = 0;
+        for i in 0..MAX_AUDIO_MIXES {
+            // SAFETY: the lock is held; this borrow ends each statement.
+            if unsafe { !(*self.mixes.get())[i].inputs.is_empty() } {
+                clamp_mixes |= 1 << i;
+            }
+        }
+        self.input_mutex.unlock();
+
+        self.clamp_audio_output(bytes, clamp_mixes);
 
         for i in 0..MAX_AUDIO_MIXES {
             self.do_audio_output(i, new_ts, AUDIO_OUTPUT_FRAMES as u32);
