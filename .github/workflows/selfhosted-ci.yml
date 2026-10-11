@@ -21,7 +21,8 @@ on:
   pull_request_target:
     branches: [ci-main]
 concurrency:
-  group: ci-${{ inputs.ref || github.head_ref }}
+  # Include the runner labels, so the same SHA can run on claw and rd4 at once.
+  group: ci-${{ inputs.ref || github.head_ref }}-${{ inputs.runner || 'rd' }}-${{ inputs.tier2_runner || 'claw' }}
   cancel-in-progress: true
 jobs:
   gate:
