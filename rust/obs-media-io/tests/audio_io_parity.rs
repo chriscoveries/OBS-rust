@@ -520,21 +520,30 @@ proptest::proptest! {
 // reuses the pre-callback mask skips it: its buffer_unclamped stays zeroed
 // while the C's copies the marker the input cb wrote.
 
+// The two mix-1 inputs MUST keep distinct function pointers: the C
+// refuses a duplicate (callback, param) per mix, and under release the
+// linker merges byte-identical function bodies (ICF), which would make
+// `fs_clamped_* == fs_new_*` and drop the second connect. The black_box
+// immediates keep each body distinct; they record identically.
 unsafe extern "C" fn fs_new_c(_p: *mut c_void, m: usize, d: *mut c::OracleAudioData) {
+    std::hint::black_box(0u8);
     let d = unsafe { &*d };
     record_output(m, d.timestamp, d.frames, d.data[0] as *const f32);
 }
 unsafe extern "C" fn fs_new_rs(_p: *mut c_void, m: usize, d: *mut rs::audio_data) {
+    std::hint::black_box(0u8);
     let d = unsafe { &*d };
     record_output(m, d.timestamp, d.frames, d.data[0] as *const f32);
 }
 // A clamped sibling on the same mid-callback-connected mix: it must see
 // the [-1,1] clamped buffer where the allow_clipping input sees raw 2.5.
 unsafe extern "C" fn fs_clamped_c(_p: *mut c_void, m: usize, d: *mut c::OracleAudioData) {
+    std::hint::black_box(1u8);
     let d = unsafe { &*d };
     record_output(m, d.timestamp, d.frames, d.data[0] as *const f32);
 }
 unsafe extern "C" fn fs_clamped_rs(_p: *mut c_void, m: usize, d: *mut rs::audio_data) {
+    std::hint::black_box(1u8);
     let d = unsafe { &*d };
     record_output(m, d.timestamp, d.frames, d.data[0] as *const f32);
 }
