@@ -16,6 +16,7 @@ use obs_c_oracle::audio_io as c;
 use obs_media_io::audio_io::AudioOutput;
 use obs_media_io::ffi::audio_io as rs;
 use obs_util as _;
+use proptest::prelude::*;
 
 const FORMAT_FLOAT: c_int = 4;
 const SPEAKERS_STEREO: c_int = 2;
@@ -23,6 +24,19 @@ const SPEAKERS_STEREO: c_int = 2;
 /// `audio_time`/`prev_time` pair used only by explicit ticks; callbacks
 /// ignore every invocation whose `start_ts` is not this magic value.
 const MAGIC: u64 = 0x1eaf_dead_beef;
+
+/// True only for timestamps produced by explicit `*_tick(MAGIC+d)` calls.
+/// The real worker threads both sides spawn carry `os_gettime_ns` values
+/// (~1e18 ns) and must never inject records: every recorded action below
+/// checks this gate, not just the input callbacks.
+fn is_magic_ts(ts: u64) -> bool {
+    (MAGIC..MAGIC.wrapping_add(1_000_000_000)).contains(&ts)
+}
+
+/// Serializes the whole test driver: `open` spawns real audio threads on
+/// both sides, so every test holds this for its entire body — otherwise
+/// parallel `#[test]`s would interleave into the shared TICK/ORDER state.
+static DRIVER: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, PartialEq, Eq)]
 struct TickRecord {
@@ -36,6 +50,18 @@ static TICK: Mutex<Option<TickRecord>> = Mutex::new(None);
 
 fn take_tick() -> Option<TickRecord> {
     TICK.lock().unwrap().take()
+}
+
+/// Per-callback event order for the reentrancy regressions — a small tag
+/// per invocation, compared verbatim between oracle and port.
+static ORDER: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+fn push_order(tag: u32) {
+    ORDER.lock().unwrap().push(tag);
+}
+
+fn take_order() -> Vec<u32> {
+    std::mem::take(&mut *ORDER.lock().unwrap())
 }
 
 fn record_input(start: u64, end: u64, new_ts: *mut u64, active: u32) {
@@ -86,7 +112,10 @@ unsafe extern "C" fn input_c(
     true
 }
 
-fn record_output(mix_idx: usize, frames: u32, sample: *const f32) {
+fn record_output(mix_idx: usize, ts: u64, frames: u32, sample: *const f32) {
+    if !is_magic_ts(ts) {
+        return;
+    }
     let mut g = TICK.lock().unwrap();
     if let Some(t) = g.as_mut() {
         t.calls
@@ -96,12 +125,12 @@ fn record_output(mix_idx: usize, frames: u32, sample: *const f32) {
 
 unsafe extern "C" fn output_rs(_p: *mut c_void, mix_idx: usize, data: *mut rs::audio_data) {
     let d = unsafe { &*data };
-    record_output(mix_idx, d.frames, d.data[0] as *const f32);
+    record_output(mix_idx, d.timestamp, d.frames, d.data[0] as *const f32);
 }
 
 unsafe extern "C" fn output_c(_p: *mut c_void, mix_idx: usize, data: *mut c::OracleAudioData) {
     let d = unsafe { &*data };
-    record_output(mix_idx, d.frames, d.data[0] as *const f32);
+    record_output(mix_idx, d.timestamp, d.frames, d.data[0] as *const f32);
 }
 
 fn info_rs(cb: rs::audio_input_callback_t) -> rs::audio_output_info {
@@ -167,6 +196,7 @@ unsafe fn open_pair() -> (*mut c::OracleAudioOutput, *mut c_void) {
 /// The C ABI in parameter order on both sides.
 #[test]
 fn getters_match() {
+    let _drive = DRIVER.lock().unwrap();
     unsafe {
         let (co, ro) = open_pair();
         assert_eq!(
@@ -201,6 +231,7 @@ fn getters_match() {
 
 #[test]
 fn connect_disconnect_match() {
+    let _drive = DRIVER.lock().unwrap();
     unsafe {
         let (co, ro) = open_pair();
         // NULL conversion + NULL param: connects, no resampler.
@@ -269,6 +300,7 @@ fn connect_disconnect_match() {
 
 #[test]
 fn tick_is_identical() {
+    let _drive = DRIVER.lock().unwrap();
     // Real input callbacks everywhere; only explicit MAGIC-timed ticks are
     // recorded, so the real threads' asynchronous ticks are ignored.
     unsafe {
@@ -320,12 +352,12 @@ fn tick_is_identical() {
 // Second callbacks so reverse-order iteration shows up as (idx, source).
 unsafe extern "C" fn output_rs2(_p: *mut c_void, mix_idx: usize, data: *mut rs::audio_data) {
     let d = unsafe { &*data };
-    record_output(mix_idx, d.frames + 1, d.data[0] as *const f32); // +1 marker
+    record_output(mix_idx, d.timestamp, d.frames + 1, d.data[0] as *const f32); // +1 marker
 }
 
 unsafe extern "C" fn output_c2(_p: *mut c_void, mix_idx: usize, data: *mut c::OracleAudioData) {
     let d = unsafe { &*data };
-    record_output(mix_idx, d.frames + 1, d.data[0] as *const f32);
+    record_output(mix_idx, d.timestamp, d.frames + 1, d.data[0] as *const f32);
 }
 
 /// Marker-writing input callbacks: the marker f32 bits travel in
@@ -364,6 +396,9 @@ unsafe extern "C" fn input_marked_c(
 /// Full-frame output callbacks: compare every sample, not just the first.
 unsafe extern "C" fn output_full_rs(_p: *mut c_void, mix_idx: usize, data: *mut rs::audio_data) {
     let d = unsafe { &*data };
+    if !is_magic_ts(d.timestamp) {
+        return;
+    }
     let mut acc = 0u32;
     for i in 0..d.frames as usize {
         acc = acc.wrapping_mul(31).wrapping_add(unsafe { *d.data[0].cast::<f32>().add(i) }.to_bits());
@@ -376,6 +411,9 @@ unsafe extern "C" fn output_full_rs(_p: *mut c_void, mix_idx: usize, data: *mut 
 
 unsafe extern "C" fn output_full_c(_p: *mut c_void, mix_idx: usize, data: *mut c::OracleAudioData) {
     let d = unsafe { &*data };
+    if !is_magic_ts(d.timestamp) {
+        return;
+    }
     let mut acc = 0u32;
     for i in 0..d.frames as usize {
         acc = acc.wrapping_mul(31).wrapping_add(unsafe { *d.data[0].cast::<f32>().add(i) }.to_bits());
@@ -395,16 +433,17 @@ proptest::proptest! {
     /// both sides (covered in connect_disconnect_match).
     #[test]
     fn tick_sequence_matches(
-        marker_bits in proptest::prop_oneof![
-            proptest::prelude::Just(0.5f32.to_bits()),
-            proptest::prelude::Just(2.5f32.to_bits()),
-            proptest::prelude::Just(f32::NAN.to_bits()),
-            proptest::prelude::Just((-2.5f32).to_bits()),
+        marker_bits in prop_oneof![
+            Just(0.5f32.to_bits()),
+            Just(2.5f32.to_bits()),
+            Just(f32::NAN.to_bits()),
+            Just((-2.5f32).to_bits()),
         ],
         prev_delta in 0u64..50_000_000u64,
         n_inputs in 1usize..=3,
-        clip_flags in proptest::prop::collection::vec(proptest::bool::ANY, 3),
+        clip_flags in prop::collection::vec(any::<bool>(), 3),
     ) {
+        let _drive = DRIVER.lock().unwrap();
         unsafe {
             let marker = marker_bits as usize as *mut c_void;
             let mut co: *mut c::OracleAudioOutput = ptr::null_mut();
