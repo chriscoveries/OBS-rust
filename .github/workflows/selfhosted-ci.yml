@@ -72,10 +72,12 @@ jobs:
         run: |
           echo "host=$(hostname)"
           for t in cmake ninja ccache cargo nm; do command -v $t >/dev/null || { echo "MISSING: $t"; exit 1; }; done
-      - name: Rust build with the host GCC (compile only)
-        # The gate job's RD hosts carry older GCC. claw's GCC 14 rejects
-        # incompatible pointer types in the C oracles, so build them here too.
-        run: CC=gcc soldr cargo build --workspace --tests --locked
+      - name: Rust tests, release profile, host GCC
+        # The gate job runs debug tests on RD hosts with older GCC. Run the
+        # release profile here with claw's GCC 14: it catches debug-only test
+        # hooks and optimisation-dependent float differences, and GCC 14
+        # rejects incompatible pointer types in the C oracles.
+        run: CC=gcc soldr cargo test --workspace --locked --release
       - name: Tier 2 (native, OFF/ON)
         env:
           # rd4 runs Ubuntu 22.04: GIO is too old for PipeWire, there is no
