@@ -147,7 +147,7 @@ class ObsServer:
         self.proc = subprocess.Popen(
             cmd, env=env, stdout=self.logf, stderr=subprocess.STDOUT,
             preexec_fn=os.setsid)
-        if not wait_for_port(self.port, timeout=300):
+        if not wait_for_port(self.port, timeout=90):
             self.dump_log(60)
             raise RuntimeError(
                 f"obs-websocket did not open port {self.port} (log above)")
