@@ -109,8 +109,7 @@ static void open_invalid_params(void **state)
 static void open_getters_stereo(void **state)
 {
 	UNUSED_PARAMETER(state);
-	if (!obs_up)
-		skip();
+	assert_true(obs_up);
 
 	audio_t *audio = NULL;
 	struct audio_output_info info = stereo_info();
@@ -138,8 +137,7 @@ static void open_getters_stereo(void **state)
 static void open_getters_planar(void **state)
 {
 	UNUSED_PARAMETER(state);
-	if (!obs_up)
-		skip();
+	assert_true(obs_up);
 
 	audio_t *audio = NULL;
 	struct audio_output_info info = stereo_info();
@@ -161,8 +159,7 @@ static void open_getters_planar(void **state)
 static void connect_disconnect(void **state)
 {
 	UNUSED_PARAMETER(state);
-	if (!obs_up)
-		skip();
+	assert_true(obs_up);
 
 	audio_t *audio = NULL;
 	struct audio_output_info info = stereo_info();
@@ -252,8 +249,7 @@ static void null_getters_crash(void **state)
 static void input_thread_runs(void **state)
 {
 	UNUSED_PARAMETER(state);
-	if (!obs_up)
-		skip();
+	assert_true(obs_up);
 
 	volatile size_t calls = 0;
 	audio_t *audio = NULL;

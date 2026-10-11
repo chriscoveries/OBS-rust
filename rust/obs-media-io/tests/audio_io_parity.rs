@@ -327,3 +327,134 @@ unsafe extern "C" fn output_c2(_p: *mut c_void, mix_idx: usize, data: *mut c::Or
     let d = unsafe { &*data };
     record_output(mix_idx, d.frames + 1, d.data[0] as *const f32);
 }
+
+/// Marker-writing input callbacks: the marker f32 bits travel in
+/// `input_param`, so a proptest case can drive any sample value — including
+/// out-of-range and NaN — through the timestamp/clamp path.
+unsafe extern "C" fn input_marked_rs(
+    param: *mut c_void,
+    start: u64,
+    end: u64,
+    new_ts: *mut u64,
+    active: u32,
+    mixes: *mut rs::audio_output_data,
+) -> bool {
+    if start == MAGIC {
+        record_input(start, end, new_ts, active);
+        unsafe { *(*mixes).data[0] = f32::from_bits(param as u64 as u32) };
+    }
+    true
+}
+
+unsafe extern "C" fn input_marked_c(
+    param: *mut c_void,
+    start: u64,
+    end: u64,
+    new_ts: *mut u64,
+    active: u32,
+    mixes: *mut c::OracleAudioOutputData,
+) -> bool {
+    if start == MAGIC {
+        record_input(start, end, new_ts, active);
+        unsafe { *(*mixes).data[0] = f32::from_bits(param as u64 as u32) };
+    }
+    true
+}
+
+/// Full-frame output callbacks: compare every sample, not just the first.
+unsafe extern "C" fn output_full_rs(_p: *mut c_void, mix_idx: usize, data: *mut rs::audio_data) {
+    let d = unsafe { &*data };
+    let mut acc = 0u32;
+    for i in 0..d.frames as usize {
+        acc = acc.wrapping_mul(31).wrapping_add(unsafe { *d.data[0].cast::<f32>().add(i) }.to_bits());
+    }
+    let mut g = TICK.lock().unwrap();
+    if let Some(t) = g.as_mut() {
+        t.calls.push((mix_idx, acc, 0));
+    }
+}
+
+unsafe extern "C" fn output_full_c(_p: *mut c_void, mix_idx: usize, data: *mut c::OracleAudioData) {
+    let d = unsafe { &*data };
+    let mut acc = 0u32;
+    for i in 0..d.frames as usize {
+        acc = acc.wrapping_mul(31).wrapping_add(unsafe { *d.data[0].cast::<f32>().add(i) }.to_bits());
+    }
+    let mut g = TICK.lock().unwrap();
+    if let Some(t) = g.as_mut() {
+        t.calls.push((mix_idx, acc, 0));
+    }
+}
+
+proptest::proptest! {
+    /// Varied timestamp deltas, marker sample values (including out-of-range
+    /// and NaN through the clamp path), and 1-3 inputs across mixes — the
+    /// whole call sequence must be bit-identical between oracle and port.
+    /// Resampling-on is unreachable here: the oracle stubs
+    /// `audio_resampler_create` to NULL, so differing conversions refuse on
+    /// both sides (covered in connect_disconnect_match).
+    #[test]
+    fn tick_sequence_matches(
+        marker_bits in proptest::prop_oneof![
+            proptest::prelude::Just(0.5f32.to_bits()),
+            proptest::prelude::Just(2.5f32.to_bits()),
+            proptest::prelude::Just(f32::NAN.to_bits()),
+            proptest::prelude::Just((-2.5f32).to_bits()),
+        ],
+        prev_delta in 0u64..50_000_000u64,
+        n_inputs in 1usize..=3,
+        clip_flags in proptest::prop::collection::vec(proptest::bool::ANY, 3),
+    ) {
+        unsafe {
+            let marker = marker_bits as usize as *mut c_void;
+            let mut co: *mut c::OracleAudioOutput = ptr::null_mut();
+            let mut ci = info_c(None);
+            ci.input_callback = Some(input_marked_c);
+            ci.input_param = marker;
+            assert_eq!(c::oracle_audio_output_open(&mut co, &mut ci), 0);
+            let mut ro: *mut c_void = ptr::null_mut();
+            let mut ri = info_rs(Some(input_marked_rs));
+            ri.input_param = marker;
+            assert_eq!(rs::audio_output_open(&mut ro, &mut ri), rs::AUDIO_OUTPUT_SUCCESS);
+
+            for i in 0..n_inputs {
+                if clip_flags[i] {
+                    let conv = rs::audio_convert_info {
+                        samples_per_sec: 0,
+                        format: 0,
+                        speakers: 0,
+                        allow_clipping: true,
+                    };
+                    let cconv = c::OracleAudioConvertInfo {
+                        samples_per_sec: 0,
+                        format: 0,
+                        speakers: 0,
+                        allow_clipping: true,
+                    };
+                    let cparam = i as *mut c_void;
+                    assert_eq!(
+                        c::oracle_audio_output_connect(co, i, &cconv, Some(output_full_c), cparam),
+                        rs::audio_output_connect(ro, i, &conv, Some(output_full_rs), cparam),
+                    );
+                } else {
+                    let cparam = i as *mut c_void;
+                    assert_eq!(
+                        c::oracle_audio_output_connect(co, i, ptr::null(), Some(output_full_c), cparam),
+                        rs::audio_output_connect(ro, i, ptr::null(), Some(output_full_rs), cparam),
+                    );
+                }
+            }
+
+            let ra = ro as *mut AudioOutput;
+            let end = MAGIC.wrapping_add(prev_delta.wrapping_add(1));
+            c::oracle_audio_tick(co, end, MAGIC);
+            let c_tick = take_tick();
+            (*ra).tick_for_test(end, MAGIC);
+            let r_tick = take_tick();
+            assert_eq!(c_tick, r_tick, "marker={marker_bits:#x} delta={prev_delta} n={n_inputs}");
+
+            c::oracle_audio_output_close(co);
+            rs::audio_output_close(ro);
+        }
+    }
+}
