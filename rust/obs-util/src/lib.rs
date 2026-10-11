@@ -22,6 +22,8 @@ pub mod file_serializer;
 pub mod lexer;
 pub mod path_extension;
 pub mod pipe;
+#[cfg(unix)]
+pub mod platform_time_dir;
 pub mod profiler_snapshot;
 pub mod task;
 pub mod text_lookup;

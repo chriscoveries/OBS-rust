@@ -7,7 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[dev-dependencies]
+[dependencies]
 libc = "0.2"
+
+[dev-dependencies]
 obs-c-oracle = { path = "../obs-c-oracle" }
 proptest = "1"
