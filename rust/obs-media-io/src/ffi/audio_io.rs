@@ -181,7 +181,10 @@ mod unix {
     /// `audio_output_close`. Stops and joins the worker before freeing any
     /// input state, so input callbacks are never invoked after close
     /// returns. The join is a full barrier: callbacks run only on the
-    /// worker thread, so none can execute during or after the join.
+    /// worker thread, so none can execute after the join. An in-flight
+    /// callback may still reach back into the handle (e.g. disconnect)
+    /// *during* the join — safe because no `&mut AudioOutput` exists until
+    /// the worker is dead, matching the C, which has no aliasing rule.
     ///
     /// # Safety
     /// `audio` must be a handle from `audio_output_open` not yet closed, or
@@ -195,8 +198,16 @@ mod unix {
         if audio.is_null() {
             return;
         }
-        // SAFETY: ownership returns to the box once; Drop runs the close sequence.
-        unsafe { drop(Box::from_raw(audio as *mut AudioOutput)) };
+        let out = audio as *mut AudioOutput;
+        // SAFETY: live handle. Stop+join happens through the raw pointer
+        // only — forming the Box's `&mut` here would alias the `&` an
+        // in-flight callback can still hold into `shared`.
+        unsafe { AudioOutput::stop_and_join(out) };
+        // SAFETY: the worker is dead and every callback has returned, so no
+        // foreign `&` can appear again; the owning Box is sound to
+        // reconstruct. Drop's stop/join is a no-op (`thread` is None); it
+        // still frees the mix resamplers.
+        unsafe { drop(Box::from_raw(out)) };
     }
 
     /// `audio_output_connect`.

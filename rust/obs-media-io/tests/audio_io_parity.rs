@@ -1484,7 +1484,11 @@ fn real_worker_close_join() {
         );
     }
     let calls_before = ctx.self_disc_calls.load(Ordering::SeqCst);
-    drop(out);
+    // The real close path: stop+join through the raw handle (no `&mut`
+    // while a callback can run), then drop. `Box::into_raw` hands the
+    // FFI the owning pointer without forming an exclusive borrow.
+    let raw = Box::into_raw(out) as *mut c_void;
+    unsafe { rs::audio_output_close(raw) };
     // Close's join is complete: the worker is dead, so no callback can run
     // during or after it — counts are frozen. A short window gives any
     // (broken) stray callback a chance to trip the alarm; a correct close

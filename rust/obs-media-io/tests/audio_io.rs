@@ -300,3 +300,125 @@ fn input_thread_runs() {
         audio_output_close(audio);
     }
 }
+
+/// `audio_output_close` must let an in-flight callback finish — including
+/// its re-entrant `audio_output_disconnect` — before the owning `Box`
+/// (and its `&mut`) exists. Forced ordering, no sleeps: (a) the callback
+/// enters and parks; (b) a second thread runs close, which sets stop and
+/// reaches the join point — observed through the debug-only
+/// `stop_and_join_begins` seam; (c) only then does the callback call
+/// `disconnect` and return; (d) close's join completes. If the seam is
+/// never observed, the callback gives up with `timed_out` and the test
+/// fails — it cannot pass without the overlap.
+#[cfg(debug_assertions)]
+mod close_overlap {
+    use super::*;
+    use obs_media_io::audio_io::AudioOutput;
+    use std::sync::atomic::{AtomicBool, AtomicPtr};
+
+    struct OvlCtx {
+        audio: AtomicPtr<c_void>,
+        entered: AtomicUsize,
+        timed_out: AtomicBool,
+        disconnected: AtomicUsize,
+        closed: AtomicBool,
+    }
+
+    unsafe extern "C" fn ovl_input(
+        _p: *mut c_void,
+        _start: u64,
+        end: u64,
+        new_ts: *mut u64,
+        _active: u32,
+        mixes: *mut audio_output_data,
+    ) -> bool {
+        unsafe {
+            *new_ts = end;
+            *(*mixes).data[0] = 0.5f32;
+        }
+        true
+    }
+
+    unsafe extern "C" fn ovl_output(p: *mut c_void, mix: usize, _d: *mut audio_data) {
+        let ctx = unsafe { &*(p as *const OvlCtx) };
+        if ctx.entered.fetch_add(1, Ordering::SeqCst) != 0 {
+            return;
+        }
+        // (c) is allowed only after close reached its join point (b).
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while AudioOutput::stop_and_join_begins() == 0 {
+            if Instant::now() >= deadline {
+                ctx.timed_out.store(true, Ordering::SeqCst);
+                return;
+            }
+            std::hint::spin_loop();
+        }
+        // Re-entrant disconnect on the same handle while close is blocked
+        // in join — exactly the `&`-during-close aliasing path.
+        unsafe {
+            audio_output_disconnect(ctx.audio.load(Ordering::SeqCst), mix, Some(ovl_output), p)
+        };
+        ctx.disconnected.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn close_join_overlaps_inflight_disconnect() {
+        let ctx = Box::new(OvlCtx {
+            audio: AtomicPtr::new(ptr::null_mut()),
+            entered: AtomicUsize::new(0),
+            timed_out: AtomicBool::new(false),
+            disconnected: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+        });
+        let mut info = stereo_info(c"t4-close-ovl", &*ctx as *const OvlCtx as *mut c_void);
+        info.input_callback = Some(ovl_input);
+        let mut audio = ptr::null_mut();
+        unsafe {
+            assert_eq!(
+                audio_output_open(&mut audio, &mut info),
+                AUDIO_OUTPUT_SUCCESS
+            );
+            ctx.audio.store(audio, Ordering::SeqCst);
+            assert!(audio_output_connect(
+                audio,
+                0,
+                ptr::null(),
+                Some(ovl_output),
+                &*ctx as *const OvlCtx as *mut c_void
+            ));
+
+            // (a) the callback is in flight and parked on the seam.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while ctx.entered.load(Ordering::SeqCst) == 0 {
+                std::hint::spin_loop();
+                assert!(Instant::now() < deadline, "callback never ran");
+            }
+
+            // (b)+(d) close on another thread; flag, since join has no
+            // timeout — spin on `closed` instead.
+            let ctx_addr = &*ctx as *const OvlCtx as usize;
+            let audio_addr = audio as usize;
+            let close_t = std::thread::spawn(move || {
+                audio_output_close(audio_addr as *mut c_void);
+                (*(ctx_addr as *const OvlCtx))
+                    .closed
+                    .store(true, Ordering::SeqCst);
+            });
+            while !ctx.closed.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+                assert!(Instant::now() < deadline, "close never returned");
+            }
+            close_t.join().unwrap();
+        }
+
+        assert!(
+            !ctx.timed_out.load(Ordering::SeqCst),
+            "close never reached its join point — the callback could not overlap the join"
+        );
+        assert_eq!(
+            ctx.disconnected.load(Ordering::SeqCst),
+            1,
+            "the in-flight callback's re-entrant disconnect did not run during close's join"
+        );
+    }
+}

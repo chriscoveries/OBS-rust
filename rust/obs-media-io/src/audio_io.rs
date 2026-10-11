@@ -289,6 +289,8 @@ mod port {
     use core::ffi::{c_char, c_int, c_void};
     use core::ptr;
     use std::cell::UnsafeCell;
+    #[cfg(debug_assertions)]
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread::JoinHandle;
 
@@ -460,9 +462,11 @@ mod port {
     }
 
     /// `struct audio_output` — the owner. `audio_t` handles point at this; the
-    /// join handle stays here (never inside `Shared`) so `drop` can stop and
+    /// join handle stays here (never inside `Shared`) so close can stop and
     /// join the worker before the shared box is torn down, without holding the
-    /// input lock.
+    /// input lock — and before any `&mut AudioOutput` exists (an in-flight
+    /// callback can still reach `shared` through `&`; overlapping a foreign
+    /// shared borrow with `&mut` would be UB the C does not have).
     pub struct AudioOutput {
         pub(crate) shared: Box<Shared>,
         thread: Option<JoinHandle<()>>,
@@ -1017,10 +1021,61 @@ mod port {
         }
     }
 
+    /// Debug-build test seam: join points reached by `stop_and_join`, so a
+    /// test can prove an in-flight callback ran *during* close's join rather
+    /// than before it (a callback that waits on this counter cannot pass a
+    /// close that never joins).
+    #[cfg(debug_assertions)]
+    static STOP_AND_JOIN_BEGINS: AtomicUsize = AtomicUsize::new(0);
+
+    impl AudioOutput {
+        /// `audio_output_close`'s stop+join half, reached through a raw
+        /// pointer only. While the worker — or an in-flight output callback
+        /// reaching back into `shared` through `connect`/`disconnect`/
+        /// `active` — can still form `&` references into this object, no
+        /// `&mut AudioOutput` may exist: forming the owning `Box` before the
+        /// join would alias the foreign shared borrows, UB the C does not
+        /// have. Field accesses here create at most a `&mut` on `thread`
+        /// (disjoint from `shared`) and `&` on `shared` itself, both of
+        /// which coexist with the callback's `&`.
+        ///
+        /// Once this returns, the worker is dead and every callback has
+        /// returned; only then may the caller re-form `Box::from_raw` and
+        /// drop, so `Drop`'s stop/join is a no-op on the FFI path.
+        ///
+        /// # Safety
+        /// `this` must be a live `AudioOutput` handle. Must not run on the
+        /// output's own worker thread — self-join is UB, exactly as
+        /// `pthread_join` on the calling thread is in the C.
+        pub(crate) unsafe fn stop_and_join(this: *mut Self) {
+            // SAFETY: caller guarantees a live handle; field-level accesses
+            // only, per the doc above.
+            if unsafe { (*this).initialized } {
+                unsafe { (*this).shared.stop.store(true, Ordering::SeqCst) };
+                #[cfg(debug_assertions)]
+                STOP_AND_JOIN_BEGINS.fetch_add(1, Ordering::SeqCst);
+                if let Some(h) = unsafe { (*this).thread.take() } {
+                    let _ = h.join();
+                }
+            }
+        }
+
+        /// Join points `stop_and_join` has reached. Debug builds only, for
+        /// the close/callback-overlap regression test.
+        #[cfg(debug_assertions)]
+        #[doc(hidden)]
+        pub fn stop_and_join_begins() -> usize {
+            STOP_AND_JOIN_BEGINS.load(Ordering::SeqCst)
+        }
+    }
+
     impl Drop for AudioOutput {
-        /// `audio_output_close`: stop the thread, join it, then free every mix's
-        /// resamplers (in mix order, like the C). Stop/join completes before the
-        /// shared box is destroyed and never holds the input lock.
+        /// `audio_output_close`'s teardown half: free every mix's resamplers
+        /// (in mix order, like the C). The FFI close stops and joins through
+        /// `stop_and_join` *before* this `&mut` exists, so `thread` is None
+        /// here and the stop/join below is a no-op on that path; it remains
+        /// for direct `drop` of a live output, where the caller accepts the
+        /// same caveat as the C (a concurrent callback may still run).
         fn drop(&mut self) {
             if self.initialized {
                 self.shared.stop.store(true, Ordering::SeqCst);
