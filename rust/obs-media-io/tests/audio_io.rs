@@ -322,6 +322,7 @@ mod close_overlap {
         timed_out: AtomicBool,
         disconnected: AtomicUsize,
         closed: AtomicBool,
+        join_begins_at_disconnect: AtomicUsize,
     }
 
     unsafe extern "C" fn ovl_input(
@@ -354,7 +355,12 @@ mod close_overlap {
             std::hint::spin_loop();
         }
         // Re-entrant disconnect on the same handle while close is blocked
-        // in join — exactly the `&`-during-close aliasing path.
+        // in join — exactly the `&`-during-close aliasing path. Recording
+        // the seam here (not only in the barrier above) is what makes the
+        // test fail if the barrier is ever removed: without it the
+        // callback reaches disconnect before close begins its join.
+        ctx.join_begins_at_disconnect
+            .store(AudioOutput::stop_and_join_begins(), Ordering::SeqCst);
         unsafe {
             audio_output_disconnect(ctx.audio.load(Ordering::SeqCst), mix, Some(ovl_output), p)
         };
@@ -369,6 +375,7 @@ mod close_overlap {
             timed_out: AtomicBool::new(false),
             disconnected: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
+            join_begins_at_disconnect: AtomicUsize::new(0),
         });
         let mut info = stereo_info(c"t4-close-ovl", &*ctx as *const OvlCtx as *mut c_void);
         info.input_callback = Some(ovl_input);
@@ -419,6 +426,10 @@ mod close_overlap {
             ctx.disconnected.load(Ordering::SeqCst),
             1,
             "the in-flight callback's re-entrant disconnect did not run during close's join"
+        );
+        assert!(
+            ctx.join_begins_at_disconnect.load(Ordering::SeqCst) >= 1,
+            "disconnect ran before close reached its join — the overlap was never exercised"
         );
     }
 }
