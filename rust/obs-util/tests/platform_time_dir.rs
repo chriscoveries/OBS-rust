@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use obs_c_oracle as _;
+use obs_util::platform_time_dir::{Dir, Glob, gettime_ns};
 use obs_util::platform_time_dir::{sleep_ms, sleepto_ns, sleepto_ns_fast};
-use obs_util::platform_time_dir::{gettime_ns, Dir, Glob};
 
 struct ScratchDir(PathBuf);
 

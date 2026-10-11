@@ -34,6 +34,8 @@ pub mod lexer;
 pub mod nal;
 pub mod path_extension;
 pub mod pipe;
+#[cfg(unix)]
+pub mod platform_nix_time_dir;
 pub mod profiler_snapshot;
 pub mod task;
 pub mod text_lookup;
