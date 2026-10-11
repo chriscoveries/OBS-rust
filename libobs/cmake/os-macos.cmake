@@ -22,6 +22,7 @@ target_sources(
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/pipe-posix.c>
     util/platform-cocoa.m
     util/platform-nix.c
+    util/platform-nix-time-dir.c
     util/threading-posix.c
     util/threading-posix.h
 )
