@@ -5,7 +5,7 @@
 use core::mem::{align_of, offset_of, size_of};
 
 use obs_c_oracle as _;
-use obs_c_oracle::audio_io as c;
+use obs_c_oracle::audio_io_inlines as c;
 use obs_media_io::ffi::audio_io as rs;
 use obs_util as _;
 use proptest as _;

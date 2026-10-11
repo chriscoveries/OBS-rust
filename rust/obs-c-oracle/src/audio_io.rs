@@ -107,30 +107,4 @@ unsafe extern "C" {
         mix_idx: usize,
         input_idx: usize,
     ) -> *const OracleAudioConvertInfo;
-
-    pub fn oracle_audio_output_info_size() -> usize;
-    pub fn oracle_audio_output_info_align() -> usize;
-    pub fn oracle_audio_output_info_offset_name() -> usize;
-    pub fn oracle_audio_output_info_offset_samples_per_sec() -> usize;
-    pub fn oracle_audio_output_info_offset_format() -> usize;
-    pub fn oracle_audio_output_info_offset_speakers() -> usize;
-    pub fn oracle_audio_output_info_offset_input_callback() -> usize;
-    pub fn oracle_audio_output_info_offset_input_param() -> usize;
-
-    pub fn oracle_audio_convert_info_size() -> usize;
-    pub fn oracle_audio_convert_info_align() -> usize;
-    pub fn oracle_audio_convert_info_offset_samples_per_sec() -> usize;
-    pub fn oracle_audio_convert_info_offset_format() -> usize;
-    pub fn oracle_audio_convert_info_offset_speakers() -> usize;
-    pub fn oracle_audio_convert_info_offset_allow_clipping() -> usize;
-
-    pub fn oracle_audio_data_size() -> usize;
-    pub fn oracle_audio_data_align() -> usize;
-    pub fn oracle_audio_data_offset_data() -> usize;
-    pub fn oracle_audio_data_offset_frames() -> usize;
-    pub fn oracle_audio_data_offset_timestamp() -> usize;
-
-    pub fn oracle_audio_output_data_size() -> usize;
-    pub fn oracle_audio_output_data_align() -> usize;
-    pub fn oracle_audio_output_data_offset_data() -> usize;
 }

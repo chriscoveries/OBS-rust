@@ -123,7 +123,6 @@ pub const AUDIO_OUTPUT_SUCCESS: c_int = 0;
 pub const AUDIO_OUTPUT_INVALIDPARAM: c_int = -1;
 pub const AUDIO_OUTPUT_FAIL: c_int = -2;
 
-
 /// pthread API on Windows, so Windows keeps `media-io/audio-io.c` — these
 /// exports carry the ` unix` marker in rust-exports.txt and are not
 /// compiled there. See `crate::audio_io` for the module-level design.
