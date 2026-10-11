@@ -98,8 +98,12 @@ void profile_reenable_thread(void) {}
  * plane count/stride, so a format/speaker-layout change would read the
  * input with the wrong layout (interleaved-to-planar stereo has no
  * input[1]). Such conversions are rejected at create time instead of
- * pretending full conversion support. */
-struct oracle_resampler {
+ * pretending full conversion support.
+ *
+ * The struct completes the opaque `struct audio_resampler` from
+ * audio-resampler.h, so audio_resampler_t * / struct audio_resampler *
+ * are the same type (GCC 14 errors on incompatible-pointer-types). */
+struct audio_resampler {
 	struct resample_info dst;
 	struct resample_info src;
 	uint8_t *buf[MAX_AV_PLANES];
@@ -114,7 +118,7 @@ struct oracle_resampler {
 
 audio_resampler_t *audio_resampler_create(const struct resample_info *dst, const struct resample_info *src)
 {
-	struct oracle_resampler *r = bzalloc(sizeof(*r));
+	struct audio_resampler *r = bzalloc(sizeof(*r));
 	if (!r)
 		return NULL;
 
@@ -137,7 +141,7 @@ audio_resampler_t *audio_resampler_create(const struct resample_info *dst, const
 
 void audio_resampler_destroy(audio_resampler_t *resampler)
 {
-	struct oracle_resampler *r = resampler;
+	struct audio_resampler *r = resampler;
 	if (!r)
 		return;
 	for (size_t p = 0; p < MAX_AV_PLANES; p++)
@@ -148,7 +152,7 @@ void audio_resampler_destroy(audio_resampler_t *resampler)
 bool audio_resampler_resample(audio_resampler_t *resampler, uint8_t *output[], uint32_t *out_frames,
 			      uint64_t *ts_offset, const uint8_t *const input[], uint32_t in_frames)
 {
-	struct oracle_resampler *r = resampler;
+	struct audio_resampler *r = resampler;
 	uint64_t acc = r->residue + (uint64_t)in_frames * r->dst.samples_per_sec;
 	uint32_t out = (uint32_t)(acc / r->src.samples_per_sec);
 	r->residue = acc % r->src.samples_per_sec;
