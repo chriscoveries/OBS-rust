@@ -1,6 +1,8 @@
 # Fork-only CI for chriscoveries/obsrust-fork. Runs ONLY on our self-hosted
 # runners (RD boxes preferred, claw as backup). Never part of an upstream PR:
 # it lives on the fork's default branch `ci-main` and checks out the ref to test.
+# Dispatch-only on purpose: these runners are ours, so no PR-triggered event may
+# run untrusted code on them (no pull_request_target).
 name: Self-hosted CI
 on:
   workflow_dispatch:
@@ -18,11 +20,9 @@ on:
       tier2_runner:
         description: Runner label for Tier 2 (claw, or rd4 as backup; never the Mac)
         default: claw
-  pull_request_target:
-    branches: [ci-main]
 concurrency:
   # Include the runner labels, so the same SHA can run on claw and rd4 at once.
-  group: ci-${{ inputs.ref || github.head_ref }}-${{ inputs.runner || 'rd' }}-${{ inputs.tier2_runner || 'claw' }}
+  group: ci-${{ inputs.ref }}-${{ inputs.runner || 'rd' }}-${{ inputs.tier2_runner || 'claw' }}
   cancel-in-progress: true
 jobs:
   gate:
@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.event.pull_request.head.sha }}
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
           submodules: false
           persist-credentials: false
@@ -56,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.event.pull_request.head.sha }}
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
           submodules: false
           persist-credentials: false
