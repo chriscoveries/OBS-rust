@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <cmocka.h>
 
@@ -191,6 +192,62 @@ static void write_decodes_flv_timestamp(void **state)
 	RTMP_Free(rtmp);
 }
 
+static int discard_rtmp_output(RTMPSockBuf *sockbuf, const char *buffer, int length, void *context)
+{
+	(void)sockbuf;
+	(void)buffer;
+	(*(int *)context)++;
+	return length;
+}
+
+static void secure_token_decode_uses_unsigned_shift(void **state)
+{
+	(void)state;
+	AVal result = AVC("_result");
+	AVal secure_token = AVC("secureToken");
+	char response_value[] = "00000080";
+	AVal response = {response_value, sizeof(response_value) - 1};
+	char body[128];
+	char *end = body;
+	int send_count = 0;
+
+	end = AMF_EncodeString(end, body + sizeof(body), &result);
+	end = AMF_EncodeNumber(end, body + sizeof(body), 1.0);
+	*end++ = AMF_NULL;
+	*end++ = AMF_OBJECT;
+	end = AMF_EncodeNamedString(end, body + sizeof(body), &secure_token, &response);
+	*end++ = 0;
+	*end++ = 0;
+	*end++ = AMF_OBJECT_END;
+
+	RTMP *rtmp = RTMP_Alloc();
+	assert_non_null(rtmp);
+	RTMP_Init(rtmp);
+	rtmp->Link.token = (AVal)AVC("0123456789abcdef");
+	rtmp->Link.protocol |= RTMP_FEATURE_WRITE;
+	rtmp->m_methodCalls = calloc(1, sizeof(*rtmp->m_methodCalls));
+	assert_non_null(rtmp->m_methodCalls);
+	rtmp->m_methodCalls[0].name.av_val = malloc(sizeof("connect"));
+	assert_non_null(rtmp->m_methodCalls[0].name.av_val);
+	memcpy(rtmp->m_methodCalls[0].name.av_val, "connect", sizeof("connect"));
+	rtmp->m_methodCalls[0].name.av_len = sizeof("connect") - 1;
+	rtmp->m_methodCalls[0].num = 1;
+	rtmp->m_numCalls = 1;
+	rtmp->m_bCustomSend = TRUE;
+	rtmp->m_customSendFunc = discard_rtmp_output;
+	rtmp->m_customSendParam = &send_count;
+
+	RTMPPacket packet = {0};
+	packet.m_packetType = RTMP_PACKET_TYPE_INVOKE;
+	packet.m_nBodySize = (uint32_t)(end - body);
+	packet.m_body = body;
+	RTMP_ClientPacket(rtmp, &packet);
+	assert_int_equal(send_count, 1);
+
+	RTMP_Close(rtmp);
+	RTMP_Free(rtmp);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -201,6 +258,7 @@ int main(void)
 		cmocka_unit_test(client_packet_decodes_flv_timestamp),
 		cmocka_unit_test(read_decodes_flv_timestamps),
 		cmocka_unit_test(write_decodes_flv_timestamp),
+		cmocka_unit_test(secure_token_decode_uses_unsigned_shift),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);
