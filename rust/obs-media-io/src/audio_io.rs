@@ -200,20 +200,24 @@ struct AudioInput {
 }
 
 /// `struct audio_mix`, with the two `[MAX_AUDIO_CHANNELS][AUDIO_OUTPUT_FRAMES]`
-/// buffers stored flat like the C's contiguous rows.
+/// buffers stored flat like the C's contiguous rows. Each field is its own
+/// `UnsafeCell`: the input registry is reached only under `input_mutex`,
+/// while the buffers are touched outside the lock (the tick's fill/clamp —
+/// only the thread running the tick ever touches them), so a `&mut` on the
+/// registry can never overlap a `&mut` on a buffer through one shared cell.
 struct AudioMix {
-    inputs: Vec<AudioInput>,
-    buffer: [f32; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES],
-    buffer_unclamped: [f32; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES],
+    inputs: UnsafeCell<Vec<AudioInput>>,
+    buffer: UnsafeCell<[f32; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES]>,
+    buffer_unclamped: UnsafeCell<[f32; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES]>,
 }
 
 /// The state the audio thread and concurrent FFI callers share. Everything
 /// except `mixes` and `stop` is immutable after `open` (plain reads need no
-/// lock); `mixes` is reached only under `input_mutex`. The box never moves,
+/// lock); `inputs` is reached only under `input_mutex`. The box never moves,
 /// so raw pointers into `buffer`/`buffer_unclamped` stay valid across
 /// re-entrant `connect`/`disconnect` calls (those only touch `inputs`).
 ///
-/// Borrow discipline: every `&`/`&mut` into `self.mixes` is created inside a
+/// Borrow discipline: every `&`/`&mut` into a mix field is created inside a
 /// single expression and never held across a statement that can run a
 /// callback or release the lock — so no borrow is ever live while a
 /// re-entrant call creates another one.
@@ -228,7 +232,7 @@ pub(crate) struct Shared {
 
     stop: AtomicBool,
     input_mutex: InputMutex,
-    mixes: UnsafeCell<[AudioMix; MAX_AUDIO_MIXES]>,
+    mixes: [AudioMix; MAX_AUDIO_MIXES],
 }
 
 // Raw C pointers are passed across the API (param, callback, resampler); the
@@ -314,9 +318,10 @@ impl Shared {
             timestamp: 0,
         };
 
+        let mix = &self.mixes[mix_idx];
         let mut i = {
             // SAFETY: the lock is held; no other accessor is live.
-            unsafe { (*self.mixes.get())[mix_idx].inputs.len() }
+            unsafe { (*mix.inputs.get()).len() }
         };
         while i > 0 {
             i -= 1;
@@ -326,18 +331,18 @@ impl Shared {
             let Some((resampler, callback, param, buf_ptr)) = ({
                 // SAFETY: the lock is held; this borrow ends before the
                 // callback below.
-                let mix = unsafe { &mut (*self.mixes.get())[mix_idx] };
-                mix.inputs.get(i).map(|input| {
+                let inputs = unsafe { &mut *mix.inputs.get() };
+                inputs.get(i).map(|input| {
                     let buf = if input.conversion.allow_clipping {
-                        &mut mix.buffer_unclamped
+                        mix.buffer_unclamped.get()
                     } else {
-                        &mut mix.buffer
+                        mix.buffer.get()
                     };
                     (
                         input.resampler,
                         input.callback,
                         input.param,
-                        buf.as_mut_ptr(),
+                        buf.cast::<f32>(),
                     )
                 })
             }) else {
@@ -382,11 +387,13 @@ impl Shared {
             for plane in 0..self.planes {
                 let start = plane * AUDIO_OUTPUT_FRAMES;
                 let end = start + float_size;
-                // SAFETY: scoped borrow of two disjoint fields of this mix;
-                // buffers are only touched by this thread's tick path.
-                let mix = unsafe { &mut (*self.mixes.get())[mix_idx] };
-                mix.buffer_unclamped[start..end].copy_from_slice(&mix.buffer[start..end]);
-                for val in &mut mix.buffer[start..end] {
+                // SAFETY: scoped borrows of two disjoint cells of this mix;
+                // buffers are only touched by this thread's tick path, never
+                // by connect/disconnect.
+                let mix = &self.mixes[mix_idx];
+                let unclamped = unsafe { &mut *mix.buffer_unclamped.get() };
+                unclamped[start..end].copy_from_slice(&unsafe { &*mix.buffer.get() }[start..end]);
+                for val in &mut unsafe { &mut *mix.buffer.get() }[start..end] {
                     let mut v = *val;
                     if v.is_nan() {
                         v = 0.0;
@@ -409,7 +416,7 @@ impl Shared {
         self.input_mutex.lock();
         for i in 0..MAX_AUDIO_MIXES {
             // SAFETY: the lock is held; this borrow ends each statement.
-            if unsafe { !(*self.mixes.get())[i].inputs.is_empty() } {
+            if unsafe { !(*self.mixes[i].inputs.get()).is_empty() } {
                 active_mixes |= 1 << i;
             }
         }
@@ -417,10 +424,12 @@ impl Shared {
 
         for (mix_idx, out) in data.iter_mut().enumerate() {
             let buf_ptr = {
-                // SAFETY: field-scoped borrow of this mix's buffer only.
-                let mix = unsafe { &mut (*self.mixes.get())[mix_idx] };
-                mix.buffer.fill(0.0);
-                mix.buffer.as_mut_ptr()
+                let mix = &self.mixes[mix_idx];
+                // SAFETY: buffer cell only — the registry is untouched here
+                // and only this thread's tick ever touches buffers.
+                let buf = unsafe { &mut *mix.buffer.get() };
+                buf.fill(0.0);
+                buf.as_mut_ptr()
             };
             for (i, slot) in out.data.iter_mut().enumerate().take(self.planes) {
                 // SAFETY: fixed buffer rows, stable for the Shared box's life.
@@ -456,7 +465,7 @@ impl Shared {
         let mut clamp_mixes: u32 = 0;
         for i in 0..MAX_AUDIO_MIXES {
             // SAFETY: the lock is held; this borrow ends each statement.
-            if unsafe { !(*self.mixes.get())[i].inputs.is_empty() } {
+            if unsafe { !(*self.mixes[i].inputs.get()).is_empty() } {
                 clamp_mixes |= 1 << i;
             }
         }
@@ -552,11 +561,11 @@ impl AudioOutput {
             input_param: info.input_param,
             stop: AtomicBool::new(false),
             input_mutex: InputMutex::uninit(),
-            mixes: UnsafeCell::new(std::array::from_fn(|_| AudioMix {
-                inputs: Vec::new(),
-                buffer: [0.0; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES],
-                buffer_unclamped: [0.0; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES],
-            })),
+            mixes: std::array::from_fn(|_| AudioMix {
+                inputs: UnsafeCell::new(Vec::new()),
+                buffer: UnsafeCell::new([0.0; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES]),
+                buffer_unclamped: UnsafeCell::new([0.0; MAX_AUDIO_CHANNELS * AUDIO_OUTPUT_FRAMES]),
+            }),
         });
         // SAFETY: first and only init, at the mutex's final (boxed) address.
         if unsafe { shared.input_mutex.init() }.is_err() {
@@ -604,8 +613,8 @@ impl AudioOutput {
         let mut success = false;
         {
             // SAFETY: the lock is held; this borrow ends before unlock.
-            let mixes = unsafe { &mut *shared.mixes.get() };
-            if input_index(&mixes[mi].inputs, callback, param).is_none() {
+            let inputs = unsafe { &mut *shared.mixes[mi].inputs.get() };
+            if input_index(inputs, callback, param).is_none() {
                 let mut input = AudioInput {
                     conversion: crate::ffi::audio_io::audio_convert_info {
                         samples_per_sec: 0,
@@ -639,7 +648,7 @@ impl AudioOutput {
 
                 success = audio_input_init(&mut input, &shared.info);
                 if success {
-                    mixes[mi].inputs.push(input);
+                    inputs.push(input);
                 }
             }
         }
@@ -664,9 +673,9 @@ impl AudioOutput {
 
         {
             // SAFETY: the lock is held; this borrow ends before unlock.
-            let mixes = unsafe { &mut *shared.mixes.get() };
-            if let Some(idx) = input_index(&mixes[mix_idx].inputs, callback, param) {
-                let mut input = mixes[mix_idx].inputs.remove(idx);
+            let inputs = unsafe { &mut *shared.mixes[mix_idx].inputs.get() };
+            if let Some(idx) = input_index(inputs, callback, param) {
+                let mut input = inputs.remove(idx);
                 audio_input_free(&mut input);
             }
         }
@@ -679,7 +688,12 @@ impl AudioOutput {
         let shared = &*self.shared;
         shared.input_mutex.lock();
         // SAFETY: the lock is held; borrow ends before unlock.
-        let active = unsafe { (*shared.mixes.get()).iter().any(|m| !m.inputs.is_empty()) };
+        let active = unsafe {
+            shared
+                .mixes
+                .iter()
+                .any(|m| !(*m.inputs.get()).is_empty())
+        };
         shared.input_mutex.unlock();
         active
     }
@@ -696,7 +710,7 @@ impl AudioOutput {
         let shared = &*self.shared;
         shared.input_mutex.lock();
         // SAFETY: the lock is held; borrow ends before unlock.
-        let n = unsafe { (*shared.mixes.get())[mix_idx].inputs.len() };
+        let n = unsafe { (*shared.mixes[mix_idx].inputs.get()).len() };
         shared.input_mutex.unlock();
         n
     }
@@ -707,7 +721,7 @@ impl AudioOutput {
         shared.input_mutex.lock();
         // SAFETY: the lock is held; borrow ends before unlock.
         let r = unsafe {
-            !(&(*shared.mixes.get())[mix_idx].inputs)[input_idx]
+            !(&(*shared.mixes[mix_idx].inputs.get()))[input_idx]
                 .resampler
                 .is_null()
         };
@@ -724,7 +738,7 @@ impl AudioOutput {
         let shared = &*self.shared;
         shared.input_mutex.lock();
         // SAFETY: the lock is held; the struct is copied out before unlock.
-        let conv = unsafe { (&(*shared.mixes.get())[mix_idx].inputs)[input_idx].conversion };
+        let conv = unsafe { (&(*shared.mixes[mix_idx].inputs.get()))[input_idx].conversion };
         shared.input_mutex.unlock();
         conv
     }
@@ -742,8 +756,9 @@ impl Drop for AudioOutput {
             }
         }
         // Worker is dead; exclusive access again.
-        for mix in unsafe { &mut *self.shared.mixes.get() }.iter_mut() {
-            for input in &mut mix.inputs {
+        for mix in self.shared.mixes.iter() {
+            // SAFETY: nothing shares the object once drop reaches here.
+            for input in unsafe { &mut *mix.inputs.get() } {
                 audio_input_free(input);
             }
         }
