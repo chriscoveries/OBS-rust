@@ -62,7 +62,11 @@ for mode in OFF ON; do
 
   # The build tree persists across runs, so ask Ninja for the current graph
   # rather than trusting whatever .o files are on disk.
-  libobs_objs=$(ninja -C "$build" -t inputs libobs | grep -E '\.c\.o$' || true)
+  # `ninja -t inputs` needs Ninja >= 1.11. Fail loudly rather than let an empty
+  # list pass the ON check vacuously.
+  inputs=$(ninja -C "$build" -t inputs libobs) || { echo "FAIL: ninja -t inputs failed (needs Ninja >= 1.11)"; exit 1; }
+  libobs_objs=$(grep -E '\.c\.o$' <<<"$inputs" || true)
+  [ -n "$libobs_objs" ] || { echo "FAIL: no libobs C objects in the Ninja graph"; exit 1; }
   if [ "$mode" = ON ]; then
     for obj in bitstream.c.o array-serializer.c.o path-extension.c.o base.c.o file-serializer.c.o pipe.c.o pipe-posix.c.o buffered-file-serializer.c.o; do
       if grep -q "/$obj\$" <<<"$libobs_objs"; then
