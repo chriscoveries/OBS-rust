@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.28...3.30)
 add_library(mac-videotoolbox MODULE)
 add_library(OBS::mac-videotoolbox ALIAS mac-videotoolbox)
 
-target_sources(mac-videotoolbox PRIVATE encoder.c)
+target_sources(mac-videotoolbox PRIVATE encoder.c vt-frame-copy.c vt-frame-copy.h)
 
 target_link_libraries(
   mac-videotoolbox
@@ -14,6 +14,7 @@ target_link_libraries(
     "$<LINK_LIBRARY:FRAMEWORK,CoreFoundation.framework>"
     "$<LINK_LIBRARY:FRAMEWORK,CoreMedia.framework>"
     "$<LINK_LIBRARY:FRAMEWORK,CoreVideo.framework>"
+    "$<LINK_LIBRARY:FRAMEWORK,IOSurface.framework>"
     "$<LINK_LIBRARY:FRAMEWORK,VideoToolbox.framework>"
 )
 

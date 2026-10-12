@@ -4,13 +4,18 @@
 #include <obs-avc.h>
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOSurface/IOSurface.h>
 #include <VideoToolbox/VideoToolbox.h>
 #include <VideoToolbox/VTVideoEncoderList.h>
 #include <CoreMedia/CoreMedia.h>
 
+#include <pthread.h>
+
 #include <util/apple/cfstring-utils.h>
 
 #include <assert.h>
+
+#include "vt-frame-copy.h"
 
 #define VT_LOG(level, format, ...) blog(level, "[VideoToolbox encoder]: " format, ##__VA_ARGS__)
 #define VT_LOG_ENCODER(encoder, codec_type, level, format, ...)                        \
@@ -38,6 +43,8 @@ struct vt_prores_encoder_data {
 };
 static DARRAY(struct vt_prores_encoder_data) vt_prores_hardware_encoder_list;
 static DARRAY(struct vt_prores_encoder_data) vt_prores_software_encoder_list;
+
+struct vt_frame_source_ref;
 
 #ifdef __aarch64__
 bool is_apple_silicon = true;
@@ -73,7 +80,62 @@ struct vt_encoder {
 	bool hw_enc;
 	DARRAY(uint8_t) packet_data;
 	DARRAY(uint8_t) extra_data;
+	pthread_mutex_t texture_mutex;
+	pthread_cond_t texture_cond;
+	struct vt_frame_source_ref *texture_sources;
+	uint32_t pending_texture_submissions;
+	bool texture_fallback_logged;
+	bool texture_sync_initialized;
 };
+
+struct vt_frame_source_ref {
+	struct vt_encoder *encoder;
+	CVPixelBufferRef pixel_buffer;
+	void *lease_token;
+	void (*lease_release)(void *lease_token);
+	struct vt_frame_source_ref *next;
+};
+
+static void vt_drain_texture_encode(void *data);
+
+static bool vt_take_texture_source(struct vt_encoder *enc, void *source, struct vt_frame_source_ref **source_ref)
+{
+	bool found = false;
+
+	pthread_mutex_lock(&enc->texture_mutex);
+	struct vt_frame_source_ref **current = &enc->texture_sources;
+	while (*current) {
+		if (*current == source) {
+			*source_ref = *current;
+			*current = (*current)->next;
+			found = true;
+			break;
+		}
+		current = &(*current)->next;
+	}
+	pthread_mutex_unlock(&enc->texture_mutex);
+
+	return found;
+}
+
+static void vt_release_texture_source(struct vt_frame_source_ref *source_ref)
+{
+	if (!source_ref)
+		return;
+
+	if (source_ref->pixel_buffer)
+		CFRelease(source_ref->pixel_buffer);
+	if (source_ref->lease_release && source_ref->lease_token)
+		source_ref->lease_release(source_ref->lease_token);
+
+	struct vt_encoder *enc = source_ref->encoder;
+	bfree(source_ref);
+	pthread_mutex_lock(&enc->texture_mutex);
+	assert(enc->pending_texture_submissions > 0);
+	enc->pending_texture_submissions--;
+	pthread_cond_broadcast(&enc->texture_cond);
+	pthread_mutex_unlock(&enc->texture_mutex);
+}
 
 static const char *codec_type_to_print_fmt(CMVideoCodecType codec_type)
 {
@@ -403,23 +465,29 @@ static OSStatus session_set_colorspace(VTCompressionSessionRef session, enum vid
 void sample_encoded_callback(void *data, void *source, OSStatus status, VTEncodeInfoFlags info_flags,
 			     CMSampleBufferRef buffer)
 {
+	struct vt_encoder *enc = data;
+	struct vt_frame_source_ref *source_ref = NULL;
+	bool texture_source = source && vt_take_texture_source(enc, source, &source_ref);
 
 	if (status != noErr) {
-		log_osstatus(LOG_ERROR, NULL, "encoder callback", status);
-		return;
-	}
-
-	if (info_flags == kVTEncodeInfo_FrameDropped) {
+		log_osstatus(LOG_ERROR, enc, "encoder callback", status);
+	} else if (info_flags == kVTEncodeInfo_FrameDropped) {
 		VT_LOG(LOG_INFO, "Frame dropped by encoder");
 	}
 
-	CMSimpleQueueRef queue = data;
-	CVPixelBufferRef pixbuf = source;
-	if (buffer != NULL) {
+	if (status == noErr && buffer != NULL) {
 		CFRetain(buffer);
-		CMSimpleQueueEnqueue(queue, buffer);
+		OSStatus enqueue_status = CMSimpleQueueEnqueue(enc->queue, buffer);
+		if (enqueue_status != noErr) {
+			log_osstatus(LOG_ERROR, enc, "CMSimpleQueueEnqueue", enqueue_status);
+			CFRelease(buffer);
+		}
 	}
-	CFRelease(pixbuf);
+
+	if (texture_source)
+		vt_release_texture_source(source_ref);
+	else if (source)
+		CFRelease(source);
 }
 
 static inline CFDictionaryRef create_encoder_spec(const char *vt_encoder_id)
@@ -505,7 +573,7 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	CFDictionaryRef pixbuf_spec = create_pixbuf_spec(enc);
 
 	code = VTCompressionSessionCreate(kCFAllocatorDefault, enc->width, enc->height, enc->codec_type, encoder_spec,
-					  pixbuf_spec, NULL, &sample_encoded_callback, enc->queue, &s);
+					  pixbuf_spec, NULL, &sample_encoded_callback, enc, &s);
 
 	if (code != noErr) {
 		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
@@ -621,8 +689,13 @@ static void vt_destroy(void *data)
 
 	if (enc) {
 		if (enc->session != NULL) {
+			vt_drain_texture_encode(enc);
 			VTCompressionSessionInvalidate(enc->session);
 			CFRelease(enc->session);
+		}
+		if (enc->texture_sync_initialized) {
+			pthread_cond_destroy(&enc->texture_cond);
+			pthread_mutex_destroy(&enc->texture_mutex);
 		}
 		da_free(enc->packet_data);
 		da_free(enc->extra_data);
@@ -783,6 +856,16 @@ static bool vt_update(void *data, obs_data_t *settings)
 static void *vt_create(obs_data_t *settings, obs_encoder_t *encoder)
 {
 	struct vt_encoder *enc = bzalloc(sizeof(struct vt_encoder));
+	if (pthread_mutex_init(&enc->texture_mutex, NULL) != 0) {
+		bfree(enc);
+		return NULL;
+	}
+	if (pthread_cond_init(&enc->texture_cond, NULL) != 0) {
+		pthread_mutex_destroy(&enc->texture_mutex);
+		bfree(enc);
+		return NULL;
+	}
+	enc->texture_sync_initialized = true;
 
 	OSStatus code;
 
@@ -1169,6 +1252,280 @@ fail:
 	return false;
 }
 
+static bool vt_is_nv12_or_p010(OSType pixel_format)
+{
+	return pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+	       pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+	       pixel_format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange ||
+	       pixel_format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
+}
+
+static void vt_set_pixel_buffer_attachments(struct vt_encoder *enc, CVPixelBufferRef pixbuf)
+{
+	const enum video_colorspace cs = enc->colorspace;
+	CVBufferSetAttachment(pixbuf, kCVImageBufferYCbCrMatrixKey, obs_to_vt_colorspace(cs),
+			      kCVAttachmentMode_ShouldPropagate);
+	CVBufferSetAttachment(pixbuf, kCVImageBufferColorPrimariesKey, obs_to_vt_primaries(cs),
+			      kCVAttachmentMode_ShouldPropagate);
+	CVBufferSetAttachment(pixbuf, kCVImageBufferTransferFunctionKey, obs_to_vt_transfer(cs),
+			      kCVAttachmentMode_ShouldPropagate);
+
+	const bool pq = cs == VIDEO_CS_2100_PQ;
+	const bool hlg = cs == VIDEO_CS_2100_HLG;
+	if (!pq && !hlg)
+		return;
+
+	const uint16_t hdr_nominal_peak_level = pq ? (uint16_t)obs_get_video_hdr_nominal_peak_level() : 1000;
+	CFDataRef mastering_display = obs_to_vt_masteringdisplay(hdr_nominal_peak_level);
+	CFDataRef content_light = obs_to_vt_contentlightlevelinfo(hdr_nominal_peak_level);
+	CVBufferSetAttachment(pixbuf, kCVImageBufferMasteringDisplayColorVolumeKey, mastering_display,
+			      kCVAttachmentMode_ShouldPropagate);
+	CVBufferSetAttachment(pixbuf, kCVImageBufferContentLightLevelInfoKey, content_light,
+			      kCVAttachmentMode_ShouldPropagate);
+	CFRelease(mastering_display);
+	CFRelease(content_light);
+}
+
+static void vt_log_texture_fallback_once(struct vt_encoder *enc)
+{
+	bool log_fallback = false;
+	pthread_mutex_lock(&enc->texture_mutex);
+	if (!enc->texture_fallback_logged) {
+		enc->texture_fallback_logged = true;
+		log_fallback = true;
+	}
+	pthread_mutex_unlock(&enc->texture_mutex);
+
+	if (log_fallback)
+		VT_BLOG(LOG_WARNING, "IOSurface texture submission failed; using the raw pixel-buffer copy path");
+}
+
+static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBufferRef source, IOSurfaceRef surface,
+					   int64_t pts, struct encoder_packet *packet, bool *received_packet)
+{
+	vt_log_texture_fallback_once(enc);
+
+	if (source) {
+		if (CVPixelBufferGetWidth(source) != enc->width || CVPixelBufferGetHeight(source) != enc->height ||
+		    CVPixelBufferGetPixelFormatType(source) != (OSType)enc->vt_pix_fmt)
+			return false;
+	} else if (!surface || IOSurfaceGetWidth(surface) != enc->width || IOSurfaceGetHeight(surface) != enc->height ||
+		   IOSurfaceGetPixelFormat(surface) != (OSType)enc->vt_pix_fmt ||
+		   IOSurfaceGetPlaneCount(surface) != 2) {
+		return false;
+	}
+
+	CVPixelBufferRef pixbuf = NULL;
+	if (!get_cached_pixel_buffer(enc, &pixbuf))
+		return false;
+
+	OSStatus code = CVPixelBufferLockBaseAddress(pixbuf, 0);
+	if (code != noErr) {
+		CFRelease(pixbuf);
+		return false;
+	}
+
+	IOReturn surface_lock_code = kIOReturnSuccess;
+	if (source) {
+		code = CVPixelBufferLockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+		if (code != noErr) {
+			CVPixelBufferUnlockBaseAddress(pixbuf, 0);
+			CFRelease(pixbuf);
+			return false;
+		}
+	} else {
+		surface_lock_code = IOSurfaceLock(surface, kIOSurfaceLockReadOnly, NULL);
+		if (surface_lock_code != kIOReturnSuccess) {
+			CVPixelBufferUnlockBaseAddress(pixbuf, 0);
+			CFRelease(pixbuf);
+			return false;
+		}
+	}
+
+	uint8_t *source_data[MAX_AV_PLANES] = {0};
+	uint32_t source_linesize[MAX_AV_PLANES] = {0};
+	bool source_layout_valid = true;
+	for (int i = 0; i < 2; i++) {
+		size_t linesize;
+		size_t source_height;
+		if (source) {
+			source_data[i] = CVPixelBufferGetBaseAddressOfPlane(source, i);
+			linesize = CVPixelBufferGetBytesPerRowOfPlane(source, i);
+			source_height = CVPixelBufferGetHeightOfPlane(source, i);
+		} else {
+			source_data[i] = IOSurfaceGetBaseAddressOfPlane(surface, i);
+			linesize = IOSurfaceGetBytesPerRowOfPlane(surface, i);
+			source_height = IOSurfaceGetHeightOfPlane(surface, i);
+		}
+		if (linesize > UINT32_MAX || linesize > CVPixelBufferGetBytesPerRowOfPlane(pixbuf, i) ||
+		    source_height != CVPixelBufferGetHeightOfPlane(pixbuf, i) || !source_data[i]) {
+			source_layout_valid = false;
+			break;
+		}
+		source_linesize[i] = (uint32_t)linesize;
+	}
+	if (source_layout_valid)
+		vt_copy_frame_to_pixbuf(pixbuf, source_data, source_linesize);
+
+	code = CVPixelBufferUnlockBaseAddress(pixbuf, 0);
+	OSStatus source_unlock_code = noErr;
+	if (source)
+		source_unlock_code = CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+	else
+		source_unlock_code = IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL);
+	if (!source_layout_valid || code != noErr || source_unlock_code != noErr) {
+		CFRelease(pixbuf);
+		return false;
+	}
+
+	CMTime dur = CMTimeMake(enc->fps_den, enc->fps_num);
+	CMTime off = CMTimeMultiply(dur, 2);
+	CMTime frame_pts = CMTimeMake(pts, enc->fps_num);
+	code = VTCompressionSessionEncodeFrame(enc->session, pixbuf, frame_pts, dur, NULL, pixbuf, NULL);
+	if (code != noErr) {
+		CFRelease(pixbuf);
+		return false;
+	}
+
+	CMSampleBufferRef buffer = (CMSampleBufferRef)CMSimpleQueueDequeue(enc->queue);
+	if (!buffer)
+		return true;
+
+	*received_packet = true;
+	return parse_sample(enc, buffer, packet, off);
+}
+
+static bool vt_can_encode_texture(void *data, const struct encoder_texture *texture)
+{
+	struct vt_encoder *enc = data;
+	if (!vt_is_nv12_or_p010((OSType)enc->vt_pix_fmt))
+		return false;
+
+	if (!texture)
+		return gs_get_device_type() == GS_DEVICE_METAL;
+
+	if (!texture->iosurface || !texture->tex[0] || !texture->tex[1])
+		return false;
+
+	CVPixelBufferRef pixbuf = NULL;
+	OSStatus status =
+		CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, (IOSurfaceRef)texture->iosurface, NULL, &pixbuf);
+	if (status != kCVReturnSuccess || !pixbuf) {
+		if (pixbuf)
+			CFRelease(pixbuf);
+		return false;
+	}
+
+	bool matches = CVPixelBufferGetWidth(pixbuf) == enc->width && CVPixelBufferGetHeight(pixbuf) == enc->height &&
+		       CVPixelBufferGetPixelFormatType(pixbuf) == (OSType)enc->vt_pix_fmt;
+	CFRelease(pixbuf);
+	return matches;
+}
+
+static bool vt_encode_texture(void *data, struct encoder_texture *texture, int64_t pts, uint64_t lock_key,
+			      uint64_t *next_key, struct encoder_packet *packet, bool *received_packet)
+{
+	UNUSED_PARAMETER(lock_key);
+	UNUSED_PARAMETER(next_key);
+
+	struct vt_encoder *enc = data;
+	if (!texture || !texture->iosurface || !texture->tex[0] || !texture->tex[1] || !texture->lease_acquire ||
+	    !texture->lease_release)
+		return false;
+
+	obs_enter_graphics();
+	bool completed = gs_texture_wait_for_completion(texture->tex[0]);
+	obs_leave_graphics();
+	if (!completed) {
+		VT_BLOG(LOG_ERROR, "Metal render-to-VideoToolbox synchronization failed");
+		return false;
+	}
+
+	CVPixelBufferRef pixbuf = NULL;
+	OSStatus code =
+		CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, (IOSurfaceRef)texture->iosurface, NULL, &pixbuf);
+	if (code != kCVReturnSuccess || !pixbuf) {
+		if (pixbuf)
+			CFRelease(pixbuf);
+		return vt_encode_texture_raw_fallback(enc, NULL, (IOSurfaceRef)texture->iosurface, pts, packet,
+						      received_packet);
+	}
+
+	if (CVPixelBufferGetWidth(pixbuf) != enc->width || CVPixelBufferGetHeight(pixbuf) != enc->height ||
+	    CVPixelBufferGetPixelFormatType(pixbuf) != (OSType)enc->vt_pix_fmt) {
+		VT_BLOG(LOG_ERROR, "IOSurface texture does not match VideoToolbox pixel buffer format or dimensions");
+		CFRelease(pixbuf);
+		return false;
+	}
+
+	void *lease_token = texture->lease_acquire(texture->lease_context);
+	if (!lease_token) {
+		bool fallback = vt_encode_texture_raw_fallback(enc, pixbuf, (IOSurfaceRef)texture->iosurface, pts,
+							       packet, received_packet);
+		CFRelease(pixbuf);
+		return fallback;
+	}
+
+	vt_set_pixel_buffer_attachments(enc, pixbuf);
+	struct vt_frame_source_ref *source_ref = bzalloc(sizeof(*source_ref));
+	if (!source_ref) {
+		bool fallback = vt_encode_texture_raw_fallback(enc, pixbuf, (IOSurfaceRef)texture->iosurface, pts,
+							       packet, received_packet);
+		texture->lease_release(lease_token);
+		CFRelease(pixbuf);
+		return fallback;
+	}
+
+	CMTime dur = CMTimeMake(enc->fps_den, enc->fps_num);
+	CMTime off = CMTimeMultiply(dur, 2);
+	source_ref->encoder = enc;
+	source_ref->pixel_buffer = pixbuf;
+	source_ref->lease_token = lease_token;
+	source_ref->lease_release = texture->lease_release;
+
+	pthread_mutex_lock(&enc->texture_mutex);
+	source_ref->next = enc->texture_sources;
+	enc->texture_sources = source_ref;
+	enc->pending_texture_submissions++;
+	pthread_mutex_unlock(&enc->texture_mutex);
+
+	CMTime frame_pts = CMTimeMake(pts, enc->fps_num);
+	code = VTCompressionSessionEncodeFrame(enc->session, pixbuf, frame_pts, dur, NULL, source_ref, NULL);
+	if (code != noErr) {
+		if (!vt_take_texture_source(enc, source_ref, &source_ref))
+			return false;
+		bool fallback = vt_encode_texture_raw_fallback(
+			enc, source_ref->pixel_buffer, (IOSurfaceRef)texture->iosurface, pts, packet, received_packet);
+		vt_release_texture_source(source_ref);
+		return fallback;
+	}
+
+	CMSampleBufferRef buffer = (CMSampleBufferRef)CMSimpleQueueDequeue(enc->queue);
+	if (buffer == NULL)
+		return true;
+
+	*received_packet = true;
+	return parse_sample(enc, buffer, packet, off);
+}
+
+static void vt_drain_texture_encode(void *data)
+{
+	struct vt_encoder *enc = data;
+	if (!enc || !enc->texture_sync_initialized)
+		return;
+
+	if (enc->session) {
+		OSStatus code = VTCompressionSessionCompleteFrames(enc->session, kCMTimeInvalid);
+		if (code != noErr)
+			log_osstatus(LOG_WARNING, enc, "VTCompressionSessionCompleteFrames", code);
+	}
+
+	pthread_mutex_lock(&enc->texture_mutex);
+	while (enc->pending_texture_submissions)
+		pthread_cond_wait(&enc->texture_cond, &enc->texture_mutex);
+	pthread_mutex_unlock(&enc->texture_mutex);
+}
+
 static bool vt_extra_data(void *data, uint8_t **extra_data, size_t *size)
 {
 	struct vt_encoder *enc = (struct vt_encoder *)data;
@@ -1443,11 +1800,15 @@ void obs_module_post_load(void)
 		.create = vt_create,
 		.destroy = vt_destroy,
 		.encode = vt_encode,
+		.encode_texture2 = vt_encode_texture,
 		.update = vt_update,
 		.get_defaults2 = vt_defaults,
 		.get_extra_data = vt_extra_data,
 		.free_type_data = vt_free_type_data,
-		.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_MULTITRACK_DYN_BITRATE,
+		.can_encode_texture = vt_can_encode_texture,
+		.drain_texture_encode = vt_drain_texture_encode,
+		.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_MULTITRACK_DYN_BITRATE |
+			OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_ASYNC_TEXTURE,
 	};
 
 	da_init(vt_prores_hardware_encoder_list);
