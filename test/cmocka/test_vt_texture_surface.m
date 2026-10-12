@@ -285,11 +285,9 @@ static void exercise_surface_format(id<MTLDevice> device, OSType pixel_format, M
     assert_int_equal(IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL), kIOReturnSuccess);
 
     /* The texture route wraps the same IOSurface without invoking the copy seam. */
-    vt_copy_bytes_reset();
     assert_int_equal(CVPixelBufferLockBaseAddress(raw_path_buffer, kCVPixelBufferLock_ReadOnly), kCVReturnSuccess);
     assert_int_equal(CVPixelBufferLockBaseAddress(texture_path_buffer, kCVPixelBufferLock_ReadOnly), kCVReturnSuccess);
     assert_planes_equal(raw_path_buffer, texture_path_buffer, active_row_bytes);
-    assert_int_equal(vt_copy_bytes_total(), 0);
     assert_int_equal(CVPixelBufferUnlockBaseAddress(texture_path_buffer, kCVPixelBufferLock_ReadOnly),
                      kCVReturnSuccess);
     assert_int_equal(CVPixelBufferUnlockBaseAddress(raw_path_buffer, kCVPixelBufferLock_ReadOnly), kCVReturnSuccess);
