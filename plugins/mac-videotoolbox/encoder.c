@@ -76,6 +76,7 @@ struct vt_encoder {
 	enum video_colorspace colorspace;
 
 	VTCompressionSessionRef session;
+	bool session_invalidated;
 	CMSimpleQueueRef queue;
 	bool hw_enc;
 	DARRAY(uint8_t) packet_data;
@@ -86,6 +87,10 @@ struct vt_encoder {
 	uint32_t pending_texture_submissions;
 	bool texture_fallback_logged;
 	bool texture_sync_initialized;
+#ifdef OBS_VT_ENCODER_TEST
+	OSStatus (*complete_frames_for_test)(VTCompressionSessionRef session, CMTime until_presentation_time);
+	void (*invalidate_session_for_test)(VTCompressionSessionRef session);
+#endif
 };
 
 struct vt_frame_source_ref {
@@ -94,9 +99,29 @@ struct vt_frame_source_ref {
 	void *lease_token;
 	void (*lease_release)(void *lease_token);
 	struct vt_frame_source_ref *next;
+	uint32_t references;
+	bool release_started;
+	bool release_completed;
+	bool pending_released;
 };
 
 static void vt_drain_texture_encode(void *data);
+static OSStatus create_encoder(struct vt_encoder *enc);
+static void log_osstatus(int log_level, struct vt_encoder *enc, const char *context, OSStatus code);
+
+static void vt_unref_texture_source(struct vt_frame_source_ref *source_ref)
+{
+	struct vt_encoder *enc = source_ref->encoder;
+	bool free_source = false;
+
+	pthread_mutex_lock(&enc->texture_mutex);
+	assert(source_ref->references > 0);
+	free_source = --source_ref->references == 0;
+	pthread_mutex_unlock(&enc->texture_mutex);
+
+	if (free_source)
+		bfree(source_ref);
+}
 
 static bool vt_take_texture_source(struct vt_encoder *enc, void *source, struct vt_frame_source_ref **source_ref)
 {
@@ -108,6 +133,7 @@ static bool vt_take_texture_source(struct vt_encoder *enc, void *source, struct 
 		if (*current == source) {
 			*source_ref = *current;
 			*current = (*current)->next;
+			(*source_ref)->next = NULL;
 			found = true;
 			break;
 		}
@@ -118,23 +144,134 @@ static bool vt_take_texture_source(struct vt_encoder *enc, void *source, struct 
 	return found;
 }
 
-static void vt_release_texture_source(struct vt_frame_source_ref *source_ref)
+static void vt_release_texture_source_resources(struct vt_frame_source_ref *source_ref)
 {
 	if (!source_ref)
 		return;
 
-	if (source_ref->pixel_buffer)
-		CFRelease(source_ref->pixel_buffer);
-	if (source_ref->lease_release && source_ref->lease_token)
-		source_ref->lease_release(source_ref->lease_token);
-
 	struct vt_encoder *enc = source_ref->encoder;
-	bfree(source_ref);
 	pthread_mutex_lock(&enc->texture_mutex);
-	assert(enc->pending_texture_submissions > 0);
-	enc->pending_texture_submissions--;
+	if (source_ref->release_started) {
+		while (!source_ref->release_completed)
+			pthread_cond_wait(&enc->texture_cond, &enc->texture_mutex);
+		pthread_mutex_unlock(&enc->texture_mutex);
+		return;
+	}
+	source_ref->release_started = true;
+	CVPixelBufferRef pixel_buffer = source_ref->pixel_buffer;
+	source_ref->pixel_buffer = NULL;
+	void *lease_token = source_ref->lease_token;
+	source_ref->lease_token = NULL;
+	void (*lease_release)(void *) = source_ref->lease_release;
+	source_ref->lease_release = NULL;
+	pthread_mutex_unlock(&enc->texture_mutex);
+
+	if (pixel_buffer)
+		CFRelease(pixel_buffer);
+	if (lease_release && lease_token)
+		lease_release(lease_token);
+
+	pthread_mutex_lock(&enc->texture_mutex);
+	source_ref->release_completed = true;
 	pthread_cond_broadcast(&enc->texture_cond);
 	pthread_mutex_unlock(&enc->texture_mutex);
+}
+
+static void vt_finish_texture_source(struct vt_frame_source_ref *source_ref)
+{
+	struct vt_encoder *enc = source_ref->encoder;
+	bool free_source = false;
+
+	pthread_mutex_lock(&enc->texture_mutex);
+	if (!source_ref->pending_released) {
+		assert(enc->pending_texture_submissions > 0);
+		enc->pending_texture_submissions--;
+		source_ref->pending_released = true;
+	}
+	assert(source_ref->references > 0);
+	free_source = --source_ref->references == 0;
+	pthread_cond_broadcast(&enc->texture_cond);
+	pthread_mutex_unlock(&enc->texture_mutex);
+
+	if (free_source)
+		bfree(source_ref);
+}
+
+static void vt_release_pending_texture_sources(struct vt_encoder *enc)
+{
+	for (;;) {
+		pthread_mutex_lock(&enc->texture_mutex);
+		if (!enc->pending_texture_submissions) {
+			pthread_mutex_unlock(&enc->texture_mutex);
+			return;
+		}
+
+		struct vt_frame_source_ref *source_ref = enc->texture_sources;
+		while (source_ref && source_ref->release_started)
+			source_ref = source_ref->next;
+
+		if (source_ref) {
+			/* Keep the tombstone alive while its resources are released. */
+			source_ref->references++;
+			pthread_mutex_unlock(&enc->texture_mutex);
+			vt_release_texture_source_resources(source_ref);
+			vt_finish_texture_source(source_ref);
+			continue;
+		}
+
+		/* A completion callback already owns the release; wait only for its
+		 * local cleanup, not for another VideoToolbox callback. */
+		pthread_cond_wait(&enc->texture_cond, &enc->texture_mutex);
+		pthread_mutex_unlock(&enc->texture_mutex);
+	}
+}
+
+static void vt_invalidate_session(struct vt_encoder *enc)
+{
+	if (!enc->session || enc->session_invalidated)
+		return;
+
+	VTCompressionSessionRef session = enc->session;
+	enc->session = NULL;
+	enc->session_invalidated = true;
+#ifdef OBS_VT_ENCODER_TEST
+	if (enc->invalidate_session_for_test) {
+		enc->invalidate_session_for_test(session);
+		return;
+	}
+#endif
+	VTCompressionSessionInvalidate(session);
+	CFRelease(session);
+}
+
+static bool vt_ensure_session(struct vt_encoder *enc)
+{
+	if (enc->session)
+		return true;
+
+	OSStatus code = create_encoder(enc);
+	if (code == noErr) {
+		enc->session_invalidated = false;
+		return true;
+	}
+
+	log_osstatus(LOG_ERROR, enc, "recreating VideoToolbox compression session", code);
+	return false;
+}
+
+static void vt_clear_texture_source_tombstones(struct vt_encoder *enc)
+{
+	pthread_mutex_lock(&enc->texture_mutex);
+	struct vt_frame_source_ref *sources = enc->texture_sources;
+	enc->texture_sources = NULL;
+	pthread_mutex_unlock(&enc->texture_mutex);
+
+	while (sources) {
+		struct vt_frame_source_ref *next = sources->next;
+		sources->next = NULL;
+		vt_unref_texture_source(sources);
+		sources = next;
+	}
 }
 
 static const char *codec_type_to_print_fmt(CMVideoCodecType codec_type)
@@ -169,7 +306,7 @@ static void log_osstatus(int log_level, struct vt_encoder *enc, const char *cont
 
 	c_str = cfstr_copy_cstr(str, kCFStringEncodingUTF8);
 	if (c_str) {
-		if (enc)
+		if (enc && enc->encoder)
 			VT_BLOG(log_level, "Error in %s: %s", context, c_str);
 		else
 			VT_LOG(log_level, "Error in %s: %s", context, c_str);
@@ -484,9 +621,10 @@ void sample_encoded_callback(void *data, void *source, OSStatus status, VTEncode
 		}
 	}
 
-	if (texture_source)
-		vt_release_texture_source(source_ref);
-	else if (source)
+	if (texture_source) {
+		vt_release_texture_source_resources(source_ref);
+		vt_finish_texture_source(source_ref);
+	} else if (source)
 		CFRelease(source);
 }
 
@@ -557,7 +695,7 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 {
 	OSStatus code;
 
-	VTCompressionSessionRef s;
+	VTCompressionSessionRef s = NULL;
 
 	const char *codec_name = obs_encoder_get_codec(enc->encoder);
 
@@ -577,6 +715,9 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 
 	if (code != noErr) {
 		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
+		CFRelease(encoder_spec);
+		CFRelease(pixbuf_spec);
+		return code;
 	}
 
 	CFRelease(encoder_spec);
@@ -636,13 +777,13 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 		CFRelease(session_properties);
 
 		if (code != noErr) {
-			return code;
+			goto fail_session;
 		}
 
 		code = session_set_bitrate(s, enc->rate_control, enc->bitrate, enc->quality, enc->limit_bitrate,
 					   enc->rc_max_bitrate, enc->rc_max_bitrate_window);
 		if (code != noErr) {
-			return code;
+			goto fail_session;
 		}
 
 		if (__builtin_available(macOS 15.0, *)) {
@@ -669,18 +810,21 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 			     code);
 
 	code = session_set_colorspace(s, enc->colorspace);
-	if (code != noErr) {
-		return code;
-	}
+	if (code != noErr)
+		goto fail_session;
 
 	code = VTCompressionSessionPrepareToEncodeFrames(s);
-	if (code != noErr) {
-		return code;
-	}
+	if (code != noErr)
+		goto fail_session;
 
 	enc->session = s;
 
 	return noErr;
+
+fail_session:
+	VTCompressionSessionInvalidate(s);
+	CFRelease(s);
+	return code;
 }
 
 static void vt_destroy(void *data)
@@ -688,11 +832,16 @@ static void vt_destroy(void *data)
 	struct vt_encoder *enc = data;
 
 	if (enc) {
-		if (enc->session != NULL) {
+		if (enc->session != NULL)
 			vt_drain_texture_encode(enc);
-			VTCompressionSessionInvalidate(enc->session);
-			CFRelease(enc->session);
-		}
+		else if (enc->texture_sync_initialized)
+			vt_release_pending_texture_sources(enc);
+		if (enc->session != NULL)
+			vt_invalidate_session(enc);
+		if (enc->texture_sync_initialized)
+			vt_clear_texture_source_tombstones(enc);
+		if (enc->queue)
+			CFRelease(enc->queue);
 		if (enc->texture_sync_initialized) {
 			pthread_cond_destroy(&enc->texture_cond);
 			pthread_mutex_destroy(&enc->texture_mutex);
@@ -1195,6 +1344,8 @@ fail:
 static bool vt_encode(void *data, struct encoder_frame *frame, struct encoder_packet *packet, bool *received_packet)
 {
 	struct vt_encoder *enc = data;
+	if (!vt_ensure_session(enc))
+		return false;
 
 	OSStatus code;
 
@@ -1304,6 +1455,8 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 					   int64_t pts, struct encoder_packet *packet, bool *received_packet)
 {
 	vt_log_texture_fallback_once(enc);
+	if (!vt_ensure_session(enc))
+		return false;
 
 	if (source) {
 		if (CVPixelBufferGetWidth(source) != enc->width || CVPixelBufferGetHeight(source) != enc->height ||
@@ -1437,6 +1590,8 @@ static bool vt_encode_texture(void *data, struct encoder_texture *texture, int64
 	if (!texture || !texture->iosurface || !texture->tex[0] || !texture->tex[1] || !texture->lease_acquire ||
 	    !texture->lease_release)
 		return false;
+	if (!vt_ensure_session(enc))
+		return false;
 
 	obs_enter_graphics();
 	bool completed = gs_texture_wait_for_completion(texture->tex[0]);
@@ -1487,6 +1642,7 @@ static bool vt_encode_texture(void *data, struct encoder_texture *texture, int64
 	source_ref->pixel_buffer = pixbuf;
 	source_ref->lease_token = lease_token;
 	source_ref->lease_release = texture->lease_release;
+	source_ref->references = 1;
 
 	pthread_mutex_lock(&enc->texture_mutex);
 	source_ref->next = enc->texture_sources;
@@ -1501,7 +1657,8 @@ static bool vt_encode_texture(void *data, struct encoder_texture *texture, int64
 			return false;
 		bool fallback = vt_encode_texture_raw_fallback(
 			enc, source_ref->pixel_buffer, (IOSurfaceRef)texture->iosurface, pts, packet, received_packet);
-		vt_release_texture_source(source_ref);
+		vt_release_texture_source_resources(source_ref);
+		vt_finish_texture_source(source_ref);
 		return fallback;
 	}
 
@@ -1520,9 +1677,19 @@ static void vt_drain_texture_encode(void *data)
 		return;
 
 	if (enc->session) {
-		OSStatus code = VTCompressionSessionCompleteFrames(enc->session, kCMTimeInvalid);
-		if (code != noErr)
+		OSStatus code;
+#ifdef OBS_VT_ENCODER_TEST
+		if (enc->complete_frames_for_test)
+			code = enc->complete_frames_for_test(enc->session, kCMTimeInvalid);
+		else
+#endif
+			code = VTCompressionSessionCompleteFrames(enc->session, kCMTimeInvalid);
+		if (code != noErr) {
 			log_osstatus(LOG_WARNING, enc, "VTCompressionSessionCompleteFrames", code);
+			vt_invalidate_session(enc);
+			vt_release_pending_texture_sources(enc);
+			return;
+		}
 	}
 
 	pthread_mutex_lock(&enc->texture_mutex);
@@ -1776,6 +1943,7 @@ static inline void vt_add_prores_encoder_data_to_list(CFDictionaryRef encoder_di
 	encoder_data->codec_type = codec_type;
 }
 
+#ifndef OBS_VT_ENCODER_TEST
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("mac-videotoolbox", "en-US")
 dispatch_group_t encoder_list_dispatch_group;
@@ -1899,3 +2067,4 @@ void obs_module_unload(void)
 	da_free(vt_prores_hardware_encoder_list);
 	da_free(vt_prores_software_encoder_list);
 }
+#endif
