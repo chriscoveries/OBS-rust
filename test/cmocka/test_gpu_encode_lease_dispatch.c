@@ -105,8 +105,7 @@ static bool async_encode_texture(void *data, struct encoder_texture *texture, in
 	*received_packet = false;
 
 	struct encoder_observation *observation = data;
-	if (!texture || !texture->tex[0] || !texture->tex[1] || !texture->lease_acquire ||
-	    !texture->lease_release) {
+	if (!texture || !texture->tex[0] || !texture->tex[1] || !texture->lease_acquire || !texture->lease_release) {
 		pthread_mutex_lock(&observation->mutex);
 		observation->bad_texture_contract = true;
 		pthread_mutex_unlock(&observation->mutex);
@@ -143,8 +142,8 @@ static bool sync_encode_texture(void *data, struct encoder_texture *texture, int
 	struct encoder_observation *observation = data;
 	pthread_mutex_lock(&observation->mutex);
 	observation->encode_calls++;
-	if (!texture || !texture->tex[0] || !texture->tex[1] || texture->lease_context ||
-	    texture->lease_acquire || texture->lease_release)
+	if (!texture || !texture->tex[0] || !texture->tex[1] || texture->lease_context || texture->lease_acquire ||
+	    texture->lease_release)
 		observation->bad_texture_contract = true;
 	pthread_cond_broadcast(&observation->cond);
 	pthread_mutex_unlock(&observation->mutex);
