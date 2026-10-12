@@ -8,10 +8,17 @@
 #define OBS_VT_ENCODER_TEST
 #include "../../plugins/mac-videotoolbox/encoder.c"
 
+const char *obs_module_text(const char *lookup)
+{
+	return lookup;
+}
+
 struct drain_test_state {
 	unsigned complete_calls;
 	unsigned invalidate_calls;
 	unsigned lease_release_calls;
+	unsigned bitrate_set_calls;
+	uint32_t restart_bitrate;
 };
 
 static struct drain_test_state *active_drain_test;
@@ -28,6 +35,27 @@ static void record_session_invalidation(VTCompressionSessionRef session)
 {
 	UNUSED_PARAMETER(session);
 	active_drain_test->invalidate_calls++;
+}
+
+static void update_bitrate_settings(struct vt_encoder *enc, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(settings);
+	enc->bitrate = 6000;
+}
+
+static OSStatus record_bitrate_update(VTCompressionSessionRef session, uint32_t bitrate)
+{
+	assert_non_null(session);
+	active_drain_test->bitrate_set_calls++;
+	active_drain_test->restart_bitrate = bitrate;
+	return noErr;
+}
+
+static OSStatus recreate_session_with_current_settings(struct vt_encoder *enc)
+{
+	active_drain_test->restart_bitrate = enc->bitrate;
+	enc->session = (VTCompressionSessionRef)(uintptr_t)2;
+	return noErr;
 }
 
 static void count_lease_release(void *token)
@@ -135,11 +163,44 @@ static void test_late_callback_after_failed_drain_and_destroy_is_ignored(void **
 	active_drain_test = NULL;
 }
 
+static void test_bitrate_update_after_failed_drain_is_deferred_until_restart(void **state)
+{
+	UNUSED_PARAMETER(state);
+	struct vt_encoder *enc = bzalloc(sizeof(*enc));
+	struct drain_test_state drain_state = {0};
+	assert_non_null(enc);
+
+	init_test_encoder(enc);
+	active_drain_test = &drain_state;
+	enc->session = (VTCompressionSessionRef)(uintptr_t)1;
+	enc->complete_frames_for_test = fail_complete_frames;
+	enc->invalidate_session_for_test = record_session_invalidation;
+	assert_non_null(vt_register_callback_context(enc));
+	vt_drain_texture_encode(enc);
+	assert_null(enc->session);
+
+	enc->bitrate = 4000;
+	enc->update_params_for_test = update_bitrate_settings;
+	enc->set_bitrate_for_test = record_bitrate_update;
+	enc->create_session_for_test = recreate_session_with_current_settings;
+	assert_true(vt_update(enc, NULL));
+	assert_int_equal(enc->bitrate, 6000);
+	assert_int_equal(drain_state.bitrate_set_calls, 0);
+
+	assert_true(vt_ensure_session(enc));
+	assert_int_equal(drain_state.restart_bitrate, 6000);
+	assert_false(enc->session_invalidated);
+	enc->session = NULL;
+	vt_destroy(enc);
+	active_drain_test = NULL;
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_complete_frames_failure_invalidates_and_releases_once),
 		cmocka_unit_test(test_late_callback_after_failed_drain_and_destroy_is_ignored),
+		cmocka_unit_test(test_bitrate_update_after_failed_drain_is_deferred_until_restart),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -98,6 +98,9 @@ struct vt_encoder {
 #ifdef OBS_VT_ENCODER_TEST
 	OSStatus (*complete_frames_for_test)(VTCompressionSessionRef session, CMTime until_presentation_time);
 	void (*invalidate_session_for_test)(VTCompressionSessionRef session);
+	OSStatus (*create_session_for_test)(struct vt_encoder *enc);
+	OSStatus (*set_bitrate_for_test)(VTCompressionSessionRef session, uint32_t bitrate);
+	void (*update_params_for_test)(struct vt_encoder *enc, obs_data_t *settings);
 #endif
 };
 
@@ -353,7 +356,13 @@ static bool vt_ensure_session(struct vt_encoder *enc)
 	if (enc->session)
 		return true;
 
-	OSStatus code = create_encoder(enc);
+	OSStatus code;
+#ifdef OBS_VT_ENCODER_TEST
+	if (enc->create_session_for_test)
+		code = enc->create_session_for_test(enc);
+	else
+#endif
+		code = create_encoder(enc);
 	if (code == noErr) {
 		enc->session_invalidated = false;
 		return true;
@@ -651,6 +660,19 @@ static OSStatus session_set_bitrate(VTCompressionSessionRef session, const char 
 	}
 
 	return noErr;
+}
+
+static OSStatus vt_set_session_bitrate(struct vt_encoder *enc)
+{
+	if (!enc->session)
+		return noErr;
+
+#ifdef OBS_VT_ENCODER_TEST
+	if (enc->set_bitrate_for_test)
+		return enc->set_bitrate_for_test(enc->session, enc->bitrate);
+#endif
+	return session_set_bitrate(enc->session, enc->rate_control, enc->bitrate, enc->quality, enc->limit_bitrate,
+				   enc->rc_max_bitrate, enc->rc_max_bitrate_window);
 }
 
 static OSStatus session_set_colorspace(VTCompressionSessionRef session, enum video_colorspace cs)
@@ -1102,13 +1124,21 @@ static bool vt_update(void *data, obs_data_t *settings)
 	uint32_t old_bitrate = enc->bitrate;
 	bool old_limit_bitrate = enc->limit_bitrate;
 
-	update_params(enc, settings);
+#ifdef OBS_VT_ENCODER_TEST
+	if (enc->update_params_for_test)
+		enc->update_params_for_test(enc, settings);
+	else
+#endif
+		update_params(enc, settings);
 
 	if (old_bitrate == enc->bitrate && old_limit_bitrate == enc->limit_bitrate)
 		return true;
+	/* A failed drain invalidates and clears the session. Keep the new settings;
+	 * vt_ensure_session applies them when the encoder is started again. */
+	if (!enc->session)
+		return true;
 
-	OSStatus code = session_set_bitrate(enc->session, enc->rate_control, enc->bitrate, enc->quality,
-					    enc->limit_bitrate, enc->rc_max_bitrate, enc->rc_max_bitrate_window);
+	OSStatus code = vt_set_session_bitrate(enc);
 	if (code != noErr)
 		VT_BLOG(LOG_WARNING, "Failed to set bitrate to session");
 
