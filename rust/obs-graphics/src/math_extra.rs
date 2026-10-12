@@ -72,9 +72,30 @@ pub fn norm_to_polar(norm: Vec3) -> Vec2 {
 
 /// `polar_to_norm`. `w` is 0 here; the shim does not store it.
 #[must_use]
+/// The sine of one angle.
+///
+/// `f32::sin` and `f32::cos` of the same value are a pair a backend may fold
+/// into a single `sincosf` call, whose results are rounded differently from the
+/// separate calls the C port makes. Keeping them in their own non-inlined
+/// bodies is what stops that fold (see also `polar_cos`).
+#[inline(never)]
+pub fn polar_sin(x: f32) -> f32 {
+    x.sin()
+}
+
+/// The cosine of one angle, the counterpart to [`polar_sin`].
+#[inline(never)]
+pub fn polar_cos(x: f32) -> f32 {
+    x.cos()
+}
+
 pub fn polar_to_norm(polar: Vec2) -> Vec3 {
-    let sinx = polar.x.sin();
-    Vec3::new(sinx * polar.y.cos(), sinx * polar.y.sin(), polar.x.cos())
+    let sinx = polar_sin(polar.x);
+    Vec3::new(
+        sinx * polar_cos(polar.y),
+        sinx * polar_sin(polar.y),
+        polar_cos(polar.x),
+    )
 }
 
 /// `calc_torquef`. Values within `EPSILON` return `val2`. Otherwise the step
