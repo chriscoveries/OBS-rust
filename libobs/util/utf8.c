@@ -17,6 +17,8 @@
 
 #include "utf8.h"
 
+#include <string.h>
+
 #ifdef _WIN32
 
 #include <windows.h>
@@ -132,19 +134,32 @@ size_t utf8_to_wchar(const char *in, size_t insize, wchar_t *out, size_t outsize
 	unsigned char *p, *lim;
 	wchar_t *wlim, high;
 	size_t n, total, i, n_bits;
+	size_t in_len;
 
 	if (in == NULL || (outsize == 0 && out != NULL))
 		return 0;
 
+	/*
+	 * Resolve the length up front. A sentinel limit such as (unsigned char
+	 * *)-1 is not a valid one-past-the-end pointer, so comparing or
+	 * subtracting against it is undefined; GCC folds those checks away at
+	 * -O2, which made this function return 0 for 3-byte UTF-8. Passing the
+	 * real length keeps lim a valid pointer in every case, at the same
+	 * behaviour insize == 0 has always had (the loop breaks at the NUL).
+	 */
+	in_len = insize;
+	if (in_len == 0)
+		in_len = strlen(in);
+
 	total = 0;
 	p = (unsigned char *)in;
-	lim = (insize != 0) ? (p + insize) : (unsigned char *)-1;
+	lim = p + in_len;
 	wlim = out == NULL ? NULL : out + outsize;
 
-	for (; p < lim; p += n) {
-		if (!*p && insize == 0)
-			break;
+	if (in_len == 0)
+		return 0;
 
+	for (; p < lim; p += n) {
 		if (utf8_forbidden(*p) != 0 && (flags & UTF8_IGNORE_ERROR) == 0)
 			return 0;
 
@@ -260,20 +275,28 @@ size_t wchar_to_utf8(const wchar_t *in, size_t insize, char *out, size_t outsize
 	wchar_t *w, *wlim, ch = 0;
 	unsigned char *p, *lim, *oc;
 	size_t total, n;
+	size_t in_len;
 
 	if (in == NULL || (outsize == 0 && out != NULL))
 		return 0;
 
+	/* see the comment in utf8_to_wchar: a real length, never a sentinel */
+	in_len = insize;
+	if (in_len == 0)
+		in_len = wcslen(in);
+	if (in_len == 0) {
+		if (out != NULL)
+			*out = 0;
+		return 0;
+	}
+
 	w = (wchar_t *)in;
-	wlim = (insize != 0) ? (w + insize) : (wchar_t *)-1;
+	wlim = w + in_len;
 	p = (unsigned char *)out;
 	lim = out == NULL ? NULL : p + outsize;
 	total = 0;
 
 	for (; w < wlim; w++) {
-		if (!*w && insize == 0)
-			break;
-
 		if (wchar_forbidden(*w) != 0) {
 			if ((flags & UTF8_IGNORE_ERROR) == 0)
 				return 0;
