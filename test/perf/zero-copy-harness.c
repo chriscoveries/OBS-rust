@@ -13,6 +13,7 @@
  * build tree (graphics + encoder + output modules) and real GPU/VideoToolbox.
  */
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -25,6 +26,7 @@
 
 #define DEFAULT_FRAMES 120
 #define TIMEOUT_MS 120000
+#define NV12_1080P_BYTES UINT64_C(3110400)
 
 struct wait_state {
 	uint64_t waits;
@@ -398,9 +400,18 @@ int main(int argc, char **argv)
 			(unsigned long long)submissions);
 		return 1;
 	}
-	if ((!force_raw_fallback && !raw_no_gpu && copied_bytes != 0) ||
-	    ((force_raw_fallback || raw_no_gpu) && (copied_bytes == 0 || bytes_remainder != 0))) {
-		fprintf(stderr, "harness: copy counter did not match the requested %s path\n", path);
+	if (force_raw_fallback || raw_no_gpu) {
+		uint64_t expected_copy_bytes = submissions * NV12_1080P_BYTES;
+		if (copied_bytes != expected_copy_bytes) {
+			fprintf(stderr,
+				"harness: raw path copied %llu bytes for %llu accepted submissions; expected %llu\n",
+				(unsigned long long)copied_bytes, (unsigned long long)submissions,
+				(unsigned long long)expected_copy_bytes);
+			return 1;
+		}
+	} else if (copied_bytes != 0 || waits != 0) {
+		fprintf(stderr, "harness: texture path copied %llu bytes and recorded %llu download_frame waits\n",
+			(unsigned long long)copied_bytes, (unsigned long long)waits);
 		return 1;
 	}
 	return 0;

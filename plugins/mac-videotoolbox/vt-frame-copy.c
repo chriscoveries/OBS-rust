@@ -8,10 +8,14 @@ static _Atomic uint64_t total_submissions = 0;
 static _Atomic uint64_t used_submission_slots = 0;
 static _Atomic uint64_t submission_limit = UINT64_MAX;
 static _Atomic bool force_raw_for_test = false;
+static _Thread_local uint64_t pending_submission_copy_bytes;
+static _Thread_local bool submission_in_progress;
 
 void vt_copy_bytes_reset(void)
 {
 	atomic_store(&total_bytes_copied, 0);
+	pending_submission_copy_bytes = 0;
+	submission_in_progress = false;
 }
 
 uint64_t vt_copy_bytes_total(void)
@@ -24,6 +28,8 @@ void vt_encode_submission_reset(uint64_t limit)
 	atomic_store(&total_submissions, 0);
 	atomic_store(&used_submission_slots, 0);
 	atomic_store(&submission_limit, limit);
+	pending_submission_copy_bytes = 0;
+	submission_in_progress = false;
 }
 
 uint64_t vt_encode_submission_total(void)
@@ -38,18 +44,31 @@ bool vt_encode_submission_reserve(void)
 		uint64_t limit = atomic_load(&submission_limit);
 		if (used >= limit)
 			return false;
-		if (atomic_compare_exchange_weak(&used_submission_slots, &used, used + 1))
+		if (atomic_compare_exchange_weak(&used_submission_slots, &used, used + 1)) {
+			pending_submission_copy_bytes = 0;
+			submission_in_progress = true;
 			return true;
+		}
 	}
 }
 
 void vt_encode_submission_commit(void)
 {
+	if (!submission_in_progress)
+		return;
+	if (pending_submission_copy_bytes)
+		atomic_fetch_add(&total_bytes_copied, pending_submission_copy_bytes);
+	pending_submission_copy_bytes = 0;
+	submission_in_progress = false;
 	atomic_fetch_add(&total_submissions, 1);
 }
 
 void vt_encode_submission_cancel(void)
 {
+	if (!submission_in_progress)
+		return;
+	pending_submission_copy_bytes = 0;
+	submission_in_progress = false;
 	atomic_fetch_sub(&used_submission_slots, 1);
 }
 
@@ -83,6 +102,9 @@ size_t vt_copy_frame_to_pixbuf(CVPixelBufferRef pixbuf, uint8_t *data[MAX_AV_PLA
 		copied += linesize[i] * plane_height;
 	}
 
-	atomic_fetch_add(&total_bytes_copied, copied);
+	if (submission_in_progress)
+		pending_submission_copy_bytes += copied;
+	else
+		atomic_fetch_add(&total_bytes_copied, copied);
 	return copied;
 }

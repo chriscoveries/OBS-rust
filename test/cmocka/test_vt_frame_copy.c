@@ -105,11 +105,45 @@ static void test_stops_at_null_plane(void **state)
 	CVPixelBufferRelease(pixbuf);
 }
 
+static void test_submission_copy_bytes_commit_only_after_acceptance(void **state)
+{
+	UNUSED_PARAMETER(state);
+	uint8_t *data[MAX_AV_PLANES] = {0};
+	uint32_t linesize[MAX_AV_PLANES] = {0};
+	fill_frame(data, linesize);
+
+	CVPixelBufferRef pixbuf = make_nv12_buffer();
+	assert_int_equal(CVPixelBufferLockBaseAddress(pixbuf, 0), kCVReturnSuccess);
+	vt_copy_bytes_reset();
+	vt_encode_submission_reset(1);
+
+	assert_true(vt_encode_submission_reserve());
+	assert_int_equal(vt_copy_frame_to_pixbuf(pixbuf, data, linesize), EXPECTED_BYTES);
+	assert_int_equal(vt_copy_bytes_total(), 0);
+	assert_int_equal(CVPixelBufferUnlockBaseAddress(pixbuf, 0), kCVReturnSuccess);
+	vt_encode_submission_cancel();
+	assert_int_equal(vt_copy_bytes_total(), 0);
+	assert_int_equal(vt_encode_submission_total(), 0);
+
+	assert_true(vt_encode_submission_reserve());
+	assert_int_equal(CVPixelBufferLockBaseAddress(pixbuf, 0), kCVReturnSuccess);
+	assert_int_equal(vt_copy_frame_to_pixbuf(pixbuf, data, linesize), EXPECTED_BYTES);
+	assert_int_equal(CVPixelBufferUnlockBaseAddress(pixbuf, 0), kCVReturnSuccess);
+	assert_int_equal(vt_copy_bytes_total(), 0);
+	vt_encode_submission_commit();
+	assert_int_equal(vt_copy_bytes_total(), EXPECTED_BYTES);
+	assert_int_equal(vt_encode_submission_total(), 1);
+	assert_false(vt_encode_submission_reserve());
+
+	CVPixelBufferRelease(pixbuf);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_copies_nv12_1080p),
 		cmocka_unit_test(test_stops_at_null_plane),
+		cmocka_unit_test(test_submission_copy_bytes_commit_only_after_acceptance),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);
