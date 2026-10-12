@@ -336,12 +336,14 @@ bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 			}
 			frame.lease_state->video = video;
 			obs_texture_lease_init(&frame.lease_state->lease);
-			frame.iosurface = gs_texture_get_iosurface(tex);
-			if (!frame.iosurface) {
-				bfree(frame.lease_state);
-				gs_texture_destroy(tex);
-				gs_texture_destroy(tex_uv);
-				return false;
+			if (gs_get_device_type() == GS_DEVICE_METAL) {
+				frame.iosurface = gs_texture_get_iosurface(tex);
+				if (!frame.iosurface) {
+					bfree(frame.lease_state);
+					gs_texture_destroy(tex);
+					gs_texture_destroy(tex_uv);
+					return false;
+				}
 			}
 		}
 
@@ -369,6 +371,9 @@ bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 
 bool gpu_encoding_set_iosurfaces(struct obs_core_video_mix *video)
 {
+	if (gs_get_device_type() != GS_DEVICE_METAL)
+		return true;
+
 	struct deque *queues[] = {&video->gpu_encoder_avail_queue, &video->gpu_encoder_queue};
 	for (size_t queue_idx = 0; queue_idx < sizeof(queues) / sizeof(queues[0]); queue_idx++) {
 		struct deque *queue = queues[queue_idx];
