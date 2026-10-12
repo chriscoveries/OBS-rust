@@ -1,0 +1,10 @@
+# graphics math alias safety (libobs/graphics/{quat,vec3,matrix3,plane,bounds,math-extra}.c, srgb.h)
+add_executable(test_graphics_math_alias test_graphics_math_alias.c)
+target_include_directories(test_graphics_math_alias PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_graphics_math_alias PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+if(NOT MSVC)
+  target_link_libraries(test_graphics_math_alias PRIVATE m)
+endif()
+
+add_dependencies(cmocka-tests test_graphics_math_alias)
+add_test(test_graphics_math_alias ${CMAKE_CURRENT_BINARY_DIR}/test_graphics_math_alias)
