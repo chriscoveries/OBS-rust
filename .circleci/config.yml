@@ -1,0 +1,20 @@
+version: 2.1
+
+jobs:
+  lint:
+    machine: true
+    resource_class: chriscoveries/claw
+    steps:
+      - run:
+          name: claw admission gate (3 jobs max, 3 GiB floor)
+          command: /usr/local/lib/claw-ci/gate.sh
+      - checkout
+      - run:
+          name: lint
+          command: |
+            git submodule sync --recursive && git submodule update --init --recursive --depth 1 && ./lint
+
+workflows:
+  ci:
+    jobs:
+      - lint
