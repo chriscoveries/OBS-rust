@@ -38,6 +38,10 @@ if(ENABLE_UNIT_TESTS)
   add_subdirectory(test/cmocka)
 endif()
 
+if(BUILD_TESTS)
+  add_subdirectory(test/perf)
+endif()
+
 add_subdirectory(frontend)
 
 message_configuration()
