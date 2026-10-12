@@ -6,6 +6,8 @@ At the audited base (`215a1dfd8`), VideoToolbox registered only `.encode = vt_en
 
 OpenGL already had NV12/P010 texture support and IOSurface sharing, but VideoToolbox did not request that route. This patch opts in only the Metal VideoToolbox instance after a pixel-format and IOSurface preflight. OpenGL remains on the existing raw route.
 
+**Impact cap:** macOS still defaults to OpenGL (`OBSApp.cpp:338-339`), so users benefit from this change only when they select the Metal renderer. M1b follow-up: add the VideoToolbox texture path on OpenGL using its existing IOSurface sharing (`61ea6e024`); fork #55 tracks the separate Metal-default discussion.
+
 This wires an existing encoder interface rather than inventing a new one: the author of obsproject/obs-studio#8312 noted that macOS/OpenGL texture encoding “can/should” be supported. The missing pieces here were Metal's bi-planar IOSurface render targets, VideoToolbox registration, and a lifetime contract for textures retained by asynchronous callbacks.
 
 ## Design
