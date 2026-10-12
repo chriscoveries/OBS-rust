@@ -175,15 +175,20 @@ static bool obs_init_gpu_conversion(struct obs_core_video_mix *video)
 	video->convert_textures_encode[0] = NULL;
 	video->convert_textures_encode[1] = NULL;
 	video->convert_textures_encode[2] = NULL;
+	uint32_t yuv_flags = GS_RENDER_TARGET | GS_SHARED_KM_TEX;
+	if (info->range == VIDEO_RANGE_FULL && gs_get_device_type() == GS_DEVICE_METAL)
+		yuv_flags |= GS_FULL_RANGE_TEX;
 	if (video->using_nv12_tex) {
 		if (!gs_texture_create_nv12(&video->convert_textures_encode[0], &video->convert_textures_encode[1],
-					    info->width, info->height, GS_RENDER_TARGET | GS_SHARED_KM_TEX)) {
-			return false;
+					    info->width, info->height, yuv_flags)) {
+			video->using_nv12_tex = false;
+			blog(LOG_WARNING, "NV12 encode texture allocation failed; using raw video input");
 		}
 	} else if (video->using_p010_tex) {
 		if (!gs_texture_create_p010(&video->convert_textures_encode[0], &video->convert_textures_encode[1],
-					    info->width, info->height, GS_RENDER_TARGET | GS_SHARED_KM_TEX)) {
-			return false;
+					    info->width, info->height, yuv_flags)) {
+			video->using_p010_tex = false;
+			blog(LOG_WARNING, "P010 encode texture allocation failed; using raw video input");
 		}
 	}
 
@@ -3244,6 +3249,8 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 	} else if (async_texture && !video->gpu_async_texture_pool) {
 		/* The current synchronous pool may swap textures with the shared conversion targets. */
 		success = false;
+	} else if (async_texture && !video->gpu_async_texture_encoders) {
+		success = gpu_encoding_set_iosurfaces(video);
 	}
 	if (success && async_texture) {
 		struct obs_tex_frame *frame = deque_data(&video->gpu_encoder_avail_queue, 0);
@@ -3255,11 +3262,12 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 			struct encoder_texture texture = {0};
 			texture.tex[0] = frame->tex;
 			texture.tex[1] = frame->tex_uv;
+			texture.iosurface = frame->iosurface;
 			success = encoder->info.can_encode_texture(encoder->context.data, &texture);
 		}
 	}
 	if (async_texture && !success)
-		obs_encoder_texture_fallback(encoder, "async texture pool setup failed");
+		obs_encoder_texture_fallback(encoder, "IOSurface or VideoToolbox texture setup failed");
 	if (success) {
 		if (async_texture) {
 			video->gpu_async_texture_encoders++;

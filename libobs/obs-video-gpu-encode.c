@@ -211,6 +211,7 @@ GPU_ENCODE_THREAD_LINKAGE void *GPU_ENCODE_THREAD_NAME(void *data)
 				tex.tex[1] = tf.tex_uv;
 				tex.tex[2] = NULL;
 				if (encoder->info.caps & OBS_ENCODER_CAP_ASYNC_TEXTURE) {
+					tex.iosurface = tf.iosurface;
 					tex.lease_context = tf.lease_state;
 					tex.lease_acquire = encoder_texture_lease_acquire;
 					tex.lease_release = encoder_texture_lease_release;
@@ -302,12 +303,14 @@ bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 		bool sync_only = async_texture && i == NUM_ENCODE_TEXTURES;
 		gs_texture_t *tex = NULL;
 		gs_texture_t *tex_uv = NULL;
+		uint32_t flags = GS_RENDER_TARGET | GS_SHARED_KM_TEX;
+		if (info->range == VIDEO_RANGE_FULL && gs_get_device_type() == GS_DEVICE_METAL)
+			flags |= GS_FULL_RANGE_TEX;
+
 		if (info->format == VIDEO_FORMAT_P010) {
-			gs_texture_create_p010(&tex, &tex_uv, info->width, info->height,
-					       GS_RENDER_TARGET | GS_SHARED_KM_TEX);
+			gs_texture_create_p010(&tex, &tex_uv, info->width, info->height, flags);
 		} else {
-			gs_texture_create_nv12(&tex, &tex_uv, info->width, info->height,
-					       GS_RENDER_TARGET | GS_SHARED_KM_TEX);
+			gs_texture_create_nv12(&tex, &tex_uv, info->width, info->height, flags);
 		}
 		if (!tex || !tex_uv) {
 			if (tex)
@@ -333,6 +336,13 @@ bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 			}
 			frame.lease_state->video = video;
 			obs_texture_lease_init(&frame.lease_state->lease);
+			frame.iosurface = gs_texture_get_iosurface(tex);
+			if (!frame.iosurface) {
+				bfree(frame.lease_state);
+				gs_texture_destroy(tex);
+				gs_texture_destroy(tex_uv);
+				return false;
+			}
 		}
 
 		if (sync_only) {
@@ -354,6 +364,23 @@ bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 	os_event_signal(video->gpu_encode_inactive);
 
 	video->gpu_encode_thread_initialized = true;
+	return true;
+}
+
+bool gpu_encoding_set_iosurfaces(struct obs_core_video_mix *video)
+{
+	struct deque *queues[] = {&video->gpu_encoder_avail_queue, &video->gpu_encoder_queue};
+	for (size_t queue_idx = 0; queue_idx < sizeof(queues) / sizeof(queues[0]); queue_idx++) {
+		struct deque *queue = queues[queue_idx];
+		for (size_t offset = 0; offset < queue->size; offset += sizeof(struct obs_tex_frame)) {
+			struct obs_tex_frame *frame = deque_data(queue, offset);
+			if (!frame)
+				return false;
+			frame->iosurface = gs_texture_get_iosurface(frame->tex);
+			if (!frame->iosurface)
+				return false;
+		}
+	}
 	return true;
 }
 

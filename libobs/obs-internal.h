@@ -357,6 +357,7 @@ struct obs_tex_frame {
 	gs_texture_t *tex;
 	gs_texture_t *tex_uv;
 	uint32_t handle;
+	void *iosurface;
 	uint64_t timestamp;
 	uint64_t lock_key;
 	int count;
@@ -1544,6 +1545,7 @@ extern void obs_encoder_remove_output(struct obs_encoder *encoder, struct obs_ou
 extern bool start_gpu_encode(obs_encoder_t *encoder);
 extern void stop_gpu_encode(obs_encoder_t *encoder);
 extern bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture);
+extern bool gpu_encoding_set_iosurfaces(struct obs_core_video_mix *video);
 
 extern bool do_encode(struct obs_encoder *encoder, struct encoder_frame *frame, const uint64_t *frame_cts);
 extern void send_off_encoder_packet(obs_encoder_t *encoder, bool success, bool received, struct encoder_packet *pkt);

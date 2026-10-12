@@ -133,6 +133,7 @@ bool load_graphics_imports(struct gs_exports *exports, void *module, const char 
 	GRAPHICS_IMPORT(gs_texture_unmap);
 	GRAPHICS_IMPORT_OPTIONAL(gs_texture_is_rect);
 	GRAPHICS_IMPORT(gs_texture_get_obj);
+	GRAPHICS_IMPORT_OPTIONAL(gs_texture_get_iosurface);
 
 	GRAPHICS_IMPORT(gs_cubetexture_destroy);
 	GRAPHICS_IMPORT(gs_cubetexture_get_size);
@@ -200,6 +201,7 @@ bool load_graphics_imports(struct gs_exports *exports, void *module, const char 
 	GRAPHICS_IMPORT_OPTIONAL(device_p010_available);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_create_nv12);
 	GRAPHICS_IMPORT_OPTIONAL(device_texture_create_p010);
+	GRAPHICS_IMPORT_OPTIONAL(device_texture_wait_for_completion);
 
 	GRAPHICS_IMPORT(device_is_monitor_hdr);
 

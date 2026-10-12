@@ -513,6 +513,8 @@ static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active
 		tf.tex = tex;
 		tf.tex_uv = tex_uv;
 	}
+	if (video->gpu_async_texture_encoders)
+		tf.iosurface = gs_texture_get_iosurface(tf.tex);
 
 	tf.count = 1;
 	tf.timestamp = vframe_info->timestamp;
@@ -523,7 +525,7 @@ static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active
 #endif
 	deque_push_back(&video->gpu_encoder_queue, &tf, sizeof(tf));
 	if (video->gpu_async_texture_encoders) {
-		/* Submit render writes before an asynchronous encoder consumes this frame. */
+		/* Commit render writes before queuing a completion fence on the same Metal queue. */
 		gs_flush();
 	}
 
