@@ -86,7 +86,9 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: ci-main
+          # The commit this workflow runs from (ci-main in normal use), so a
+          # review branch can validate its own script changes.
+          ref: ${{ github.sha }}
           path: .ci-main
           sparse-checkout: .github/ci
           persist-credentials: false
