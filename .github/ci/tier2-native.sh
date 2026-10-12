@@ -58,13 +58,14 @@ for mode in OFF ON; do
     >"$build.build.log" 2>&1 || { grep -E "error|Error" "$build.build.log" | head -40; exit 1; }
 
   # Most tests run ${CTEST_JOBS:-4}-wide. Tests that measure timing or drive
-  # real playback/capture/encoding run alone afterwards, so load from the
-  # parallel pass (and claw's other runners) cannot skew them.
+  # real playback/capture/encoding run in a second, narrower pass after the
+  # CPU-heavy tests finish. They mostly wait on real time (about 270 s of
+  # sleeps in total, the longest about 75 s), so 3-wide keeps their timing intact.
   serial='clock|drift|sync|deinterlace|vlc|ffmpeg|media|transition|portal|pipewire|v4l2|restart'
-  echo "== [$mode] ctest -j${CTEST_JOBS:-4}, then timing-sensitive tests serially${xvfb:+ (under xvfb-run)}"
+  echo "== [$mode] ctest -j${CTEST_JOBS:-4}, then timing-sensitive tests -j${CTEST_TIMED_JOBS:-3}${xvfb:+ (under xvfb-run)}"
   rc=0
   $xvfb ctest --test-dir "$build" --output-on-failure --timeout 600 -j "${CTEST_JOBS:-4}" -E "$serial" || rc=$?
-  $xvfb ctest --test-dir "$build" --output-on-failure --timeout 600 -R "$serial" || rc=$?
+  $xvfb ctest --test-dir "$build" --output-on-failure --timeout 600 -j "${CTEST_TIMED_JOBS:-3}" -R "$serial" || rc=$?
   [ "$rc" -eq 0 ] || exit "$rc"
   if [ "$repeat" -gt 0 ]; then
     echo "== [$mode] ctest --repeat until-fail:$repeat${tests:+ -R $tests}"
