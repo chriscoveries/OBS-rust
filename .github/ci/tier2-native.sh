@@ -72,6 +72,7 @@ for mode in OFF ON; do
   # to the test's working directory); print its backtrace so a rare crash is
   # diagnosable from the log alone.
   ulimit -c unlimited 2>/dev/null || true
+  echo "== [$mode] core file limit: $(ulimit -c)"
   touch "$build/.ctest-start"
   "${ct[@]}" -j "${CTEST_JOBS:-4}" -E "$timed|$exclusive" || rc=$?
   "${ct[@]}" -j "${CTEST_TIMED_JOBS:-3}" -R "$timed" -E "$exclusive" || rc=$?
