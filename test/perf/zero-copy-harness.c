@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dlfcn.h>
+
 #include <util/base.h>
 #include <util/platform.h>
 #include <util/profiler.h>
@@ -26,6 +28,28 @@ struct wait_state {
 	uint64_t waits;
 };
 
+static char vt_plugin_binary[1152] = {0};
+
+/* Byte counter living in the loaded mac-videotoolbox plugin (see
+ * vt-frame-copy.h). Resolved with dlopen(RTLD_NOLOAD) so the harness
+ * reads the same counter the encoder bumps; plain 0 when unresolvable. */
+static void (*vt_copy_bytes_reset_fn)(void) = NULL;
+static uint64_t (*vt_copy_bytes_total_fn)(void) = NULL;
+
+static void resolve_copy_counter(void)
+{
+	void *handle = dlopen(vt_plugin_binary, RTLD_LAZY | RTLD_NOLOAD);
+	if (!handle)
+		return;
+	vt_copy_bytes_reset_fn = dlsym(handle, "vt_copy_bytes_reset");
+	vt_copy_bytes_total_fn = dlsym(handle, "vt_copy_bytes_total");
+}
+
+static uint64_t vt_copy_bytes_total(void)
+{
+	return vt_copy_bytes_total_fn ? vt_copy_bytes_total_fn() : 0;
+}
+
 struct child_ctx {
 	struct wait_state *state;
 	int depth;
@@ -37,9 +61,9 @@ static void find_in_children(profiler_snapshot_entry_t *entry, struct wait_state
 {
 	const char *name = profiler_snapshot_entry_name(entry);
 	uint64_t count = profiler_snapshot_entry_overall_count(entry);
-	if (depth < 3) {
-		char indent[16];
-		int pad = depth * 2 < 14 ? depth * 2 : 14;
+	if (depth < 100) {
+		char indent[64];
+		int pad = depth * 2 < 62 ? depth * 2 : 62;
 		memset(indent, ' ', (size_t)pad);
 		indent[pad] = 0;
 		fprintf(stderr, "harness: %s'%s' count %llu\n", indent, name ? name : "(null)",
@@ -110,7 +134,9 @@ static bool load_build_tree_modules(const char *argv0)
 		*slash = 0; /* perf, test, build root */
 	}
 	snprintf(bin, sizeof(bin), "%s/plugins/%%module%%/RelWithDebInfo/%%module%%.plugin/Contents/MacOS", exe);
-	snprintf(data, sizeof(data), "%s/plugins/%%module%%/RelWithDebInfo/%%module%%.plugin/Contents/Resources",
+	snprintf(data, sizeof(data), "%s/plugins/%%module%%/RelWithDebInfo/%%module%%.plugin/Contents/Resources", exe);
+	snprintf(vt_plugin_binary, sizeof(vt_plugin_binary),
+		 "%s/plugins/mac-videotoolbox/RelWithDebInfo/mac-videotoolbox.plugin/Contents/MacOS/mac-videotoolbox",
 		 exe);
 
 	struct obs_module_failure_info error = {0};
@@ -157,6 +183,9 @@ int main(int argc, char **argv)
 	 * known extension is present, so this resolves via DYLD_LIBRARY_PATH
 	 * (which must include the built libobs-metal directory). */
 	ovi.graphics_module = "libobs-metal.dylib";
+	/* GPU conversion path: the M1 zero-copy work happens here (NV12
+	 * textures staged on the GPU). Raw path would bypass it. */
+	ovi.gpu_conversion = true;
 	ovi.output_format = VIDEO_FORMAT_NV12;
 	ovi.base_width = 1920;
 	ovi.base_height = 1080;
@@ -177,7 +206,6 @@ int main(int argc, char **argv)
 		obs_shutdown();
 		return 1;
 	}
-
 
 	if (!load_build_tree_modules(argv[0])) {
 		fprintf(stderr, "harness: module load reported failures\n");
@@ -224,8 +252,7 @@ int main(int argc, char **argv)
 	/* Null output carries audio too; Core Audio AAC is Apple-native. */
 	obs_data_t *aenc_settings = obs_data_create();
 	obs_data_set_int(aenc_settings, "bitrate", 160);
-	obs_encoder_t *audio_encoder =
-		obs_audio_encoder_create("CoreAudio_AAC", "harness aac", aenc_settings, 0, NULL);
+	obs_encoder_t *audio_encoder = obs_audio_encoder_create("CoreAudio_AAC", "harness aac", aenc_settings, 0, NULL);
 	obs_data_release(aenc_settings);
 	if (audio_encoder) {
 		obs_encoder_set_audio(audio_encoder, obs_get_audio());
@@ -236,6 +263,9 @@ int main(int argc, char **argv)
 		obs_shutdown();
 		return 1;
 	}
+	resolve_copy_counter();
+	if (vt_copy_bytes_reset_fn)
+		vt_copy_bytes_reset_fn();
 
 	int waited_ms = 0;
 	while (obs_output_get_total_frames(output) < want_frames && waited_ms < TIMEOUT_MS) {
@@ -251,7 +281,8 @@ int main(int argc, char **argv)
 		profile_snapshot_free(snap);
 	}
 
-	printf("frames=%d waits=%llu\n", frames, (unsigned long long)state.waits);
+	printf("frames=%d waits=%llu copied_bytes=%llu\n", frames, (unsigned long long)state.waits,
+	       (unsigned long long)vt_copy_bytes_total());
 
 	obs_output_stop(output);
 	obs_output_release(output);

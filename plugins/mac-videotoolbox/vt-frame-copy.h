@@ -13,6 +13,7 @@
 #include <VideoToolbox/VideoToolbox.h>
 
 #include <media-io/media-io-defs.h>
+#include <util/c99defs.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,7 +22,13 @@ extern "C" {
 /* Copies encoder frame planes into a locked pixel buffer, stopping at the
  * first NULL plane exactly like vt_encode() always has. `pixbuf` must be
  * locked. Returns bytes copied. */
-size_t vt_copy_frame_to_pixbuf(CVPixelBufferRef pixbuf, uint8_t *data[MAX_AV_PLANES], uint32_t linesize[MAX_AV_PLANES]);
+EXPORT size_t vt_copy_frame_to_pixbuf(CVPixelBufferRef pixbuf, uint8_t *data[MAX_AV_PLANES],
+				      uint32_t linesize[MAX_AV_PLANES]);
+
+/* Process-wide cumulative bytes copied by vt_copy_frame_to_pixbuf, for the
+ * measurement harness. M1's zero-copy path leaves it at 0. */
+EXPORT void vt_copy_bytes_reset(void);
+EXPORT uint64_t vt_copy_bytes_total(void);
 
 #ifdef __cplusplus
 }
