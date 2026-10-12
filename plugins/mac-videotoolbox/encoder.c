@@ -1447,33 +1447,49 @@ static void vt_log_texture_fallback_once(struct vt_encoder *enc)
 	}
 	pthread_mutex_unlock(&enc->texture_mutex);
 
-	if (log_fallback)
-		VT_BLOG(LOG_WARNING, "IOSurface texture submission failed; using the raw pixel-buffer copy path");
+	if (log_fallback) {
+		if (enc->encoder)
+			VT_BLOG(LOG_WARNING,
+				"IOSurface texture submission failed; using the raw pixel-buffer copy path");
+		else
+			VT_LOG(LOG_WARNING,
+			       "IOSurface texture submission failed; using the raw pixel-buffer copy path");
+	}
 }
 
 static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBufferRef source, IOSurfaceRef surface,
 					   int64_t pts, struct encoder_packet *packet, bool *received_packet)
 {
 	vt_log_texture_fallback_once(enc);
-	if (!vt_ensure_session(enc))
+	if (!vt_ensure_session(enc)) {
+		VT_LOG(LOG_ERROR, "Raw VideoToolbox fallback failed: unable to create compression session");
 		return false;
+	}
 
 	if (source) {
 		if (CVPixelBufferGetWidth(source) != enc->width || CVPixelBufferGetHeight(source) != enc->height ||
-		    CVPixelBufferGetPixelFormatType(source) != (OSType)enc->vt_pix_fmt)
+		    CVPixelBufferGetPixelFormatType(source) != (OSType)enc->vt_pix_fmt) {
+			VT_LOG(LOG_ERROR,
+			       "Raw VideoToolbox fallback failed: source pixel buffer format or dimensions mismatch");
 			return false;
+		}
 	} else if (!surface || IOSurfaceGetWidth(surface) != enc->width || IOSurfaceGetHeight(surface) != enc->height ||
 		   IOSurfaceGetPixelFormat(surface) != (OSType)enc->vt_pix_fmt ||
 		   IOSurfaceGetPlaneCount(surface) != 2) {
+		VT_LOG(LOG_ERROR,
+		       "Raw VideoToolbox fallback failed: IOSurface format, dimensions, or plane count mismatch");
 		return false;
 	}
 
 	CVPixelBufferRef pixbuf = NULL;
-	if (!get_cached_pixel_buffer(enc, &pixbuf))
+	if (!get_cached_pixel_buffer(enc, &pixbuf)) {
+		VT_LOG(LOG_ERROR, "Raw VideoToolbox fallback failed: unable to create destination pixel buffer");
 		return false;
+	}
 
 	OSStatus code = CVPixelBufferLockBaseAddress(pixbuf, 0);
 	if (code != noErr) {
+		log_osstatus(LOG_ERROR, enc, "locking destination pixel buffer for raw fallback", code);
 		CFRelease(pixbuf);
 		return false;
 	}
@@ -1482,14 +1498,25 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 	if (source) {
 		code = CVPixelBufferLockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
 		if (code != noErr) {
-			CVPixelBufferUnlockBaseAddress(pixbuf, 0);
+			OSStatus unlock_code = CVPixelBufferUnlockBaseAddress(pixbuf, 0);
+			log_osstatus(LOG_ERROR, enc, "locking source pixel buffer for raw fallback", code);
+			if (unlock_code != noErr)
+				log_osstatus(LOG_ERROR, enc,
+					     "unlocking destination pixel buffer after raw fallback failure",
+					     unlock_code);
 			CFRelease(pixbuf);
 			return false;
 		}
 	} else {
 		surface_lock_code = IOSurfaceLock(surface, kIOSurfaceLockReadOnly, NULL);
 		if (surface_lock_code != kIOReturnSuccess) {
-			CVPixelBufferUnlockBaseAddress(pixbuf, 0);
+			OSStatus unlock_code = CVPixelBufferUnlockBaseAddress(pixbuf, 0);
+			VT_LOG(LOG_ERROR, "Raw VideoToolbox fallback failed: IOSurfaceLock returned %d",
+			       surface_lock_code);
+			if (unlock_code != noErr)
+				log_osstatus(LOG_ERROR, enc,
+					     "unlocking destination pixel buffer after raw fallback failure",
+					     unlock_code);
 			CFRelease(pixbuf);
 			return false;
 		}
@@ -1512,6 +1539,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 		}
 		if (linesize > UINT32_MAX || linesize > CVPixelBufferGetBytesPerRowOfPlane(pixbuf, i) ||
 		    source_height != CVPixelBufferGetHeightOfPlane(pixbuf, i) || !source_data[i]) {
+			VT_LOG(LOG_ERROR, "Raw VideoToolbox fallback failed: invalid plane layout at plane %d", i);
 			source_layout_valid = false;
 			break;
 		}
@@ -1527,6 +1555,17 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 	else
 		source_unlock_code = IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL);
 	if (!source_layout_valid || code != noErr || source_unlock_code != noErr) {
+		if (code != noErr)
+			log_osstatus(LOG_ERROR, enc, "unlocking destination pixel buffer after raw fallback copy",
+				     code);
+		if (source_unlock_code != noErr) {
+			if (source)
+				log_osstatus(LOG_ERROR, enc, "unlocking source pixel buffer after raw fallback copy",
+					     source_unlock_code);
+			else
+				VT_LOG(LOG_ERROR, "Raw VideoToolbox fallback failed: IOSurfaceUnlock returned %d",
+				       (int)source_unlock_code);
+		}
 		CFRelease(pixbuf);
 		return false;
 	}
@@ -1536,6 +1575,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 	CMTime frame_pts = CMTimeMake(pts, enc->fps_num);
 	code = VTCompressionSessionEncodeFrame(enc->session, pixbuf, frame_pts, dur, NULL, pixbuf, NULL);
 	if (code != noErr) {
+		log_osstatus(LOG_ERROR, enc, "submitting raw fallback pixel buffer", code);
 		CFRelease(pixbuf);
 		return false;
 	}
@@ -1545,7 +1585,10 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 		return true;
 
 	*received_packet = true;
-	return parse_sample(enc, buffer, packet, off);
+	bool parsed = parse_sample(enc, buffer, packet, off);
+	if (!parsed)
+		VT_LOG(LOG_ERROR, "Raw VideoToolbox fallback failed: encoded sample could not be parsed");
+	return parsed;
 }
 
 static bool vt_can_encode_texture(void *data, const struct encoder_texture *texture)
