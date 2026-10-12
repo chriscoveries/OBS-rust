@@ -275,9 +275,14 @@ version = "0.1.0"
 dependencies = [
  "obs-c-oracle",
  "obs-graphics",
+ "obs-simd",
  "obs-util",
  "proptest",
 ]
+
+[[package]]
+name = "obs-simd"
+version = "0.1.0"
 
 [[package]]
 name = "obs-stream-rust"

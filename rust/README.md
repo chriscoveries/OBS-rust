@@ -12,6 +12,7 @@ scripting APIs) while its internals are rewritten in Rust. Every port follows
 | `obs-graphics/` | Ports of `libobs/graphics/*` |
 | `obs-codec/` | Ports of the libobs codec bitstream helpers (`obs-nal.c`, `obs-avc.c`, `obs-hevc.c`, `obs-av1.c`) |
 | `obs-media-io/` | Ports of `libobs/media-io/*` |
+| `obs-simd/` | Shared runtime CPU feature detection and SIMD tier selection |
 | `obs-c-oracle/` | Test-only: original C sources compiled with `oracle_` symbols for layout and differential tests |
 | `libobs-rust/` | The single staticlib linked into libobs when `ENABLE_RUST_LIBOBS=ON` |
 | `obs-stream-rust/` | Standalone CLI that starts, stops and inspects OBS streaming over obs-websocket v5 (released as `obs-stream-rust` binaries) |

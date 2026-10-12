@@ -1,0 +1,11 @@
+[package]
+name = "obs-simd"
+version = "0.1.0"
+description = "Runtime CPU feature detection and SIMD tier selection for libobs Rust"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+test-support = []
