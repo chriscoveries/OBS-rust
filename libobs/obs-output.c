@@ -285,6 +285,18 @@ static void destroy_caption_track(struct caption_track_data **ctrack_ptr)
 		return;
 	}
 	struct caption_track_data *ctrack = *ctrack_ptr;
+
+	/* drain queued text nodes so a track destroyed with pending
+	 * captions does not leak them */
+	struct caption_text *node = ctrack->caption_head;
+	while (node) {
+		struct caption_text *next = node->next;
+		bfree(node);
+		node = next;
+	}
+	ctrack->caption_head = NULL;
+	ctrack->caption_tail = NULL;
+
 	pthread_mutex_destroy(&ctrack->caption_mutex);
 	deque_free(&ctrack->caption_data);
 	bfree(ctrack);
@@ -526,11 +538,13 @@ void obs_output_actual_stop(obs_output_t *output, bool force, uint64_t ts)
 		if (!ctrack) {
 			continue;
 		}
+		pthread_mutex_lock(&ctrack->caption_mutex);
 		while (ctrack->caption_head) {
 			ctrack->caption_tail = ctrack->caption_head->next;
 			bfree(ctrack->caption_head);
 			ctrack->caption_head = ctrack->caption_tail;
 		}
+		pthread_mutex_unlock(&ctrack->caption_mutex);
 	}
 
 	da_clear(output->keyframe_group_tracking);
