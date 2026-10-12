@@ -19,6 +19,9 @@ fn main() {
     // contract under its default /fp:precise.
     if !oracle.get_compiler().is_like_msvc() {
         oracle.flag("-ffp-contract=off");
+        // libobs is built with -fno-strict-aliasing (cmake/common/compiler_common.cmake,
+        // cmake/linux/compilerconfig.cmake); the oracle must match the shipped C.
+        oracle.flag("-fno-strict-aliasing");
         // libobs/util/sse-intrin.h takes SSE from SIMDe outside MSVC. The
         // stand-in keeps `cargo test` free of a SIMDe install.
         oracle.include("oracle/sse-shim");
