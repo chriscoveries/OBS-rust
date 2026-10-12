@@ -2,10 +2,12 @@
  *
  * Boots OBS with no NSApplication, no window and no display: Metal video,
  * one color scene, a VideoToolbox encoder into a null output. Runs until
- * the output reports N frames, then prints the profiler `download_frame`
- * overall count (one per GPU-sync map today; M2 drives it down) and exits.
+ * VideoToolbox accepts N submissions, then prints the profiler
+ * `download_frame` count and counted source-plane copy bytes.
  *
- * Usage: zero-copy-harness [frames=120] [--raw]
+ * Usage: zero-copy-harness [frames=120] [--raw-fallback|--raw-no-gpu]
+ * `--raw-fallback` keeps GPU conversion enabled but forces the encoder's raw
+ * input route. `--raw-no-gpu` exercises legacy CPU input (`--raw` alias).
  *
  * This is a CLI measurement tool, not a cmocka unit test: it needs a full
  * build tree (graphics + encoder + output modules) and real GPU/VideoToolbox.
@@ -37,6 +39,9 @@ static void *vt_plugin_handle = NULL;
  * the harness cannot report a false zero. */
 static void (*vt_copy_bytes_reset_fn)(void) = NULL;
 static uint64_t (*vt_copy_bytes_total_fn)(void) = NULL;
+static void (*vt_encode_submission_reset_fn)(uint64_t) = NULL;
+static uint64_t (*vt_encode_submission_total_fn)(void) = NULL;
+static void (*vt_test_force_raw_fn)(bool) = NULL;
 
 static bool resolve_copy_counter(void)
 {
@@ -44,7 +49,7 @@ static bool resolve_copy_counter(void)
 	if (!vt_plugin_handle) {
 		const char *error = dlerror();
 		fprintf(stderr, "harness: cannot find loaded VideoToolbox plugin at %s: %s\n", vt_plugin_binary,
-		error ? error : "dlopen failed");
+			error ? error : "dlopen failed");
 		return false;
 	}
 
@@ -65,6 +70,37 @@ static bool resolve_copy_counter(void)
 		return false;
 	}
 	memcpy(&vt_copy_bytes_total_fn, &total_symbol, sizeof(vt_copy_bytes_total_fn));
+
+	(void)dlerror();
+	void *submission_reset_symbol = dlsym(vt_plugin_handle, "vt_encode_submission_reset");
+	error = dlerror();
+	if (error || !submission_reset_symbol ||
+	    sizeof(submission_reset_symbol) != sizeof(vt_encode_submission_reset_fn)) {
+		fprintf(stderr, "harness: cannot resolve vt_encode_submission_reset: %s\n",
+			error ? error : "missing symbol");
+		return false;
+	}
+	memcpy(&vt_encode_submission_reset_fn, &submission_reset_symbol, sizeof(vt_encode_submission_reset_fn));
+
+	(void)dlerror();
+	void *submission_total_symbol = dlsym(vt_plugin_handle, "vt_encode_submission_total");
+	error = dlerror();
+	if (error || !submission_total_symbol ||
+	    sizeof(submission_total_symbol) != sizeof(vt_encode_submission_total_fn)) {
+		fprintf(stderr, "harness: cannot resolve vt_encode_submission_total: %s\n",
+			error ? error : "missing symbol");
+		return false;
+	}
+	memcpy(&vt_encode_submission_total_fn, &submission_total_symbol, sizeof(vt_encode_submission_total_fn));
+
+	(void)dlerror();
+	void *force_raw_symbol = dlsym(vt_plugin_handle, "vt_test_force_raw");
+	error = dlerror();
+	if (error || !force_raw_symbol || sizeof(force_raw_symbol) != sizeof(vt_test_force_raw_fn)) {
+		fprintf(stderr, "harness: cannot resolve vt_test_force_raw: %s\n", error ? error : "missing symbol");
+		return false;
+	}
+	memcpy(&vt_test_force_raw_fn, &force_raw_symbol, sizeof(vt_test_force_raw_fn));
 	return true;
 }
 
@@ -167,8 +203,7 @@ static bool load_build_tree_modules(const char *argv0)
 	snprintf(bin, sizeof(bin), "%s/plugins/%%module%%/%s/%%module%%.plugin/Contents/MacOS", exe, config);
 	snprintf(data, sizeof(data), "%s/plugins/%%module%%/%s/%%module%%.plugin/Contents/Resources", exe, config);
 	snprintf(vt_plugin_binary, sizeof(vt_plugin_binary),
-		 "%s/plugins/mac-videotoolbox/%s/mac-videotoolbox.plugin/Contents/MacOS/mac-videotoolbox", exe,
-		 config);
+		 "%s/plugins/mac-videotoolbox/%s/mac-videotoolbox.plugin/Contents/MacOS/mac-videotoolbox", exe, config);
 
 	struct obs_module_failure_info error = {0};
 	struct obs_runtime_module_info info = {
@@ -192,21 +227,29 @@ static bool load_build_tree_modules(const char *argv0)
 
 int main(int argc, char **argv)
 {
-	bool force_raw = false;
+	bool force_raw_fallback = false;
+	bool raw_no_gpu = false;
 	int want_frames = DEFAULT_FRAMES;
-	if (argc > 1 && strcmp(argv[1], "--raw") == 0) {
-		force_raw = true;
-	} else if (argc > 1) {
-		want_frames = atoi(argv[1]);
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--raw-fallback") == 0) {
+			force_raw_fallback = true;
+		} else if (strcmp(argv[i], "--raw-no-gpu") == 0 || strcmp(argv[i], "--raw") == 0) {
+			raw_no_gpu = true;
+		} else {
+			char *end = NULL;
+			long parsed = strtol(argv[i], &end, 10);
+			if (!argv[i][0] || !end || *end || parsed <= 0 || parsed > INT32_MAX) {
+				fprintf(stderr, "usage: %s [frames=%d] [--raw-fallback|--raw-no-gpu]\n", argv[0],
+					DEFAULT_FRAMES);
+				return 1;
+			}
+			want_frames = (int)parsed;
+		}
 	}
-	if (argc > 2 && strcmp(argv[2], "--raw") == 0)
-		force_raw = true;
-	else if (argc > 2) {
-		fprintf(stderr, "usage: %s [frames=%d] [--raw]\n", argv[0], DEFAULT_FRAMES);
+	if (force_raw_fallback && raw_no_gpu) {
+		fprintf(stderr, "harness: choose one raw mode\n");
 		return 1;
 	}
-	if (want_frames <= 0)
-		want_frames = DEFAULT_FRAMES;
 
 	if (!obs_startup("en", NULL, NULL)) {
 		fprintf(stderr, "harness: obs_startup failed\n");
@@ -228,7 +271,7 @@ int main(int argc, char **argv)
 	ovi.graphics_module = "libobs-metal.dylib";
 	/* GPU conversion path: the M1 zero-copy work happens here (NV12
 	 * textures staged on the GPU). Raw path would bypass it. */
-	ovi.gpu_conversion = !force_raw;
+	ovi.gpu_conversion = !raw_no_gpu;
 	ovi.output_format = VIDEO_FORMAT_NV12;
 	ovi.base_width = 1920;
 	ovi.base_height = 1080;
@@ -261,6 +304,7 @@ int main(int argc, char **argv)
 		obs_shutdown();
 		return 1;
 	}
+	vt_test_force_raw_fn(force_raw_fallback || raw_no_gpu);
 
 	obs_scene_t *scene = obs_scene_create("harness scene");
 	obs_source_t *color = obs_source_create("color_source", "harness color", NULL, NULL);
@@ -308,6 +352,7 @@ int main(int argc, char **argv)
 		obs_output_set_audio_encoder(output, audio_encoder, 0);
 	}
 	vt_copy_bytes_reset_fn();
+	vt_encode_submission_reset_fn((uint64_t)want_frames);
 	const int frames_before = obs_output_get_total_frames(output);
 	const uint64_t waits_before = snapshot_download_waits();
 	if (!obs_output_start(output)) {
@@ -318,17 +363,25 @@ int main(int argc, char **argv)
 	}
 
 	int waited_ms = 0;
-	while (obs_output_get_total_frames(output) < want_frames && waited_ms < TIMEOUT_MS) {
+	while (vt_encode_submission_total_fn() < (uint64_t)want_frames && waited_ms < TIMEOUT_MS &&
+	       obs_output_active(output)) {
 		os_sleep_ms(50);
 		waited_ms += 50;
 	}
 	obs_output_stop(output);
 	int frames = obs_output_get_total_frames(output) - frames_before;
+	uint64_t submissions = vt_encode_submission_total_fn();
 	uint64_t waits_after = snapshot_download_waits();
 	uint64_t copied_bytes = read_copy_bytes();
 	uint64_t waits = waits_after >= waits_before ? waits_after - waits_before : 0;
-	printf("frames=%d waits=%llu copied_bytes=%llu path=%s\n", frames, (unsigned long long)waits,
-	       (unsigned long long)copied_bytes, force_raw ? "raw" : "texture");
+	uint64_t bytes_per_submission = submissions ? copied_bytes / submissions : 0;
+	uint64_t bytes_remainder = submissions ? copied_bytes % submissions : copied_bytes;
+	const char *path = force_raw_fallback ? "forced-raw-fallback" : raw_no_gpu ? "raw-no-gpu" : "texture";
+	printf("resolution=1920x1080 format=NV12 gpu_conversion=%s path=%s submissions=%llu output_frames=%d "
+	       "copied_bytes=%llu copied_bytes_per_submission=%llu remainder=%llu waits=%llu\n",
+	       raw_no_gpu ? "false" : "true", path, (unsigned long long)submissions, frames,
+	       (unsigned long long)copied_bytes, (unsigned long long)bytes_per_submission,
+	       (unsigned long long)bytes_remainder, (unsigned long long)waits);
 	obs_output_release(output);
 	obs_encoder_release(encoder);
 	if (audio_encoder)
@@ -340,13 +393,14 @@ int main(int argc, char **argv)
 	obs_shutdown();
 	dlclose(vt_plugin_handle);
 
-	if (frames < want_frames) {
-		fprintf(stderr, "harness: timeout waiting for %d frames\n", want_frames);
+	if (submissions != (uint64_t)want_frames) {
+		fprintf(stderr, "harness: expected %d accepted VideoToolbox submissions, got %llu\n", want_frames,
+			(unsigned long long)submissions);
 		return 1;
 	}
-	if ((force_raw && copied_bytes == 0) || (!force_raw && copied_bytes != 0)) {
-		fprintf(stderr, "harness: copy counter did not match the requested %s path\n",
-			force_raw ? "raw" : "texture");
+	if ((!force_raw_fallback && !raw_no_gpu && copied_bytes != 0) ||
+	    ((force_raw_fallback || raw_no_gpu) && (copied_bytes == 0 || bytes_remainder != 0))) {
+		fprintf(stderr, "harness: copy counter did not match the requested %s path\n", path);
 		return 1;
 	}
 	return 0;

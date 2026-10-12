@@ -1534,6 +1534,10 @@ static bool vt_encode(void *data, struct encoder_frame *frame, struct encoder_pa
 	struct vt_encoder *enc = data;
 	if (!vt_ensure_session(enc))
 		return false;
+	if (!vt_encode_submission_reserve())
+		return true;
+	if (!vt_encode_submission_reserve())
+		return true;
 
 	OSStatus code;
 
@@ -1562,8 +1566,11 @@ static bool vt_encode(void *data, struct encoder_frame *frame, struct encoder_pa
 
 	code = vt_submit_raw_pixel_buffer(enc, pixbuf, pts, dur);
 	pixbuf = NULL;
-	if (code != noErr)
+	if (code != noErr) {
+		vt_encode_submission_cancel();
 		return false;
+	}
+	vt_encode_submission_commit();
 
 	CMSampleBufferRef buffer = (CMSampleBufferRef)CMSimpleQueueDequeue(enc->queue);
 
@@ -1577,6 +1584,7 @@ static bool vt_encode(void *data, struct encoder_frame *frame, struct encoder_pa
 fail:
 	if (pixbuf)
 		CFRelease(pixbuf);
+	vt_encode_submission_cancel();
 	return false;
 }
 
@@ -1640,6 +1648,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 	vt_log_texture_fallback_once(enc);
 	if (!vt_ensure_session(enc)) {
 		VT_LOG(LOG_ERROR, "Raw VideoToolbox fallback failed: unable to create compression session");
+		vt_encode_submission_cancel();
 		return false;
 	}
 
@@ -1648,6 +1657,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 		    CVPixelBufferGetPixelFormatType(source) != (OSType)enc->vt_pix_fmt) {
 			VT_LOG(LOG_ERROR,
 			       "Raw VideoToolbox fallback failed: source pixel buffer format or dimensions mismatch");
+			vt_encode_submission_cancel();
 			return false;
 		}
 	} else if (!surface || IOSurfaceGetWidth(surface) != enc->width || IOSurfaceGetHeight(surface) != enc->height ||
@@ -1655,12 +1665,14 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 		   IOSurfaceGetPlaneCount(surface) != 2) {
 		VT_LOG(LOG_ERROR,
 		       "Raw VideoToolbox fallback failed: IOSurface format, dimensions, or plane count mismatch");
+		vt_encode_submission_cancel();
 		return false;
 	}
 
 	CVPixelBufferRef pixbuf = NULL;
 	if (!vt_get_cached_pixel_buffer(enc, &pixbuf)) {
 		VT_LOG(LOG_ERROR, "Raw VideoToolbox fallback failed: unable to create destination pixel buffer");
+		vt_encode_submission_cancel();
 		return false;
 	}
 
@@ -1668,6 +1680,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 	if (code != noErr) {
 		log_osstatus(LOG_ERROR, enc, "locking destination pixel buffer for raw fallback", code);
 		CFRelease(pixbuf);
+		vt_encode_submission_cancel();
 		return false;
 	}
 
@@ -1682,6 +1695,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 					     "unlocking destination pixel buffer after raw fallback failure",
 					     unlock_code);
 			CFRelease(pixbuf);
+			vt_encode_submission_cancel();
 			return false;
 		}
 	} else {
@@ -1695,6 +1709,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 					     "unlocking destination pixel buffer after raw fallback failure",
 					     unlock_code);
 			CFRelease(pixbuf);
+			vt_encode_submission_cancel();
 			return false;
 		}
 	}
@@ -1744,6 +1759,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 				       (int)source_unlock_code);
 		}
 		CFRelease(pixbuf);
+		vt_encode_submission_cancel();
 		return false;
 	}
 
@@ -1753,8 +1769,10 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 	code = vt_submit_raw_pixel_buffer(enc, pixbuf, frame_pts, dur);
 	if (code != noErr) {
 		log_osstatus(LOG_ERROR, enc, "submitting raw fallback pixel buffer", code);
+		vt_encode_submission_cancel();
 		return false;
 	}
+	vt_encode_submission_commit();
 
 	CMSampleBufferRef buffer = (CMSampleBufferRef)CMSimpleQueueDequeue(enc->queue);
 	if (!buffer)
@@ -1770,7 +1788,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 static bool vt_can_encode_texture(void *data, const struct encoder_texture *texture)
 {
 	struct vt_encoder *enc = data;
-	if (!vt_is_nv12_or_p010((OSType)enc->vt_pix_fmt))
+	if (vt_test_raw_forced() || !vt_is_nv12_or_p010((OSType)enc->vt_pix_fmt))
 		return false;
 
 	/* The NULL route probe runs outside the graphics context. Check format
@@ -1837,10 +1855,13 @@ static bool vt_encode_texture(void *data, struct encoder_texture *texture, int64
 		return false;
 	if (!vt_ensure_session(enc))
 		return false;
+	if (!vt_encode_submission_reserve())
+		return true;
 
 	bool completed = vt_wait_for_texture_completion(enc, texture->tex[0]);
 	if (!completed) {
 		VT_BLOG(LOG_ERROR, "Metal render-to-VideoToolbox synchronization failed");
+		vt_encode_submission_cancel();
 		return false;
 	}
 
@@ -1857,6 +1878,7 @@ static bool vt_encode_texture(void *data, struct encoder_texture *texture, int64
 	    CVPixelBufferGetPixelFormatType(pixbuf) != (OSType)enc->vt_pix_fmt) {
 		VT_BLOG(LOG_ERROR, "IOSurface texture does not match VideoToolbox pixel buffer format or dimensions");
 		CFRelease(pixbuf);
+		vt_encode_submission_cancel();
 		return false;
 	}
 
@@ -1891,14 +1913,17 @@ static bool vt_encode_texture(void *data, struct encoder_texture *texture, int64
 	CMTime frame_pts = CMTimeMake(pts, enc->fps_num);
 	code = VTCompressionSessionEncodeFrame(enc->session, pixbuf, frame_pts, dur, NULL, source_ref, NULL);
 	if (code != noErr) {
-		if (!vt_take_frame_source(enc, source_ref, &source_ref))
+		if (!vt_take_frame_source(enc, source_ref, &source_ref)) {
+			vt_encode_submission_cancel();
 			return false;
+		}
 		bool fallback = vt_encode_texture_raw_fallback(
 			enc, source_ref->pixel_buffer, (IOSurfaceRef)texture->iosurface, pts, packet, received_packet);
 		vt_release_texture_source_resources(source_ref);
 		vt_finish_texture_source(source_ref);
 		return fallback;
 	}
+	vt_encode_submission_commit();
 
 	CMSampleBufferRef buffer = (CMSampleBufferRef)CMSimpleQueueDequeue(enc->queue);
 	if (buffer == NULL)

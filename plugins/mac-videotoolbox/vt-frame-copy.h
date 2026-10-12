@@ -30,6 +30,15 @@ EXPORT size_t vt_copy_frame_to_pixbuf(CVPixelBufferRef pixbuf, uint8_t *data[MAX
 EXPORT void vt_copy_bytes_reset(void);
 EXPORT uint64_t vt_copy_bytes_total(void);
 
+/* Harness controls and counters for matched VideoToolbox submissions. */
+EXPORT void vt_encode_submission_reset(uint64_t limit);
+EXPORT uint64_t vt_encode_submission_total(void);
+EXPORT bool vt_encode_submission_reserve(void);
+EXPORT void vt_encode_submission_commit(void);
+EXPORT void vt_encode_submission_cancel(void);
+EXPORT void vt_test_force_raw(bool force_raw);
+EXPORT bool vt_test_raw_forced(void);
+
 #ifdef __cplusplus
 }
 #endif
