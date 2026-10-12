@@ -24,6 +24,10 @@ on:
         description: Test the ref merged with current obs-rust master, as upstream PR CI does
         type: boolean
         default: true
+      mac:
+        description: Run the macOS lane (Rust gate + release report + C build ON, ctest) on macdad
+        type: boolean
+        default: true
 concurrency:
   # Include the runner labels, so the same SHA can run on claw and rd4 at once.
   group: ci-${{ inputs.ref }}-${{ inputs.runner || 'rd' }}-${{ inputs.tier2_runner || 'claw' }}
@@ -122,3 +126,41 @@ jobs:
           # DecodeTEA (rtmp.c, obs-rust/obs-studio#209) that newer GCC does not.
           TIER2_EXTRA_CMAKE: ${{ inputs.tier2_runner == 'rd4' && '-DENABLE_PIPEWIRE=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DCMAKE_C_FLAGS=-Wno-error=maybe-uninitialized' || '' }}
         run: .ci-main/.github/ci/tier2-native.sh "$GITHUB_WORKSPACE"
+  # macOS lane: macdad is the fork's only Apple Silicon box (Metal,
+  # VideoToolbox, Mac-only tracks). Single ENABLE_RUST_LIBOBS=ON config
+  # (not the Linux OFF/ON matrix), ctest on cmocka, Rust gate plus a
+  # report-only release pass. Dispatch-only, like every job here.
+  mac:
+    if: ${{ inputs.mac != false }}
+    runs-on: [self-hosted, macOS, ARM64, macdad]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          # The commit this workflow runs from: ci-main in normal use, or a
+          # review branch before ci-main is fast-forwarded.
+          ref: ${{ github.sha }}
+          path: .ci-main
+          sparse-checkout: .github/ci
+          persist-credentials: false
+      - name: Merge current upstream master (what upstream PR CI tests)
+        if: ${{ inputs.merge_upstream != false }}
+        run: |
+          git fetch --no-tags https://github.com/obs-rust/obs-studio.git master
+          echo "upstream master: $(git rev-parse FETCH_HEAD)"
+          git -c user.name=ci -c user.email=ci@localhost merge --no-edit FETCH_HEAD \
+            || { echo "::error::ref does not merge cleanly with current upstream master"; exit 1; }
+      - name: Submodules (public, no token)
+        run: git submodule sync --recursive && git submodule update --init --recursive --depth 1
+      - name: Toolchain
+        run: |
+          echo "host=$(hostname)"
+          for t in soldr cmake ninja ccache cargo; do command -v $t >/dev/null || { echo "MISSING: $t"; exit 1; }; done
+      - name: macOS native (gate + C build + ctest)
+        run: .ci-main/.github/ci/mac-native.sh "$GITHUB_WORKSPACE"
