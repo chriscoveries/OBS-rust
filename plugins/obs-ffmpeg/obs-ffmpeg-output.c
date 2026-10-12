@@ -548,6 +548,9 @@ void ffmpeg_data_free(struct ffmpeg_data *data)
 		data->audio_infos = NULL;
 	}
 
+	sws_freeContext(data->swscale);
+	data->swscale = NULL;
+
 	if (data->output) {
 		if ((data->output->oformat->flags & AVFMT_NOFILE) == 0)
 			avio_close(data->output->pb);
