@@ -68,11 +68,21 @@ cmake -S "$src" -B "$build" -G Xcode \
   -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
   "${flags[@]}" \
   >"$build.configure.log" 2>&1 || { tail -40 "$build.configure.log"; exit 1; }
+# Upstream CI pins Xcode 26.5; macdad only has Xcode 27, where libobs-metal's
+# existing CVDisplayLink calls (MetalDevice.swift) hit -warnings-as-errors as
+# deprecations. Downgrade only that diagnostic group, only on Xcode >= 27;
+# every other Swift warning stays an error.
+xcode_major=$(xcodebuild -version | awk 'NR==1{split($2,v,"."); print v[1]}')
+xc_args=()
+if [ "${xcode_major:-0}" -ge 27 ]; then
+  xc_args=(-- 'OTHER_SWIFT_FLAGS=$(inherited) -Wwarning DeprecatedDeclaration')
+  echo "== Xcode $xcode_major: Swift DeprecatedDeclaration downgraded to a warning"
+fi
 # libobs-metal is a separate, dynamically loaded target: neither libobs nor
 # the cmocka tests depend on it, so name it explicitly or Metal code is never
 # compiled here.
 $NICE cmake --build "$build" --config Debug --target libobs libobs-metal cmocka-tests \
-  >"$build.build.log" 2>&1 || { grep -E "error|Error" "$build.build.log" | head -40; exit 1; }
+  ${xc_args[@]+"${xc_args[@]}"} >"$build.build.log" 2>&1 || { grep -E "error|Error" "$build.build.log" | head -40; exit 1; }
 
 # Test binaries and libobs itself carry LC_RPATH @executable_path/../Frameworks
 # and load @rpath/libobs.framework plus @rpath/lib*.dylib from obs-deps — the
