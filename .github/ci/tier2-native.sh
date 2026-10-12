@@ -58,10 +58,10 @@ for mode in OFF ON; do
     >"$build.build.log" 2>&1 || { grep -E "error|Error" "$build.build.log" | head -40; exit 1; }
 
   echo "== [$mode] ctest${xvfb:+ (under xvfb-run)}"
-  $xvfb ctest --test-dir "$build" --output-on-failure
+  $xvfb ctest --test-dir "$build" --output-on-failure --timeout 600
   if [ "$repeat" -gt 0 ]; then
     echo "== [$mode] ctest --repeat until-fail:$repeat${tests:+ -R $tests}"
-    $xvfb ctest --test-dir "$build" --output-on-failure --repeat "until-fail:$repeat" ${tests:+-R "$tests"}
+    $xvfb ctest --test-dir "$build" --output-on-failure --timeout 600 --repeat "until-fail:$repeat" ${tests:+-R "$tests"}
   fi
 
   lib=$(ls "$build"/libobs/libobs.so.* | head -1)

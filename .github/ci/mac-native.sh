@@ -98,7 +98,7 @@ if [ -d "$src/.deps" ]; then
   done
 fi
 echo "== [ON] ctest"
-$NICE ctest --test-dir "$build" -C Debug --output-on-failure
+$NICE ctest --test-dir "$build" -C Debug --output-on-failure --timeout 600
 
 echo "== ccache"
 ccache -s | grep -E "Hits|Misses|Cache size" || true
