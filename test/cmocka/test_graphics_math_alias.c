@@ -24,18 +24,35 @@
  * equality (the fixes keep the non-overlapping arithmetic untouched, so the
  * two paths must match bit for bit). */
 
+static void set_v3(struct vec3 *v, float x, float y, float z)
+{
+	vec3_set(v, x, y, z);
+	v->w = 0.0f;
+}
+
+static void set_v2(struct vec2 *v, float x, float y)
+{
+	v->x = x;
+	v->y = y;
+}
+
+/* 90-degree rotation about Z with a translation row, the matrix the two
+ * reproducer angles exercise. */
+static void rot_matrix(struct matrix3 *m)
+{
+	memset(m, 0, sizeof(*m));
+	set_v3(&m->x, 0.0f, 1.0f, 0.0f);
+	set_v3(&m->y, -1.0f, 0.0f, 0.0f);
+	set_v3(&m->z, 0.0f, 0.0f, 1.0f);
+	set_v3(&m->t, 0.5f, -1.0f, 2.0f);
+}
+
 static void assert_vec3_same(const struct vec3 *a, const struct vec3 *b)
 {
 	assert_true(a->x == b->x);
 	assert_true(a->y == b->y);
 	assert_true(a->z == b->z);
 	assert_true(a->w == b->w);
-}
-
-static void set_v3(struct vec3 *v, float x, float y, float z)
-{
-	vec3_set(v, x, y, z);
-	v->w = 0.0f;
 }
 
 static void set_v4(struct vec4 *v, float x, float y, float z)
@@ -457,9 +474,128 @@ static void test_gs_u8x4_to_float4_same_base(void **state)
 	assert_true(shared.f[3] == ref[3]);
 }
 
+/* The fixes above only move a read ahead of the writes it raced with, so a
+ * non-overlapping call must still produce the bits it always did. Compilers
+ * are free to reassociate the fixed sources into a different rounding, so the
+ * values are pinned here bit for bit (memcmp, not ==) and the quat_mul and
+ * vec3_rotate references are computed in this translation unit from the same
+ * helpers, which keeps them honest under any contraction mode. */
+
+/* Bits, not values: the point of these tests is that a compiler change which
+ * reassociates the libm calls or the dot reductions fails them. */
+static void set_v3_bits(struct vec3 *v, uint32_t x, uint32_t y, uint32_t z)
+{
+	memcpy(&v->x, &x, sizeof(x));
+	memcpy(&v->y, &y, sizeof(y));
+	memcpy(&v->z, &z, sizeof(z));
+	v->w = 0.0f;
+}
+
+static void assert_v3_bits(const struct vec3 *got, uint32_t x, uint32_t y, uint32_t z)
+{
+	struct vec3 want;
+
+	set_v3_bits(&want, x, y, z);
+	/* x, y and z only: polar_to_norm leaves dst->w alone. */
+	assert_memory_equal(got, &want, 3 * sizeof(float));
+}
+
+/* Ordinary polar angles, including the two reproducers from the alias audit
+ * where a compiler that folds the sine and cosine of one angle into a single
+ * sincosf call rounds the last bit differently. The pinned bits are the same
+ * under -ffp-contract off, on and fast. */
+static void test_polar_to_norm_bits(void **state)
+{
+	UNUSED_PARAMETER(state);
+
+	struct vec2 polar;
+	struct vec3 out;
+
+	set_v2(&polar, 1.2564429f, 1.797629f);
+	polar_to_norm(&out, &polar);
+	assert_v3_bits(&out, 0xbe5b0140u, 0x3f6d37fau, 0x3e9e4faeu);
+
+	set_v2(&polar, 121.082436f, 120.680222f);
+	polar_to_norm(&out, &polar);
+	assert_v3_bits(&out, 0x3e87ee1fu, 0x3f748882u, 0xbe05e183u);
+
+	set_v2(&polar, 0.7f, -1.3f);
+	polar_to_norm(&out, &polar);
+	assert_v3_bits(&out, 0x3e30769fu, 0xbf1ee8e5u, 0x3f43ccb3u);
+}
+
+/* quat_mul: the Hamilton product through the same vector helpers libobs uses,
+ * computed here. If the library's evaluation changes its rounding, the two
+ * stop matching bit for bit. */
+static void test_quat_mul_bits(void **state)
+{
+	UNUSED_PARAMETER(state);
+
+	const struct quat a = {0.2f, -0.3f, 0.4f, 0.8f};
+	const struct quat b = {-0.5f, 0.6f, -0.7f, 0.9f};
+	struct quat got, want;
+	struct vec3 q1axis, q2axis, t1, t2;
+
+	quat_mul(&got, &a, &b);
+
+	vec3_set(&q1axis, a.x, a.y, a.z);
+	q1axis.w = 0.0f;
+	vec3_set(&q2axis, b.x, b.y, b.z);
+	q2axis.w = 0.0f;
+
+	vec3_mulf(&t1, &q2axis, a.w);
+	vec3_mulf(&t2, &q1axis, b.w);
+	vec3_add(&t1, &t1, &t2);
+	vec3_cross(&t2, &q1axis, &q2axis);
+	vec3_add(&t1, &t1, &t2);
+
+	want.x = t1.x;
+	want.y = t1.y;
+	want.z = t1.z;
+	want.w = (a.w * b.w) - vec3_dot(&q1axis, &q2axis);
+
+	assert_memory_equal(&got, &want, sizeof(got));
+}
+
+/* vec3_rotate: three independent dots, reduced the way this reference reduces
+ * them. A compiler that packs the dots into one SIMD reduction produces
+ * different bits and fails here. */
+static void test_vec3_rotate_bits(void **state)
+{
+	UNUSED_PARAMETER(state);
+
+	struct matrix3 m;
+	struct vec3 v, got;
+
+	rot_matrix(&m);
+	set_v3(&v, 2.0f, -3.0f, 0.25f);
+
+	vec3_rotate(&got, &v, &m);
+	assert_true(got.x == vec3_dot(&v, &m.x) && got.y == vec3_dot(&v, &m.y) && got.z == vec3_dot(&v, &m.z));
+}
+
+static void test_vec3_transform3x4_bits(void **state)
+{
+	UNUSED_PARAMETER(state);
+
+	struct matrix3 m;
+	struct vec3 v, got, t;
+
+	rot_matrix(&m);
+	set_v3(&v, 2.0f, -3.0f, 0.25f);
+
+	vec3_transform3x4(&got, &v, &m);
+	vec3_sub(&t, &v, &m.t);
+	assert_true(got.x == vec3_dot(&t, &m.x) && got.y == vec3_dot(&t, &m.y) && got.z == vec3_dot(&t, &m.z));
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
+		cmocka_unit_test(test_polar_to_norm_bits),
+		cmocka_unit_test(test_quat_mul_bits),
+		cmocka_unit_test(test_vec3_rotate_bits),
+		cmocka_unit_test(test_vec3_transform3x4_bits),
 		cmocka_unit_test(test_quat_mul_dst_aliases_q1),
 		cmocka_unit_test(test_quat_mul_dst_aliases_q2),
 		cmocka_unit_test(test_quat_mul_dst_aliases_both),

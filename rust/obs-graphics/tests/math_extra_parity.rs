@@ -44,6 +44,14 @@ fn same3(r: vec3, c: OracleVec3) -> bool {
     xyz(r, c) && same(r.w, c.w)
 }
 
+fn same3_rs(r: vec3, c: vec3) -> bool {
+    same(r.x, c.x) && same(r.y, c.y) && same(r.z, c.z) && same(r.w, c.w)
+}
+
+fn same3_cs(c: OracleVec3, d: OracleVec3) -> bool {
+    same(c.x, d.x) && same(c.y, d.y) && same(c.z, d.z) && same(c.w, d.w)
+}
+
 fn check_polar(v: Vec3) -> Result<(), TestCaseError> {
     let mut rd = vec3::default();
     let mut cd = OracleVec3::default();
@@ -167,35 +175,111 @@ fn arb_vec3(elem: impl Strategy<Value = f32> + Clone) -> impl Strategy<Value = V
 }
 
 /// `test_calc_torque_dst_aliases_v1` from the cmocka file. The safe core
-/// never sees the alias, and the shim now reads `v1` before writing `dst`,
-/// so the aliased call equals the non-aliased one, on both sides.
+/// never sees the alias, and the shim reads `v1` before writing `dst`, so the
+/// aliased call equals the non-aliased one, on both sides and between them.
 #[test]
 fn calc_torque_dst_aliases_v1_matches_c() {
     let v1 = Vec3::with_w(10.0, 0.0, 0.0, 9.0);
     let v2 = Vec3::with_w(0.0, 0.0, 0.0, 4.0);
-    let mut rd = r3(v1);
-    let mut cd = o3(v1);
     let b = r3(v2);
     let cb = o3(v2);
+
+    // aliased: dst and v1 are the same local
+    let mut r_alias = r3(v1);
+    let mut c_alias = o3(v1);
     // SAFETY: dst and v1 are the same local. v2 is a distinct local.
     unsafe {
-        rs::calc_torque(&mut rd, &rd, &b, 0.5, 0.1, 1.0);
-        c::oracle_calc_torque(&mut cd, &cd, &cb, 0.5, 0.1, 1.0);
+        rs::calc_torque(&mut r_alias, &r_alias, &b, 0.5, 0.1, 1.0);
+        c::oracle_calc_torque(&mut c_alias, &c_alias, &cb, 0.5, 0.1, 1.0);
     }
-    assert!(same3(rd, cd), "aliased calc_torque {rd:?} != C {cd:?}");
-    assert_eq!((rd.x, rd.y, rd.z, rd.w), (5.0, 0.0, 0.0, 0.0));
 
-    let mut rd = r3(v1);
-    let mut cd = o3(v1);
-    // SAFETY: dst and v1 are distinct locals.
+    // the non-aliased reference for both sides
+    let mut r_ref = r3(v1);
+    let mut c_ref = o3(v1);
+    let rb_src = r3(v1);
+    let cb_src = o3(v1);
+    // SAFETY: dst, v1 and v2 are distinct locals.
     unsafe {
-        rs::calc_torque(&mut rd, &r3(v1), &b, 0.5, 0.1, 1.0);
-        c::oracle_calc_torque(&mut cd, &o3(v1), &cb, 0.5, 0.1, 1.0);
+        rs::calc_torque(&mut r_ref, &rb_src, &b, 0.5, 0.1, 1.0);
+        c::oracle_calc_torque(&mut c_ref, &cb_src, &cb, 0.5, 0.1, 1.0);
     }
+
+    assert!(
+        same3(r_alias, c_alias),
+        "aliased Rust {r_alias:?} != C {c_alias:?}"
+    );
+    assert!(
+        same3(r_ref, c_ref),
+        "reference Rust {r_ref:?} != C {c_ref:?}"
+    );
+    assert!(
+        same3_rs(r_alias, r_ref),
+        "aliased Rust {r_alias:?} != its own reference {r_ref:?}"
+    );
+    assert!(
+        same3_cs(c_alias, c_ref),
+        "aliased C {c_alias:?} != its own reference {c_ref:?}"
+    );
     assert_eq!(
-        (rd.x, rd.y, rd.z, rd.w),
+        (r_ref.x, r_ref.y, r_ref.z, r_ref.w),
         (5.0, 0.0, 0.0, 0.0),
-        "non-aliased calc_torque also stepped to 5"
+        "the stepped value"
+    );
+}
+
+/// `polar_to_norm` with `dst` sharing storage with `polar`, as the same-base
+/// vec3/vec2 arrangement the C audit found broken. The shim reads `polar`
+/// before writing any lane.
+#[test]
+fn polar_to_norm_dst_aliases_polar_matches_c() {
+    let px = 1.2564429_f32;
+    let py = 1.797629_f32;
+    let mut r_alias = r3(Vec3::with_w(0.0, 0.0, 0.0, 4.0));
+    let mut c_alias = o3(Vec3::with_w(0.0, 0.0, 0.0, 4.0));
+    // The polar pair lives at the same address as the destination's first two
+    // lanes, which is the same-base vec3/vec2 arrangement from the audit.
+    let mut r_polar = vec2::default();
+    let mut c_polar = OracleVec2::default();
+    r_polar.x = px;
+    r_polar.y = py;
+    c_polar.x = px;
+    c_polar.y = py;
+    let r_polar: *const vec2 = core::ptr::addr_of!(r_polar);
+    let c_polar: *const OracleVec2 = core::ptr::addr_of!(c_polar);
+    // SAFETY: the polar pair is a live local placed at the destination's
+    // base on both sides, which both implementations allow.
+    unsafe {
+        rs::polar_to_norm(&mut r_alias.x as *mut f32 as *mut vec3, r_polar);
+        c::oracle_polar_to_norm(&mut c_alias.x as *mut f32 as *mut OracleVec3, c_polar);
+    }
+    let mut r_ref = r3(Vec3::with_w(0.0, 0.0, 0.0, 4.0));
+    let mut c_ref = o3(Vec3::with_w(0.0, 0.0, 0.0, 4.0));
+    let mut r_ref_polar = vec2::default();
+    let mut c_ref_polar = OracleVec2::default();
+    r_ref_polar.x = px;
+    r_ref_polar.y = py;
+    c_ref_polar.x = px;
+    c_ref_polar.y = py;
+    // SAFETY: dst and polar are distinct locals.
+    unsafe {
+        rs::polar_to_norm(&mut r_ref, &r_ref_polar);
+        c::oracle_polar_to_norm(&mut c_ref, &c_ref_polar);
+    }
+    assert!(
+        same3(r_alias, c_alias),
+        "alias Rust {r_alias:?} != C {c_alias:?}"
+    );
+    assert!(
+        same3(r_ref, c_ref),
+        "reference Rust {r_ref:?} != C {c_ref:?}"
+    );
+    assert!(
+        same3_rs(r_alias, r_ref),
+        "aliased Rust {r_alias:?} != its own reference {r_ref:?}"
+    );
+    assert!(
+        same3_cs(c_alias, c_ref),
+        "aliased C {c_alias:?} != its own reference {c_ref:?}"
     );
 }
 

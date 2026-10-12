@@ -1,10 +1,11 @@
 //! Tier 3: the Rust C ABI shim and safe core behave exactly like the
 //! original C, compiled as an oracle.
 //!
-//! No intentional differences. `plane_from_tri` with `v1 == &dst->dir` dots
-//! the normalized direction with itself, as C does. `plane_intersection_line`
-//! leaves `*t` unchanged on a miss. `vec3_cross` / `vec3_norm` follow the
-//! header SSE, so parity is bit-exact (0 ULP).
+//! No intentional differences. `plane_from_tri` accepts a `v1` that is
+//! `&dst->dir` and uses the original vertex for the distance, as C does
+//! since the alias repair. `plane_intersection_line` leaves `*t` unchanged on
+//! a miss. `vec3_cross` / `vec3_norm` follow the header SSE, so parity is
+//! bit-exact (0 ULP).
 //!
 //! Reminder: the mutation check (break the core, see this file fail) is done
 //! once per port, not on every change.
