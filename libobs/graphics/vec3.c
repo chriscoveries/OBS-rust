@@ -36,19 +36,23 @@ float vec3_plane_dist(const struct vec3 *v, const struct plane *p)
 
 void vec3_rotate(struct vec3 *dst, const struct vec3 *v, const struct matrix3 *m)
 {
-	struct vec3 temp;
-	float x, y, z;
+	struct vec3 temp, rx, ry, rz;
+	volatile struct vec3 *out = (volatile struct vec3 *)dst;
 
 	vec3_copy(&temp, v);
+	vec3_copy(&rx, &m->x);
+	vec3_copy(&ry, &m->y);
+	vec3_copy(&rz, &m->z);
 
-	x = vec3_dot(&temp, &m->x);
-	y = vec3_dot(&temp, &m->y);
-	z = vec3_dot(&temp, &m->z);
-
-	dst->x = x;
-	dst->y = y;
-	dst->z = z;
-	dst->w = 0.0f;
+	/* The rows are copied first, so an overlapping dst cannot corrupt them;
+	 * each result is then stored through the volatile pointer, which keeps
+	 * the compiler from packing the three dot products into one SIMD
+	 * reduction. The packed form reduces them in a different order and
+	 * changes the last bits of the result under FP contraction. */
+	out->x = vec3_dot(&temp, &rx);
+	out->y = vec3_dot(&temp, &ry);
+	out->z = vec3_dot(&temp, &rz);
+	out->w = 0.0f;
 }
 
 void vec3_transform(struct vec3 *dst, const struct vec3 *v, const struct matrix4 *m)
@@ -61,19 +65,21 @@ void vec3_transform(struct vec3 *dst, const struct vec3 *v, const struct matrix4
 
 void vec3_transform3x4(struct vec3 *dst, const struct vec3 *v, const struct matrix3 *m)
 {
-	struct vec3 temp;
-	float x, y, z;
+	struct vec3 temp, rx, ry, rz, t;
+	volatile struct vec3 *out = (volatile struct vec3 *)dst;
 
-	vec3_sub(&temp, v, &m->t);
+	vec3_copy(&t, &m->t);
+	vec3_copy(&rx, &m->x);
+	vec3_copy(&ry, &m->y);
+	vec3_copy(&rz, &m->z);
 
-	x = vec3_dot(&temp, &m->x);
-	y = vec3_dot(&temp, &m->y);
-	z = vec3_dot(&temp, &m->z);
+	vec3_sub(&temp, v, &t);
 
-	dst->x = x;
-	dst->y = y;
-	dst->z = z;
-	dst->w = 0.0f;
+	/* As in vec3_rotate: rows first, one result at a time. */
+	out->x = vec3_dot(&temp, &rx);
+	out->y = vec3_dot(&temp, &ry);
+	out->z = vec3_dot(&temp, &rz);
+	out->w = 0.0f;
 }
 
 void vec3_mirror(struct vec3 *dst, const struct vec3 *v, const struct plane *p)

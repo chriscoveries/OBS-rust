@@ -55,14 +55,38 @@ void norm_to_polar(struct vec2 *dst, const struct vec3 *norm)
 	dst->y = asinf(norm->y);
 }
 
+/* The calls in polar_to_norm must stay separate: some libc implementations
+ * round the sine and cosine of one angle differently when they are computed
+ * together (___sincosf_stret on Apple platforms), and this function has
+ * always used the separate forms. Putting them in no-inlined bodies is what
+ * stops a compiler from folding the pairs at any optimization level. MSVC
+ * does not perform that fold. */
+#if defined(_MSC_VER)
+#define POLAR_TRIG(fn) static float fn
+#else
+#define POLAR_TRIG(fn) static float __attribute__((noinline)) fn
+#endif
+
+POLAR_TRIG(polar_sinf)(float x)
+{
+	return sinf(x);
+}
+
+POLAR_TRIG(polar_cosf)(float x)
+{
+	return cosf(x);
+}
+
 void polar_to_norm(struct vec3 *dst, const struct vec2 *polar)
 {
-	float sinx = sinf(polar->x);
-	float cosx = cosf(polar->x);
+	/* Read the angle before writing dst: a caller may pass dst overlapping
+	 * polar, and the stores below overwrite its lanes. */
+	float angle = polar->x;
+	float sinx = polar_sinf(angle);
 
-	dst->x = sinx * cosf(polar->y);
-	dst->y = sinx * sinf(polar->y);
-	dst->z = cosx;
+	dst->x = sinx * polar_cosf(polar->y);
+	dst->y = sinx * polar_sinf(polar->y);
+	dst->z = polar_cosf(angle);
 }
 
 float calc_torquef(float val1, float val2, float torque, float min_adjust, float t)

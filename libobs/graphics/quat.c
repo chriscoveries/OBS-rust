@@ -27,25 +27,44 @@ static inline void quat_vec3(struct vec3 *v, const struct quat *q)
 	v->w = 0.0f;
 }
 
+/* The scalar part of the product, in its own no-inlined body: a compiler is
+ * otherwise free to merge the multiply into the vector work above it, which
+ * rounds the result differently (the separate form is one fused
+ * multiply-subtract of a pairwise-reduced dot product). */
+#if defined(_MSC_VER)
+#define QUAT_NOINLINE(fn) static float fn
+#else
+#define QUAT_NOINLINE(fn) static float __attribute__((noinline)) fn
+#endif
+
+QUAT_NOINLINE(quat_mul_w)(const struct vec3 *q1axis, const struct vec3 *q2axis, float w1, float w2)
+{
+	return (w1 * w2) - vec3_dot(q1axis, q2axis);
+}
+
 void quat_mul(struct quat *dst, const struct quat *q1, const struct quat *q2)
 {
 	struct vec3 q1axis, q2axis;
 	struct vec3 temp1, temp2;
-	float w1, w2;
+	/* The scalars are read before the vector part is stored, because a
+	 * caller may pass dst overlapping q1 or q2 and the store below
+	 * overwrites dst->w. */
+	volatile float w1, w2;
 
 	quat_vec3(&q1axis, q1);
 	quat_vec3(&q2axis, q2);
 
+	vec3_mulf(&temp1, &q2axis, q1->w);
+	vec3_mulf(&temp2, &q1axis, q2->w);
+
 	w1 = q1->w;
 	w2 = q2->w;
 
-	vec3_mulf(&temp1, &q2axis, w1);
-	vec3_mulf(&temp2, &q1axis, w2);
 	vec3_add(&temp1, &temp1, &temp2);
 	vec3_cross(&temp2, &q1axis, &q2axis);
 	vec3_add((struct vec3 *)dst, &temp1, &temp2);
 
-	dst->w = (w1 * w2) - vec3_dot(&q1axis, &q2axis);
+	dst->w = quat_mul_w(&q1axis, &q2axis, w1, w2);
 }
 
 void quat_from_axisang(struct quat *dst, const struct axisang *aa)
