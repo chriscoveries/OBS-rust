@@ -3225,7 +3225,6 @@ obs_data_t *obs_get_private_data(void)
 	return private_data;
 }
 
-extern bool init_gpu_encoding(struct obs_core_video_mix *video);
 extern void stop_gpu_encoding_thread(struct obs_core_video_mix *video);
 extern void free_gpu_encoding(struct obs_core_video_mix *video);
 
@@ -3233,16 +3232,43 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 {
 	struct obs_core_video_mix *video = get_mix_for_video(encoder->media);
 	bool success = true;
+	bool async_texture = (encoder->info.caps & OBS_ENCODER_CAP_ASYNC_TEXTURE) != 0;
+	bool created_textures = false;
 
 	obs_enter_graphics();
 	pthread_mutex_lock(&video->gpu_encoder_mutex);
 
-	if (!video->gpu_encoders.num)
-		success = init_gpu_encoding(video);
-	if (success)
+	if (!video->gpu_encoders.num) {
+		created_textures = true;
+		success = init_gpu_encoding(video, async_texture);
+	} else if (async_texture && !video->gpu_async_texture_pool) {
+		/* The current synchronous pool may swap textures with the shared conversion targets. */
+		success = false;
+	}
+	if (success && async_texture) {
+		struct obs_tex_frame *frame = deque_data(&video->gpu_encoder_avail_queue, 0);
+		if (!frame)
+			frame = deque_data(&video->gpu_encoder_queue, 0);
+		if (!frame) {
+			success = false;
+		} else {
+			struct encoder_texture texture = {0};
+			texture.tex[0] = frame->tex;
+			texture.tex[1] = frame->tex_uv;
+			success = encoder->info.can_encode_texture(encoder->context.data, &texture);
+		}
+	}
+	if (async_texture && !success)
+		obs_encoder_texture_fallback(encoder, "async texture pool setup failed");
+	if (success) {
+		if (async_texture) {
+			video->gpu_async_texture_encoders++;
+			video->gpu_async_texture_pool = true;
+		}
 		da_push_back(video->gpu_encoders, &encoder);
-	else
+	} else if (created_textures) {
 		free_gpu_encoding(video);
+	}
 
 	pthread_mutex_unlock(&video->gpu_encoder_mutex);
 	obs_leave_graphics();
@@ -3265,11 +3291,15 @@ void stop_gpu_encode(obs_encoder_t *encoder)
 
 	pthread_mutex_lock(&video->gpu_encoder_mutex);
 	da_erase_item(video->gpu_encoders, &encoder);
+	if (encoder->info.caps & OBS_ENCODER_CAP_ASYNC_TEXTURE)
+		video->gpu_async_texture_encoders--;
 	if (!video->gpu_encoders.num)
 		call_free = true;
 	pthread_mutex_unlock(&video->gpu_encoder_mutex);
 
 	os_event_wait(video->gpu_encode_inactive);
+	if ((encoder->info.caps & OBS_ENCODER_CAP_ASYNC_TEXTURE) && encoder->info.drain_texture_encode)
+		encoder->info.drain_texture_encode(encoder->context.data);
 
 	if (call_free) {
 		stop_gpu_encoding_thread(video);

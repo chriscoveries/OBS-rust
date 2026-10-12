@@ -1,0 +1,119 @@
+/******************************************************************************
+    Copyright (C) 2026 by Chris Coveries
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+******************************************************************************/
+
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <cmocka.h>
+
+#include "../../libobs/obs-texture-lease.h"
+
+static void duplicate_frame_counts_keep_texture_leased(void **state)
+{
+	(void)state;
+	struct obs_texture_lease_state frame;
+	struct obs_texture_lease_token submissions[3] = {0};
+	obs_texture_lease_init(&frame);
+
+	assert_true(obs_texture_lease_begin_frame(&frame));
+	for (size_t i = 0; i < 3; i++)
+		assert_true(obs_texture_lease_acquire(&frame, &submissions[i]));
+	assert_int_equal(frame.outstanding, 3);
+	assert_int_equal(obs_texture_lease_retire(&frame), OBS_TEXTURE_LEASE_HELD);
+	assert_false(obs_texture_lease_is_drained(&frame));
+
+	assert_int_equal(obs_texture_lease_release(&submissions[0]), OBS_TEXTURE_LEASE_HELD);
+	assert_int_equal(obs_texture_lease_release(&submissions[1]), OBS_TEXTURE_LEASE_HELD);
+	assert_int_equal(obs_texture_lease_release(&submissions[2]), OBS_TEXTURE_LEASE_RECYCLED);
+	assert_true(obs_texture_lease_is_drained(&frame));
+}
+
+static void out_of_order_and_duplicate_release_are_safe(void **state)
+{
+	(void)state;
+	struct obs_texture_lease_state frame;
+	struct obs_texture_lease_token submissions[3] = {0};
+	obs_texture_lease_init(&frame);
+	assert_true(obs_texture_lease_begin_frame(&frame));
+	for (size_t i = 0; i < 3; i++)
+		assert_true(obs_texture_lease_acquire(&frame, &submissions[i]));
+	assert_int_equal(obs_texture_lease_retire(&frame), OBS_TEXTURE_LEASE_HELD);
+
+	assert_int_equal(obs_texture_lease_release(&submissions[2]), OBS_TEXTURE_LEASE_HELD);
+	assert_int_equal(obs_texture_lease_release(&submissions[0]), OBS_TEXTURE_LEASE_HELD);
+	assert_int_equal(obs_texture_lease_release(&submissions[2]), OBS_TEXTURE_LEASE_INVALID);
+	assert_int_equal(frame.outstanding, 1);
+	assert_int_equal(obs_texture_lease_release(&submissions[1]), OBS_TEXTURE_LEASE_RECYCLED);
+	assert_int_equal(obs_texture_lease_release(&submissions[1]), OBS_TEXTURE_LEASE_INVALID);
+	assert_true(obs_texture_lease_is_drained(&frame));
+}
+
+static void exhausted_texture_pool_drops_new_frame(void **state)
+{
+	(void)state;
+	struct obs_texture_lease_state frames[3];
+	struct obs_texture_lease_token holds[3] = {0};
+	for (size_t i = 0; i < 3; i++) {
+		obs_texture_lease_init(&frames[i]);
+		assert_true(obs_texture_lease_begin_frame(&frames[i]));
+		assert_true(obs_texture_lease_acquire(&frames[i], &holds[i]));
+		assert_int_equal(obs_texture_lease_retire(&frames[i]), OBS_TEXTURE_LEASE_HELD);
+	}
+
+	/* Every slot is still retired, so no slot can accept the newest frame. */
+	for (size_t i = 0; i < 3; i++)
+		assert_false(obs_texture_lease_begin_frame(&frames[i]));
+	assert_int_equal(obs_texture_lease_pool_exhaustion(false), OBS_TEXTURE_POOL_DROP_NEWEST);
+	assert_int_equal(obs_texture_lease_pool_exhaustion(true), OBS_TEXTURE_POOL_REPEAT_LAST);
+	for (size_t i = 0; i < 3; i++)
+		assert_int_equal(obs_texture_lease_release(&holds[i]), OBS_TEXTURE_LEASE_RECYCLED);
+	assert_true(obs_texture_lease_begin_frame(&frames[0]));
+}
+
+static void encoder_stop_and_video_shutdown_drain(void **state)
+{
+	(void)state;
+	struct obs_texture_lease_state stopped_encoder;
+	struct obs_texture_lease_state shutdown_frame;
+	struct obs_texture_lease_token encoder_hold = {0};
+	struct obs_texture_lease_token shutdown_hold = {0};
+	obs_texture_lease_init(&stopped_encoder);
+	obs_texture_lease_init(&shutdown_frame);
+
+	/* No pending consumer: stopping immediately makes the slot reusable. */
+	assert_true(obs_texture_lease_begin_frame(&stopped_encoder));
+	assert_int_equal(obs_texture_lease_retire(&stopped_encoder), OBS_TEXTURE_LEASE_RECYCLED);
+	assert_true(obs_texture_lease_is_drained(&stopped_encoder));
+
+	/* Shutdown/stop waits for callback release before freeing the texture slot. */
+	assert_true(obs_texture_lease_begin_frame(&shutdown_frame));
+	assert_true(obs_texture_lease_acquire(&shutdown_frame, &shutdown_hold));
+	assert_int_equal(obs_texture_lease_retire(&shutdown_frame), OBS_TEXTURE_LEASE_HELD);
+	assert_false(obs_texture_lease_is_drained(&shutdown_frame));
+	assert_int_equal(obs_texture_lease_release(&shutdown_hold), OBS_TEXTURE_LEASE_RECYCLED);
+	assert_true(obs_texture_lease_is_drained(&shutdown_frame));
+
+	/* A token cannot outlive a slot reused for a later encoder stop. */
+	assert_true(obs_texture_lease_begin_frame(&stopped_encoder));
+	assert_true(obs_texture_lease_acquire(&stopped_encoder, &encoder_hold));
+	assert_int_equal(obs_texture_lease_retire(&stopped_encoder), OBS_TEXTURE_LEASE_HELD);
+	assert_int_equal(obs_texture_lease_release(&encoder_hold), OBS_TEXTURE_LEASE_RECYCLED);
+	assert_true(obs_texture_lease_is_drained(&stopped_encoder));
+}
+
+int main(void)
+{
+	const struct CMUnitTest tests[] = {
+		cmocka_unit_test(duplicate_frame_counts_keep_texture_leased),
+		cmocka_unit_test(out_of_order_and_duplicate_release_are_safe),
+		cmocka_unit_test(exhausted_texture_pool_drops_new_frame),
+		cmocka_unit_test(encoder_stop_and_video_shutdown_drain),
+	};
+	return cmocka_run_group_tests(tests, NULL, NULL);
+}
