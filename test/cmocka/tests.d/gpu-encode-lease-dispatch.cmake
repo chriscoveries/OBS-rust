@@ -11,6 +11,7 @@ target_include_directories(
 target_link_libraries(test_gpu_encode_lease_dispatch PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
 target_compile_definitions(test_gpu_encode_lease_dispatch PRIVATE OBS_TEST_GPU_ENCODE_THREAD)
 add_dependencies(cmocka-tests test_gpu_encode_lease_dispatch)
+
 if(APPLE)
   get_filename_component(FFmpeg_LIBRARY_DIR "${FFmpeg_avcodec_LIBRARY}" DIRECTORY)
   add_test(
