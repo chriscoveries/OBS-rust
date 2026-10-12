@@ -284,11 +284,8 @@ size_t wchar_to_utf8(const wchar_t *in, size_t insize, char *out, size_t outsize
 	in_len = insize;
 	if (in_len == 0)
 		in_len = wcslen(in);
-	if (in_len == 0) {
-		if (out != NULL)
-			*out = 0;
+	if (in_len == 0)
 		return 0;
-	}
 
 	w = (wchar_t *)in;
 	wlim = w + in_len;
