@@ -11,6 +11,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <IOSurface/IOSurface.h>
 #import <Metal/Metal.h>
+#import <VideoToolbox/VideoToolbox.h>
 
 #include "vt-frame-copy.h"
 
@@ -48,6 +49,98 @@ static void assert_planes_equal(CVPixelBufferRef expected, CVPixelBufferRef actu
             actual_row += actual_stride;
         }
     }
+}
+
+struct encoded_result {
+    CMSampleBufferRef sample_buffer;
+    OSStatus status;
+};
+
+static void vt_output_callback(void *output_refcon, void *source_refcon, OSStatus status, VTEncodeInfoFlags info_flags,
+                               CMSampleBufferRef sample_buffer)
+{
+    (void) source_refcon;
+    (void) info_flags;
+    struct encoded_result *result = output_refcon;
+    if (status != noErr || !sample_buffer) {
+        result->status = status == noErr ? -1 : status;
+        return;
+    }
+    CFRetain(sample_buffer);
+    result->sample_buffer = sample_buffer;
+}
+
+static CMSampleBufferRef encode_single_frame(CVPixelBufferRef pixel_buffer)
+{
+    struct encoded_result result = {0};
+
+    VTCompressionSessionRef session = NULL;
+    assert_int_equal(VTCompressionSessionCreate(kCFAllocatorDefault, WIDTH, HEIGHT, kCMVideoCodecType_H264, NULL, NULL,
+                                                NULL, vt_output_callback, &result, &session),
+                     noErr);
+    assert_non_null(session);
+    assert_int_equal(VTSessionSetProperty(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue), noErr);
+    assert_int_equal(VTSessionSetProperty(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse),
+                     noErr);
+    assert_int_equal(VTCompressionSessionPrepareToEncodeFrames(session), noErr);
+    assert_int_equal(VTCompressionSessionEncodeFrame(session, pixel_buffer, CMTimeMake(0, 30), CMTimeMake(1, 30), NULL,
+                                                     NULL, NULL),
+                     noErr);
+    assert_int_equal(VTCompressionSessionCompleteFrames(session, kCMTimeInvalid), noErr);
+    assert_int_equal(result.status, noErr);
+    assert_non_null(result.sample_buffer);
+
+    VTCompressionSessionInvalidate(session);
+    CFRelease(session);
+    return result.sample_buffer;
+}
+
+struct decoded_result {
+    CVPixelBufferRef pixel_buffer;
+    OSStatus status;
+};
+
+static void vt_decompression_output_callback(void *output_refcon, void *source_refcon, OSStatus status,
+                                             VTDecodeInfoFlags info_flags, CVImageBufferRef image_buffer, CMTime pts,
+                                             CMTime duration)
+{
+    (void) source_refcon;
+    (void) info_flags;
+    (void) pts;
+    (void) duration;
+    struct decoded_result *result = output_refcon;
+    if (status != noErr || !image_buffer) {
+        result->status = status == noErr ? -1 : status;
+        return;
+    }
+    CFRetain(image_buffer);
+    result->pixel_buffer = (CVPixelBufferRef) image_buffer;
+}
+
+static CVPixelBufferRef decode_single_frame(CMSampleBufferRef sample_buffer)
+{
+    struct decoded_result result = {0};
+    VTDecompressionOutputCallbackRecord callback = {
+        .decompressionOutputCallback = vt_decompression_output_callback,
+        .decompressionOutputRefCon = &result,
+    };
+    VTDecompressionSessionRef session = NULL;
+    assert_int_equal(VTDecompressionSessionCreate(kCFAllocatorDefault,
+                                                  CMSampleBufferGetFormatDescription(sample_buffer), NULL, NULL,
+                                                  &callback, &session),
+                     noErr);
+    assert_non_null(session);
+    VTDecodeInfoFlags info_flags = 0;
+    assert_int_equal(VTDecompressionSessionDecodeFrame(
+                         session, sample_buffer, kVTDecodeFrame_EnableAsynchronousDecompression, NULL, &info_flags),
+                     noErr);
+    assert_int_equal(VTDecompressionSessionWaitForAsynchronousFrames(session), noErr);
+    assert_int_equal(result.status, noErr);
+    assert_non_null(result.pixel_buffer);
+
+    VTDecompressionSessionInvalidate(session);
+    CFRelease(session);
+    return result.pixel_buffer;
 }
 
 static void exercise_surface_format(id<MTLDevice> device, OSType pixel_format, MTLPixelFormat luma_format,
@@ -133,6 +226,23 @@ static void exercise_surface_format(id<MTLDevice> device, OSType pixel_format, M
     assert_int_equal(CVPixelBufferUnlockBaseAddress(texture_path_buffer, kCVPixelBufferLock_ReadOnly),
                      kCVReturnSuccess);
     assert_int_equal(CVPixelBufferUnlockBaseAddress(raw_path_buffer, kCVPixelBufferLock_ReadOnly), kCVReturnSuccess);
+    if (pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+        pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
+        CMSampleBufferRef raw_encoded = encode_single_frame(raw_path_buffer);
+        CMSampleBufferRef texture_encoded = encode_single_frame(texture_path_buffer);
+        CVPixelBufferRef raw_decoded = decode_single_frame(raw_encoded);
+        CVPixelBufferRef texture_decoded = decode_single_frame(texture_encoded);
+        assert_int_equal(CVPixelBufferLockBaseAddress(raw_decoded, kCVPixelBufferLock_ReadOnly), kCVReturnSuccess);
+        assert_int_equal(CVPixelBufferLockBaseAddress(texture_decoded, kCVPixelBufferLock_ReadOnly), kCVReturnSuccess);
+        assert_planes_equal(raw_decoded, texture_decoded, WIDTH);
+        assert_int_equal(CVPixelBufferUnlockBaseAddress(texture_decoded, kCVPixelBufferLock_ReadOnly),
+                         kCVReturnSuccess);
+        assert_int_equal(CVPixelBufferUnlockBaseAddress(raw_decoded, kCVPixelBufferLock_ReadOnly), kCVReturnSuccess);
+        CVPixelBufferRelease(raw_decoded);
+        CVPixelBufferRelease(texture_decoded);
+        CFRelease(raw_encoded);
+        CFRelease(texture_encoded);
+    }
 
     CVPixelBufferRelease(raw_path_buffer);
     CVPixelBufferRelease(texture_path_buffer);

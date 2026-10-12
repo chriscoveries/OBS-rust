@@ -13,6 +13,7 @@ if(APPLE)
     test_vt_texture_surface
     PRIVATE
       ${CMOCKA_LIBRARIES}
+      "-framework CoreMedia"
       "-framework CoreVideo"
       "-framework Foundation"
       "-framework IOSurface"
