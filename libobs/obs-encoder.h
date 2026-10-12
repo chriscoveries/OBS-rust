@@ -191,6 +191,8 @@ struct encoder_texture {
 	void *lease_context;
 	void *(*lease_acquire)(void *lease_context);
 	void (*lease_release)(void *lease_token);
+	/** Optional IOSurface backing. Set only for OBS_ENCODER_CAP_ASYNC_TEXTURE encoders. */
+	void *iosurface;
 };
 
 /**
