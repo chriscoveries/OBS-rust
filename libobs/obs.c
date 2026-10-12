@@ -22,6 +22,7 @@
 
 #include "obs.h"
 #include "obs-internal.h"
+#include "obs-gpu-encode-probe.h"
 
 struct obs_core *obs = NULL;
 
@@ -3233,12 +3234,58 @@ obs_data_t *obs_get_private_data(void)
 extern void stop_gpu_encoding_thread(struct obs_core_video_mix *video);
 extern void free_gpu_encoding(struct obs_core_video_mix *video);
 
+struct gpu_encode_probe_context {
+	struct obs_core_video_mix *video;
+	obs_encoder_t *encoder;
+};
+
+static bool gpu_encode_sample_probe(void *data)
+{
+	struct gpu_encode_probe_context *context = data;
+	struct obs_tex_frame *frame = deque_data(&context->video->gpu_encoder_avail_queue, 0);
+	if (!frame)
+		frame = deque_data(&context->video->gpu_encoder_queue, 0);
+	if (!frame)
+		return false;
+
+	struct encoder_texture texture = {0};
+	texture.tex[0] = frame->tex;
+	texture.tex[1] = frame->tex_uv;
+	texture.iosurface = frame->iosurface;
+	return context->encoder->info.can_encode_texture(context->encoder->context.data, &texture);
+}
+
+static void gpu_encode_texture_fallback(void *data)
+{
+	struct gpu_encode_probe_context *context = data;
+	obs_encoder_texture_fallback(context->encoder, "IOSurface or VideoToolbox texture setup failed");
+}
+
+static void gpu_encode_stop_worker(void *data)
+{
+	struct gpu_encode_probe_context *context = data;
+	stop_gpu_encoding_thread(context->video);
+}
+
+static void gpu_encode_free_resources(void *data)
+{
+	struct gpu_encode_probe_context *context = data;
+	free_gpu_encoding(context->video);
+}
+
 bool start_gpu_encode(obs_encoder_t *encoder)
 {
 	struct obs_core_video_mix *video = get_mix_for_video(encoder->media);
 	bool success = true;
 	bool async_texture = (encoder->info.caps & OBS_ENCODER_CAP_ASYNC_TEXTURE) != 0;
 	bool created_textures = false;
+	struct gpu_encode_probe_context probe_context = {.video = video, .encoder = encoder};
+	const struct obs_gpu_encode_probe_ops probe_ops = {
+		.sample_probe = gpu_encode_sample_probe,
+		.fallback = gpu_encode_texture_fallback,
+		.stop_worker = gpu_encode_stop_worker,
+		.free_resources = gpu_encode_free_resources,
+	};
 
 	obs_enter_graphics();
 	pthread_mutex_lock(&video->gpu_encoder_mutex);
@@ -3252,22 +3299,8 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 	} else if (async_texture && !video->gpu_async_texture_encoders) {
 		success = gpu_encoding_set_iosurfaces(video);
 	}
-	if (success && async_texture) {
-		struct obs_tex_frame *frame = deque_data(&video->gpu_encoder_avail_queue, 0);
-		if (!frame)
-			frame = deque_data(&video->gpu_encoder_queue, 0);
-		if (!frame) {
-			success = false;
-		} else {
-			struct encoder_texture texture = {0};
-			texture.tex[0] = frame->tex;
-			texture.tex[1] = frame->tex_uv;
-			texture.iosurface = frame->iosurface;
-			success = encoder->info.can_encode_texture(encoder->context.data, &texture);
-		}
-	}
-	if (async_texture && !success)
-		obs_encoder_texture_fallback(encoder, "IOSurface or VideoToolbox texture setup failed");
+	success =
+		obs_gpu_encode_probe_and_cleanup(success, async_texture, created_textures, &probe_ops, &probe_context);
 	if (success) {
 		if (async_texture) {
 			video->gpu_async_texture_encoders++;
@@ -3276,12 +3309,6 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 			video->gpu_sync_texture_encoders++;
 		}
 		da_push_back(video->gpu_encoders, &encoder);
-	} else if (created_textures) {
-		/* The asynchronous sample probe runs after init_gpu_encoding() has
-		 * started the worker. Stop it before freeing its semaphore, event,
-		 * and textures when the probe rejects the sample. */
-		stop_gpu_encoding_thread(video);
-		free_gpu_encoding(video);
 	}
 
 	pthread_mutex_unlock(&video->gpu_encoder_mutex);
