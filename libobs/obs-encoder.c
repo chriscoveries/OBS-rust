@@ -218,11 +218,39 @@ static inline void get_video_info(struct obs_encoder *encoder, struct video_scal
 
 static inline bool gpu_encode_available(const struct obs_encoder *encoder)
 {
+	bool async_texture = (encoder->info.caps & OBS_ENCODER_CAP_ASYNC_TEXTURE) != 0;
+	if (async_texture && (!encoder->info.encode_texture2 || !encoder->info.drain_texture_encode)) {
+		obs_encoder_texture_fallback((obs_encoder_t *)encoder, "async texture callbacks are incomplete");
+		return false;
+	}
+
 	struct obs_core_video_mix *video = get_mix_for_video(encoder->media);
 	if (!video)
 		return false;
-	return (encoder->info.caps & OBS_ENCODER_CAP_PASS_TEXTURE) != 0 &&
-	       (video->using_p010_tex || video->using_nv12_tex);
+	if (async_texture &&
+	    (!encoder->info.can_encode_texture || !encoder->info.can_encode_texture(encoder->context.data, NULL))) {
+		obs_encoder_texture_fallback((obs_encoder_t *)encoder,
+					     "encoder does not support the current texture route");
+		return false;
+	}
+	if ((encoder->info.caps & OBS_ENCODER_CAP_PASS_TEXTURE) == 0 ||
+	    (!video->using_p010_tex && !video->using_nv12_tex)) {
+		if (async_texture)
+			obs_encoder_texture_fallback((obs_encoder_t *)encoder,
+						     "canvas has no NV12/P010 texture output");
+		return false;
+	}
+	return true;
+}
+
+void obs_encoder_texture_fallback(obs_encoder_t *encoder, const char *reason)
+{
+	if (encoder->gpu_texture_fallback_logged)
+		return;
+
+	blog(LOG_WARNING, "[%s] async texture input unavailable (%s); using raw video input", encoder->context.name,
+	     reason);
+	encoder->gpu_texture_fallback_logged = true;
 }
 
 /**
@@ -377,9 +405,8 @@ static void add_connection(struct obs_encoder *encoder)
 		struct video_scale_info info = {0};
 		get_video_info(encoder, &info);
 
-		if (gpu_encode_available(encoder)) {
-			start_gpu_encode(encoder);
-		} else {
+		encoder->gpu_encode_active = gpu_encode_available(encoder) && start_gpu_encode(encoder);
+		if (!encoder->gpu_encode_active) {
 			start_raw_video(encoder->media, &info, encoder->frame_rate_divisor, receive_video, encoder);
 		}
 	}
@@ -415,8 +442,9 @@ static void remove_connection(struct obs_encoder *encoder, bool shutdown)
 	if (encoder->info.type == OBS_ENCODER_AUDIO) {
 		audio_output_disconnect(encoder->media, encoder->mixer_idx, receive_audio, encoder);
 	} else {
-		if (gpu_encode_available(encoder)) {
+		if (encoder->gpu_encode_active) {
 			stop_gpu_encode(encoder);
+			encoder->gpu_encode_active = false;
 		} else {
 			stop_raw_video(encoder->media, receive_video, encoder);
 		}

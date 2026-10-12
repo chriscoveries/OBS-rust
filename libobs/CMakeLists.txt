@@ -78,6 +78,8 @@ target_sources(
     obs-source.c
     obs-source.h
     obs-video-gpu-encode.c
+    obs-texture-lease.c
+    obs-texture-lease.h
     obs-video.c
     obs-view.c
     obs.c

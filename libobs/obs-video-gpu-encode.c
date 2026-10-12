@@ -19,6 +19,45 @@
 
 void handle_encoder_group_reconfigure_request(obs_encoder_t *encoder);
 
+struct obs_tex_frame_lease_token {
+	struct obs_tex_frame_lease_state *owner;
+	struct obs_texture_lease_token lease;
+};
+
+static void *encoder_texture_lease_acquire(void *opaque)
+{
+	struct obs_tex_frame_lease_state *state = opaque;
+	struct obs_core_video_mix *video = state->video;
+	struct obs_tex_frame_lease_token *token = bzalloc(sizeof(*token));
+	if (!token)
+		return NULL;
+
+	pthread_mutex_lock(&video->gpu_encoder_mutex);
+	bool acquired = obs_texture_lease_acquire(&state->lease, &token->lease);
+	pthread_mutex_unlock(&video->gpu_encoder_mutex);
+	if (!acquired) {
+		bfree(token);
+		return NULL;
+	}
+
+	token->owner = state;
+	return token;
+}
+
+static void encoder_texture_lease_release(void *opaque)
+{
+	struct obs_tex_frame_lease_token *token = opaque;
+	struct obs_tex_frame_lease_state *state = token->owner;
+	struct obs_core_video_mix *video = state->video;
+
+	pthread_mutex_lock(&video->gpu_encoder_mutex);
+	enum obs_texture_lease_result result = obs_texture_lease_release(&token->lease);
+	if (result == OBS_TEXTURE_LEASE_RECYCLED)
+		deque_push_back(&video->gpu_encoder_avail_queue, &state->retired_frame, sizeof(state->retired_frame));
+	pthread_mutex_unlock(&video->gpu_encoder_mutex);
+	bfree(token);
+}
+
 #define NBSP "\xC2\xA0"
 static const char *gpu_encode_frame_name = "gpu_encode_frame";
 static void *gpu_encode_thread(void *data)
@@ -159,6 +198,12 @@ static void *gpu_encode_thread(void *data)
 				tex.tex[0] = tf.tex;
 				tex.tex[1] = tf.tex_uv;
 				tex.tex[2] = NULL;
+				if (encoder->info.caps & OBS_ENCODER_CAP_ASYNC_TEXTURE) {
+					tex.iosurface = tf.iosurface;
+					tex.lease_context = tf.lease_state;
+					tex.lease_acquire = encoder_texture_lease_acquire;
+					tex.lease_release = encoder_texture_lease_release;
+				}
 				success = encoder->info.encode_texture2(encoder->context.data, &tex, encoder->cur_pts,
 									lock_key, &next_key, &pkt, &received);
 			} else {
@@ -205,6 +250,9 @@ static void *gpu_encode_thread(void *data)
 			deque_push_front(&video->gpu_encoder_queue, &tf, sizeof(tf));
 
 			video_output_inc_texture_skipped_frames(video->video);
+		} else if (video->gpu_async_texture_pool &&
+			   obs_texture_lease_retire(&tf.lease_state->lease) == OBS_TEXTURE_LEASE_HELD) {
+			tf.lease_state->retired_frame = tf;
 		} else {
 			deque_push_back(&video->gpu_encoder_avail_queue, &tf, sizeof(tf));
 		}
@@ -228,7 +276,7 @@ static void *gpu_encode_thread(void *data)
 	return NULL;
 }
 
-bool init_gpu_encoding(struct obs_core_video_mix *video)
+bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 {
 	const struct video_output_info *info = video_output_get_info(video->video);
 
@@ -236,17 +284,22 @@ bool init_gpu_encoding(struct obs_core_video_mix *video)
 
 	deque_reserve(&video->gpu_encoder_avail_queue, NUM_ENCODE_TEXTURES);
 	for (size_t i = 0; i < NUM_ENCODE_TEXTURES; i++) {
-		gs_texture_t *tex;
-		gs_texture_t *tex_uv;
+		gs_texture_t *tex = NULL;
+		gs_texture_t *tex_uv = NULL;
+		uint32_t flags = GS_RENDER_TARGET | GS_SHARED_KM_TEX;
+		if (info->range == VIDEO_RANGE_FULL && gs_get_device_type() == GS_DEVICE_METAL)
+			flags |= GS_FULL_RANGE_TEX;
 
 		if (info->format == VIDEO_FORMAT_P010) {
-			gs_texture_create_p010(&tex, &tex_uv, info->width, info->height,
-					       GS_RENDER_TARGET | GS_SHARED_KM_TEX);
+			gs_texture_create_p010(&tex, &tex_uv, info->width, info->height, flags);
 		} else {
-			gs_texture_create_nv12(&tex, &tex_uv, info->width, info->height,
-					       GS_RENDER_TARGET | GS_SHARED_KM_TEX);
+			gs_texture_create_nv12(&tex, &tex_uv, info->width, info->height, flags);
 		}
-		if (!tex) {
+		if (!tex || !tex_uv) {
+			if (tex)
+				gs_texture_destroy(tex);
+			if (tex_uv)
+				gs_texture_destroy(tex_uv);
 			return false;
 		}
 
@@ -257,6 +310,23 @@ bool init_gpu_encoding(struct obs_core_video_mix *video)
 #endif
 
 		struct obs_tex_frame frame = {.tex = tex, .tex_uv = tex_uv, .handle = handle};
+		if (async_texture) {
+			frame.lease_state = bzalloc(sizeof(*frame.lease_state));
+			if (!frame.lease_state) {
+				gs_texture_destroy(tex);
+				gs_texture_destroy(tex_uv);
+				return false;
+			}
+			frame.lease_state->video = video;
+			obs_texture_lease_init(&frame.lease_state->lease);
+			frame.iosurface = gs_texture_get_iosurface(tex);
+			if (!frame.iosurface) {
+				bfree(frame.lease_state);
+				gs_texture_destroy(tex);
+				gs_texture_destroy(tex_uv);
+				return false;
+			}
+		}
 
 		deque_push_back(&video->gpu_encoder_avail_queue, &frame, sizeof(frame));
 	}
@@ -274,6 +344,23 @@ bool init_gpu_encoding(struct obs_core_video_mix *video)
 	return true;
 }
 
+bool gpu_encoding_set_iosurfaces(struct obs_core_video_mix *video)
+{
+	struct deque *queues[] = {&video->gpu_encoder_avail_queue, &video->gpu_encoder_queue};
+	for (size_t queue_idx = 0; queue_idx < sizeof(queues) / sizeof(queues[0]); queue_idx++) {
+		struct deque *queue = queues[queue_idx];
+		for (size_t offset = 0; offset < queue->size; offset += sizeof(struct obs_tex_frame)) {
+			struct obs_tex_frame *frame = deque_data(queue, offset);
+			if (!frame)
+				return false;
+			frame->iosurface = gs_texture_get_iosurface(frame->tex);
+			if (!frame->iosurface)
+				return false;
+		}
+	}
+	return true;
+}
+
 void stop_gpu_encoding_thread(struct obs_core_video_mix *video)
 {
 	if (video->gpu_encode_thread_initialized) {
@@ -286,6 +373,9 @@ void stop_gpu_encoding_thread(struct obs_core_video_mix *video)
 
 void free_gpu_encoding(struct obs_core_video_mix *video)
 {
+	video->gpu_async_texture_pool = false;
+	video->gpu_async_texture_encoders = 0;
+
 	if (video->gpu_encode_semaphore) {
 		os_sem_destroy(video->gpu_encode_semaphore);
 		video->gpu_encode_semaphore = NULL;
@@ -302,6 +392,7 @@ void free_gpu_encoding(struct obs_core_video_mix *video)
 			deque_pop_front(&x, &frame, sizeof(frame)); \
 			gs_texture_destroy(frame.tex);              \
 			gs_texture_destroy(frame.tex_uv);           \
+			bfree(frame.lease_state);                    \
 		}                                                   \
 		deque_free(&x);                                     \
 	} while (false)

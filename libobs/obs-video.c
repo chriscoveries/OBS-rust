@@ -441,6 +441,10 @@ static inline void stage_output_texture(struct obs_core_video_mix *video, int cu
 
 static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active, struct obs_vframe_info *vframe_info)
 {
+	if (!video->gpu_encoder_avail_queue.size &&
+	    obs_texture_lease_pool_exhaustion(video->gpu_encoder_queue.size != 0) == OBS_TEXTURE_POOL_DROP_NEWEST)
+		return false;
+
 	bool duplicate = !video->gpu_encoder_avail_queue.size ||
 			 (video->gpu_encoder_queue.size && vframe_info->count > 1);
 
@@ -460,6 +464,11 @@ static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active
 
 	struct obs_tex_frame tf;
 	deque_pop_front(&video->gpu_encoder_avail_queue, &tf, sizeof(tf));
+	if (video->gpu_async_texture_pool && !obs_texture_lease_begin_frame(&tf.lease_state->lease)) {
+		deque_push_front(&video->gpu_encoder_avail_queue, &tf, sizeof(tf));
+		blog(LOG_ERROR, "GPU encoder texture pool returned a leased texture");
+		return false;
+	}
 
 	if (tf.released) {
 #ifdef _WIN32
@@ -472,7 +481,7 @@ static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active
 	 * some chance the very first frame has to be duplicated for whatever
 	 * reason.  otherwise, it goes to the 'duplicate' case above, which
 	 * will ensure better performance. */
-	if (raw_active || vframe_info->count > 1) {
+	if (raw_active || vframe_info->count > 1 || video->gpu_async_texture_pool) {
 		gs_copy_texture(tf.tex, video->convert_textures_encode[0]);
 #ifndef _WIN32
 		/* Y and UV textures are views of the same texture on D3D, and
@@ -491,6 +500,8 @@ static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active
 		tf.tex = tex;
 		tf.tex_uv = tex_uv;
 	}
+	if (video->gpu_async_texture_encoders)
+		tf.iosurface = gs_texture_get_iosurface(tf.tex);
 
 	tf.count = 1;
 	tf.timestamp = vframe_info->timestamp;
@@ -500,6 +511,10 @@ static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active
 	gs_texture_release_sync(tf.tex, ++tf.lock_key);
 #endif
 	deque_push_back(&video->gpu_encoder_queue, &tf, sizeof(tf));
+	if (video->gpu_async_texture_encoders) {
+		/* Commit render writes before queuing a completion fence on the same Metal queue. */
+		gs_flush();
+	}
 
 	os_sem_post(video->gpu_encode_semaphore);
 

@@ -40,6 +40,7 @@ target_sources(
     metal-texture3d.swift
     metal-unimplemented.swift
     metal-vertexbuffer.swift
+    metal-video-texture.swift
     metal-zstencilbuffer.swift
 )
 
