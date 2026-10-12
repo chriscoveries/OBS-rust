@@ -100,6 +100,28 @@ fn main() {
         .collect();
     sources.sort();
     oracle.files(sources);
+    // Keep the oracle's POSIX threading helpers private. The Rust obs-util
+    // crate exports the real libobs os_event/os_sem/os_set_thread_name symbols;
+    // the C oracle must call its renamed copy so both implementations can link
+    // into the same test executable.
+    if unix {
+        for (from, to) in [
+            ("os_event_init", "oracle_os_event_init"),
+            ("os_event_destroy", "oracle_os_event_destroy"),
+            ("os_event_wait", "oracle_os_event_wait"),
+            ("os_event_timedwait", "oracle_os_event_timedwait"),
+            ("os_event_try", "oracle_os_event_try"),
+            ("os_event_signal", "oracle_os_event_signal"),
+            ("os_event_reset", "oracle_os_event_reset"),
+            ("os_sem_init", "oracle_os_sem_init"),
+            ("os_sem_destroy", "oracle_os_sem_destroy"),
+            ("os_sem_post", "oracle_os_sem_post"),
+            ("os_sem_wait", "oracle_os_sem_wait"),
+            ("os_set_thread_name", "oracle_os_set_thread_name"),
+        ] {
+            oracle.define(from, Some(to));
+        }
+    }
     // base.c's variadic entry points stay C in libobs; the oracle needs them too.
     oracle.file(libobs.join("util/base-variadic.c"));
     oracle
@@ -112,11 +134,11 @@ fn main() {
         // same release (2.3.0, BSD-1-Clause, see vendor/uthash/LICENSE).
         .include(manifest.join("vendor/uthash"))
         .std("c11");
-    // task.c calls pthread_mutex_*/pthread_create plus the os_event/os_sem
-    // helpers from threading-*.c. On Unix both come from the real sources
-    // and the system pthread. MSVC has no pthread: libobs builds against
-    // deps/w32-pthreads, so the oracle compiles its single-file build and
-    // the real threading-windows.c instead.
+    // task.c calls pthread_mutex_*/pthread_create plus os_event/os_sem helpers.
+    // Unix gets the helpers from oracle/threading_posix.c, where the real C
+    // source is included under private names. MSVC has no pthread: libobs builds
+    // against deps/w32-pthreads, so the oracle compiles its single-file build
+    // and the real threading-windows.c instead.
     if oracle.get_compiler().is_like_msvc() {
         let deps = libobs.with_file_name("deps");
         oracle
@@ -125,8 +147,6 @@ fn main() {
             .file(deps.join("w32-pthreads/pthread.c"))
             .file(libobs.join("util/threading-windows.c"));
         flags.push("-DPTW32_STATIC_LIB");
-    } else {
-        oracle.file(libobs.join("util/threading-posix.c"));
     }
     // Every directory the oracle can read C/headers from. libobs is the
     // important one: wrappers include its sources directly, so a libobs-only
