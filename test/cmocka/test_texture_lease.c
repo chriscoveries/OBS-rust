@@ -34,7 +34,7 @@ static void duplicate_frame_counts_keep_texture_leased(void **state)
 	assert_true(obs_texture_lease_is_drained(&frame));
 }
 
-static void out_of_order_and_duplicate_release_are_safe(void **state)
+static void out_of_order_release_waits_for_last_consumer(void **state)
 {
 	(void)state;
 	struct obs_texture_lease_state frame;
@@ -47,10 +47,8 @@ static void out_of_order_and_duplicate_release_are_safe(void **state)
 
 	assert_int_equal(obs_texture_lease_release(&submissions[2]), OBS_TEXTURE_LEASE_HELD);
 	assert_int_equal(obs_texture_lease_release(&submissions[0]), OBS_TEXTURE_LEASE_HELD);
-	assert_int_equal(obs_texture_lease_release(&submissions[2]), OBS_TEXTURE_LEASE_INVALID);
 	assert_int_equal(frame.outstanding, 1);
 	assert_int_equal(obs_texture_lease_release(&submissions[1]), OBS_TEXTURE_LEASE_RECYCLED);
-	assert_int_equal(obs_texture_lease_release(&submissions[1]), OBS_TEXTURE_LEASE_INVALID);
 	assert_true(obs_texture_lease_is_drained(&frame));
 }
 
@@ -111,7 +109,7 @@ int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(duplicate_frame_counts_keep_texture_leased),
-		cmocka_unit_test(out_of_order_and_duplicate_release_are_safe),
+		cmocka_unit_test(out_of_order_release_waits_for_last_consumer),
 		cmocka_unit_test(exhausted_texture_pool_drops_new_frame),
 		cmocka_unit_test(encoder_stop_and_video_shutdown_drain),
 	};

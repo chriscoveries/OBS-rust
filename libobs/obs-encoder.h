@@ -185,7 +185,9 @@ struct encoder_texture {
 	uint32_t handle;
 	/** Textures, length determined by format */
 	struct gs_texture *tex[4];
-	/** Optional asynchronous lifetime hooks. Acquire once per submission; release its token on completion. */
+	/** Optional asynchronous lifetime hooks. Acquire a token for each submission
+	 * that may outlive the callback. Release every non-NULL token exactly once,
+	 * including when submission fails. The token is invalid after release. */
 	void *lease_context;
 	void *(*lease_acquire)(void *lease_context);
 	void (*lease_release)(void *lease_token);
