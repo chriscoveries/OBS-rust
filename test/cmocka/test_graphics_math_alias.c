@@ -481,47 +481,55 @@ static void test_gs_u8x4_to_float4_same_base(void **state)
  * vec3_rotate references are computed in this translation unit from the same
  * helpers, which keeps them honest under any contraction mode. */
 
-/* Bits, not values: the point of these tests is that a compiler change which
- * reassociates the libm calls or the dot reductions fails them. */
-static void set_v3_bits(struct vec3 *v, uint32_t x, uint32_t y, uint32_t z)
+/* The expected bits are computed here, from the same libm in this binary, so
+ * a platform whose sine or cosine differs in the last bit compares against its
+ * own values. The helpers are no-inlined for the same reason the library keeps
+ * its own calls apart: two calls in one body can be folded into a single
+ * sincosf, whose results are rounded differently. */
+#if defined(_MSC_VER)
+#define REF_NOINLINE(fn) static float fn
+#else
+#define REF_NOINLINE(fn) static float __attribute__((noinline)) fn
+#endif
+
+REF_NOINLINE(ref_sinf)(float x)
 {
-	memcpy(&v->x, &x, sizeof(x));
-	memcpy(&v->y, &y, sizeof(y));
-	memcpy(&v->z, &z, sizeof(z));
-	v->w = 0.0f;
+	return sinf(x);
 }
 
-static void assert_v3_bits(const struct vec3 *got, uint32_t x, uint32_t y, uint32_t z)
+REF_NOINLINE(ref_cosf)(float x)
 {
-	struct vec3 want;
-
-	set_v3_bits(&want, x, y, z);
-	/* x, y and z only: polar_to_norm leaves dst->w alone. */
-	assert_memory_equal(got, &want, 3 * sizeof(float));
+	return cosf(x);
 }
 
-/* Ordinary polar angles, including the two reproducers from the alias audit
- * where a compiler that folds the sine and cosine of one angle into a single
- * sincosf call rounds the last bit differently. The pinned bits are the same
- * under -ffp-contract off, on and fast. */
+static void check_polar(const struct vec2 *polar)
+{
+	struct vec3 want, got;
+
+	polar_to_norm(&got, polar);
+
+	want.x = ref_sinf(polar->x) * ref_cosf(polar->y);
+	want.y = ref_sinf(polar->x) * ref_sinf(polar->y);
+	want.z = ref_cosf(polar->x);
+	want.w = got.w;
+	assert_memory_equal(&got, &want, 3 * sizeof(float));
+}
+
 static void test_polar_to_norm_bits(void **state)
 {
 	UNUSED_PARAMETER(state);
 
 	struct vec2 polar;
-	struct vec3 out;
 
+	/* The two reproducers from the alias audit, plus an ordinary angle. */
 	set_v2(&polar, 1.2564429f, 1.797629f);
-	polar_to_norm(&out, &polar);
-	assert_v3_bits(&out, 0xbe5b0140u, 0x3f6d37fau, 0x3e9e4faeu);
+	check_polar(&polar);
 
 	set_v2(&polar, 121.082436f, 120.680222f);
-	polar_to_norm(&out, &polar);
-	assert_v3_bits(&out, 0x3e87ee1fu, 0x3f748882u, 0xbe05e183u);
+	check_polar(&polar);
 
 	set_v2(&polar, 0.7f, -1.3f);
-	polar_to_norm(&out, &polar);
-	assert_v3_bits(&out, 0x3e30769fu, 0xbf1ee8e5u, 0x3f43ccb3u);
+	check_polar(&polar);
 }
 
 /* quat_mul: the Hamilton product through the same vector helpers libobs uses,
