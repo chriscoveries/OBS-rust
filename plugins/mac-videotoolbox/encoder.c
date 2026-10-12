@@ -101,6 +101,11 @@ struct vt_encoder {
 	OSStatus (*create_session_for_test)(struct vt_encoder *enc);
 	OSStatus (*set_bitrate_for_test)(VTCompressionSessionRef session, uint32_t bitrate);
 	void (*update_params_for_test)(struct vt_encoder *enc, obs_data_t *settings);
+	bool (*wait_for_completion_for_test)(gs_texture_t *texture);
+	CVReturn (*create_pixbuf_with_surface_for_test)(IOSurfaceRef surface, CVPixelBufferRef *pixbuf);
+	bool (*get_cached_pixel_buffer_for_test)(struct vt_encoder *enc, CVPixelBufferRef *pixbuf);
+	OSStatus (*encode_frame_for_test)(struct vt_encoder *enc, CVPixelBufferRef pixbuf, CMTime pts, CMTime duration,
+					  void *source_refcon);
 #endif
 };
 
@@ -1485,6 +1490,45 @@ fail:
 	return false;
 }
 
+static bool vt_get_cached_pixel_buffer(struct vt_encoder *enc, CVPixelBufferRef *pixbuf)
+{
+#ifdef OBS_VT_ENCODER_TEST
+	if (enc->get_cached_pixel_buffer_for_test)
+		return enc->get_cached_pixel_buffer_for_test(enc, pixbuf);
+#endif
+	return get_cached_pixel_buffer(enc, pixbuf);
+}
+
+static OSStatus vt_submit_raw_pixel_buffer(struct vt_encoder *enc, CVPixelBufferRef pixbuf, CMTime pts, CMTime duration)
+{
+	struct vt_frame_source_ref *source_ref = bzalloc(sizeof(*source_ref));
+	if (!source_ref) {
+		CFRelease(pixbuf);
+		return kVTVideoEncoderMalfunctionErr;
+	}
+	source_ref->encoder = enc;
+	source_ref->pixel_buffer = pixbuf;
+	source_ref->type = VT_FRAME_SOURCE_RAW;
+	source_ref->references = 1;
+	vt_track_frame_source(enc, source_ref);
+
+	OSStatus code;
+#ifdef OBS_VT_ENCODER_TEST
+	if (enc->encode_frame_for_test)
+		code = enc->encode_frame_for_test(enc, pixbuf, pts, duration, source_ref);
+	else
+#endif
+		code = VTCompressionSessionEncodeFrame(enc->session, pixbuf, pts, duration, NULL, source_ref, NULL);
+	if (code != noErr) {
+		struct vt_frame_source_ref *failed_ref = NULL;
+		if (vt_take_frame_source(enc, source_ref, &failed_ref)) {
+			vt_release_texture_source_resources(failed_ref);
+			vt_finish_texture_source(failed_ref);
+		}
+	}
+	return code;
+}
+
 static bool vt_encode(void *data, struct encoder_frame *frame, struct encoder_packet *packet, bool *received_packet)
 {
 	struct vt_encoder *enc = data;
@@ -1529,24 +1573,10 @@ static bool vt_encode(void *data, struct encoder_frame *frame, struct encoder_pa
 		goto fail;
 	}
 
-	struct vt_frame_source_ref *source_ref = bzalloc(sizeof(*source_ref));
-	if (!source_ref)
-		goto fail;
-	source_ref->encoder = enc;
-	source_ref->pixel_buffer = pixbuf;
-	source_ref->type = VT_FRAME_SOURCE_RAW;
-	source_ref->references = 1;
-	vt_track_frame_source(enc, source_ref);
-
-	code = VTCompressionSessionEncodeFrame(enc->session, pixbuf, pts, dur, NULL, source_ref, NULL);
-	if (code != noErr) {
-		struct vt_frame_source_ref *failed_ref = NULL;
-		if (vt_take_frame_source(enc, source_ref, &failed_ref)) {
-			vt_release_texture_source_resources(failed_ref);
-			vt_finish_texture_source(failed_ref);
-		}
+	code = vt_submit_raw_pixel_buffer(enc, pixbuf, pts, dur);
+	pixbuf = NULL;
+	if (code != noErr)
 		return false;
-	}
 
 	CMSampleBufferRef buffer = (CMSampleBufferRef)CMSimpleQueueDequeue(enc->queue);
 
@@ -1642,7 +1672,7 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 	}
 
 	CVPixelBufferRef pixbuf = NULL;
-	if (!get_cached_pixel_buffer(enc, &pixbuf)) {
+	if (!vt_get_cached_pixel_buffer(enc, &pixbuf)) {
 		VT_LOG(LOG_ERROR, "Raw VideoToolbox fallback failed: unable to create destination pixel buffer");
 		return false;
 	}
@@ -1733,10 +1763,9 @@ static bool vt_encode_texture_raw_fallback(struct vt_encoder *enc, CVPixelBuffer
 	CMTime dur = CMTimeMake(enc->fps_den, enc->fps_num);
 	CMTime off = CMTimeMultiply(dur, 2);
 	CMTime frame_pts = CMTimeMake(pts, enc->fps_num);
-	code = VTCompressionSessionEncodeFrame(enc->session, pixbuf, frame_pts, dur, NULL, pixbuf, NULL);
+	code = vt_submit_raw_pixel_buffer(enc, pixbuf, frame_pts, dur);
 	if (code != noErr) {
 		log_osstatus(LOG_ERROR, enc, "submitting raw fallback pixel buffer", code);
-		CFRelease(pixbuf);
 		return false;
 	}
 
@@ -1783,6 +1812,32 @@ static bool vt_can_encode_texture(void *data, const struct encoder_texture *text
 	return matches;
 }
 
+static bool vt_wait_for_texture_completion(struct vt_encoder *enc, gs_texture_t *texture)
+{
+#ifdef OBS_VT_ENCODER_TEST
+	if (enc->wait_for_completion_for_test)
+		return enc->wait_for_completion_for_test(texture);
+#else
+	UNUSED_PARAMETER(enc);
+#endif
+	obs_enter_graphics();
+	bool completed = gs_texture_wait_for_completion(texture);
+	obs_leave_graphics();
+	return completed;
+}
+
+static CVReturn vt_create_pixel_buffer_with_surface(struct vt_encoder *enc, IOSurfaceRef surface,
+						    CVPixelBufferRef *pixbuf)
+{
+#ifdef OBS_VT_ENCODER_TEST
+	if (enc->create_pixbuf_with_surface_for_test)
+		return enc->create_pixbuf_with_surface_for_test(surface, pixbuf);
+#else
+	UNUSED_PARAMETER(enc);
+#endif
+	return CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, NULL, pixbuf);
+}
+
 static bool vt_encode_texture(void *data, struct encoder_texture *texture, int64_t pts, uint64_t lock_key,
 			      uint64_t *next_key, struct encoder_packet *packet, bool *received_packet)
 {
@@ -1796,17 +1851,14 @@ static bool vt_encode_texture(void *data, struct encoder_texture *texture, int64
 	if (!vt_ensure_session(enc))
 		return false;
 
-	obs_enter_graphics();
-	bool completed = gs_texture_wait_for_completion(texture->tex[0]);
-	obs_leave_graphics();
+	bool completed = vt_wait_for_texture_completion(enc, texture->tex[0]);
 	if (!completed) {
 		VT_BLOG(LOG_ERROR, "Metal render-to-VideoToolbox synchronization failed");
 		return false;
 	}
 
 	CVPixelBufferRef pixbuf = NULL;
-	OSStatus code =
-		CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, (IOSurfaceRef)texture->iosurface, NULL, &pixbuf);
+	CVReturn code = vt_create_pixel_buffer_with_surface(enc, (IOSurfaceRef)texture->iosurface, &pixbuf);
 	if (code != kCVReturnSuccess || !pixbuf) {
 		if (pixbuf)
 			CFRelease(pixbuf);

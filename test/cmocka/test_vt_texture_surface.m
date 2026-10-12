@@ -1,4 +1,5 @@
-/* Windowless parity check for the VideoToolbox IOSurface input bridge. */
+/* Windowless plane-copy parity check for the VideoToolbox IOSurface bridge.
+ * Production fallback dispatch is exercised by test_vt_texture_raw_fallback. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -219,7 +220,8 @@ static void exercise_surface_format(id<MTLDevice> device, OSType pixel_format, M
     assert_int_equal(raw_path_bytes_copied, active_row_bytes * HEIGHT * 3 / 2);
     assert_int_equal(CVPixelBufferUnlockBaseAddress(raw_path_buffer, 0), kCVReturnSuccess);
 
-    /* Exercise the runtime fallback: copy the completed IOSurface planes into a pool-style pixel buffer. */
+    /* Characterize plane-copy output when an IOSurface-backed pixel buffer is
+     * copied into a pool-style destination buffer. */
     CVPixelBufferRef fallback_path_buffer = NULL;
     assert_int_equal(CVPixelBufferCreate(kCFAllocatorDefault, WIDTH, HEIGHT, pixel_format, NULL, &fallback_path_buffer),
                      kCVReturnSuccess);
@@ -246,7 +248,7 @@ static void exercise_surface_format(id<MTLDevice> device, OSType pixel_format, M
     assert_int_equal(CVPixelBufferUnlockBaseAddress(texture_path_buffer, kCVPixelBufferLock_ReadOnly),
                      kCVReturnSuccess);
 
-    /* Exercise fallback when CoreVideo cannot wrap the completed IOSurface. */
+    /* Characterize the same plane copy from IOSurface base addresses. */
     CVPixelBufferRef surface_fallback_buffer = NULL;
     assert_int_equal(CVPixelBufferCreate(kCFAllocatorDefault, WIDTH, HEIGHT, pixel_format, NULL,
                                          &surface_fallback_buffer),
