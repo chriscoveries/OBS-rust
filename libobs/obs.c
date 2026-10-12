@@ -3267,6 +3267,10 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 		}
 		da_push_back(video->gpu_encoders, &encoder);
 	} else if (created_textures) {
+		/* The asynchronous sample probe runs after init_gpu_encoding() has
+		 * started the worker. Stop it before freeing its semaphore, event,
+		 * and textures when the probe rejects the sample. */
+		stop_gpu_encoding_thread(video);
 		free_gpu_encoding(video);
 	}
 
