@@ -441,12 +441,25 @@ static inline void stage_output_texture(struct obs_core_video_mix *video, int cu
 
 static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active, struct obs_vframe_info *vframe_info)
 {
-	if (!video->gpu_encoder_avail_queue.size &&
+	bool sync_only = false;
+	struct obs_tex_frame tf;
+	if (video->gpu_async_texture_pool && video->gpu_async_texture_encoders && video->gpu_sync_texture_encoders &&
+	    !video->gpu_encoder_avail_queue.size && video->gpu_encoder_sync_frame_available) {
+		/* Async encoders retain all regular slots. Keep the current frame
+		 * available to sync encoders through the reserved, unleased slot. */
+		tf = video->gpu_encoder_sync_frame;
+		video->gpu_encoder_sync_frame = (struct obs_tex_frame){0};
+		video->gpu_encoder_sync_frame_available = false;
+		sync_only = true;
+		video_output_inc_texture_skipped_frames(video->video);
+	}
+
+	if (!video->gpu_encoder_avail_queue.size && !sync_only &&
 	    obs_texture_lease_pool_exhaustion(video->gpu_encoder_queue.size != 0) == OBS_TEXTURE_POOL_DROP_NEWEST)
 		return false;
 
-	bool duplicate = !video->gpu_encoder_avail_queue.size ||
-			 (video->gpu_encoder_queue.size && vframe_info->count > 1);
+	bool duplicate = !sync_only && (!video->gpu_encoder_avail_queue.size ||
+					(video->gpu_encoder_queue.size && vframe_info->count > 1));
 
 	if (duplicate) {
 		struct obs_tex_frame *tf =
@@ -462,9 +475,9 @@ static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active
 		goto finish;
 	}
 
-	struct obs_tex_frame tf;
-	deque_pop_front(&video->gpu_encoder_avail_queue, &tf, sizeof(tf));
-	if (video->gpu_async_texture_pool && !obs_texture_lease_begin_frame(&tf.lease_state->lease)) {
+	if (!sync_only)
+		deque_pop_front(&video->gpu_encoder_avail_queue, &tf, sizeof(tf));
+	if (video->gpu_async_texture_pool && !sync_only && !obs_texture_lease_begin_frame(&tf.lease_state->lease)) {
 		deque_push_front(&video->gpu_encoder_avail_queue, &tf, sizeof(tf));
 		blog(LOG_ERROR, "GPU encoder texture pool returned a leased texture");
 		return false;

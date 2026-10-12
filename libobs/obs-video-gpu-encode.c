@@ -131,6 +131,8 @@ GPU_ENCODE_THREAD_LINKAGE void *GPU_ENCODE_THREAD_NAME(void *data)
 			obs_encoder_t *encoder = encoders.array[i];
 			obs_weak_encoder_t **paired = encoder->paired_encoders.array;
 			size_t num_paired = encoder->paired_encoders.num;
+			if (tf.sync_only && (encoder->info.caps & OBS_ENCODER_CAP_ASYNC_TEXTURE))
+				continue;
 
 			pkt.timebase_num = encoder->timebase_num * encoder->frame_rate_divisor;
 			pkt.timebase_den = encoder->timebase_den;
@@ -259,6 +261,9 @@ GPU_ENCODE_THREAD_LINKAGE void *GPU_ENCODE_THREAD_NAME(void *data)
 			deque_push_front(&video->gpu_encoder_queue, &tf, sizeof(tf));
 
 			video_output_inc_texture_skipped_frames(video->video);
+		} else if (tf.sync_only) {
+			video->gpu_encoder_sync_frame = tf;
+			video->gpu_encoder_sync_frame_available = true;
 		} else if (video->gpu_async_texture_pool &&
 			   obs_texture_lease_retire(&tf.lease_state->lease) == OBS_TEXTURE_LEASE_HELD) {
 			tf.lease_state->retired_frame = tf;
@@ -290,9 +295,11 @@ bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 	const struct video_output_info *info = video_output_get_info(video->video);
 
 	video->gpu_encode_stop = false;
+	video->gpu_encoder_sync_frame_available = false;
 
 	deque_reserve(&video->gpu_encoder_avail_queue, NUM_ENCODE_TEXTURES);
-	for (size_t i = 0; i < NUM_ENCODE_TEXTURES; i++) {
+	for (size_t i = 0; i < NUM_ENCODE_TEXTURES + (async_texture ? 1 : 0); i++) {
+		bool sync_only = async_texture && i == NUM_ENCODE_TEXTURES;
 		gs_texture_t *tex = NULL;
 		gs_texture_t *tex_uv = NULL;
 		if (info->format == VIDEO_FORMAT_P010) {
@@ -316,8 +323,8 @@ bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 		uint32_t handle = (uint32_t)-1;
 #endif
 
-		struct obs_tex_frame frame = {.tex = tex, .tex_uv = tex_uv, .handle = handle};
-		if (async_texture) {
+		struct obs_tex_frame frame = {.tex = tex, .tex_uv = tex_uv, .handle = handle, .sync_only = sync_only};
+		if (async_texture && !sync_only) {
 			frame.lease_state = bzalloc(sizeof(*frame.lease_state));
 			if (!frame.lease_state) {
 				gs_texture_destroy(tex);
@@ -328,8 +335,14 @@ bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 			obs_texture_lease_init(&frame.lease_state->lease);
 		}
 
-		deque_push_back(&video->gpu_encoder_avail_queue, &frame, sizeof(frame));
+		if (sync_only) {
+			video->gpu_encoder_sync_frame = frame;
+		} else {
+			deque_push_back(&video->gpu_encoder_avail_queue, &frame, sizeof(frame));
+		}
 	}
+	if (async_texture)
+		video->gpu_encoder_sync_frame_available = true;
 
 	if (os_sem_init(&video->gpu_encode_semaphore, 0) != 0)
 		return false;
@@ -358,6 +371,7 @@ void free_gpu_encoding(struct obs_core_video_mix *video)
 {
 	video->gpu_async_texture_pool = false;
 	video->gpu_async_texture_encoders = 0;
+	video->gpu_sync_texture_encoders = 0;
 
 	if (video->gpu_encode_semaphore) {
 		os_sem_destroy(video->gpu_encode_semaphore);
@@ -383,4 +397,10 @@ void free_gpu_encoding(struct obs_core_video_mix *video)
 	free_deque(video->gpu_encoder_queue);
 	free_deque(video->gpu_encoder_avail_queue);
 #undef free_deque
+	if (video->gpu_encoder_sync_frame.tex) {
+		gs_texture_destroy(video->gpu_encoder_sync_frame.tex);
+		gs_texture_destroy(video->gpu_encoder_sync_frame.tex_uv);
+		video->gpu_encoder_sync_frame = (struct obs_tex_frame){0};
+	}
+	video->gpu_encoder_sync_frame_available = false;
 }

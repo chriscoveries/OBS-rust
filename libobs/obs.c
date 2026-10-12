@@ -3264,6 +3264,8 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 		if (async_texture) {
 			video->gpu_async_texture_encoders++;
 			video->gpu_async_texture_pool = true;
+		} else {
+			video->gpu_sync_texture_encoders++;
 		}
 		da_push_back(video->gpu_encoders, &encoder);
 	} else if (created_textures) {
@@ -3297,6 +3299,8 @@ void stop_gpu_encode(obs_encoder_t *encoder)
 	da_erase_item(video->gpu_encoders, &encoder);
 	if (encoder->info.caps & OBS_ENCODER_CAP_ASYNC_TEXTURE)
 		video->gpu_async_texture_encoders--;
+	else
+		video->gpu_sync_texture_encoders--;
 	if (!video->gpu_encoders.num)
 		call_free = true;
 	pthread_mutex_unlock(&video->gpu_encoder_mutex);

@@ -33,9 +33,11 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include <cmocka.h>
+#include <pthread.h>
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #if !defined(_WIN32) && !defined(__APPLE__)
 #include <signal.h>
@@ -63,6 +65,9 @@ const char *obs_module_text(const char *lookup)
 #define TEX_VENC_ID "test_err_texture_video_encoder"
 #define PREFLIGHT_FALLBACK_ID "test_err_async_preflight_fallback_encoder"
 #define ASYNC_ERROR_ID "test_err_async_route_loss_encoder"
+#define MIXED_ASYNC_ID "test_err_mixed_async_encoder"
+#define MIXED_SYNC_RAW_ID "test_err_mixed_sync_raw_encoder"
+#define MIXED_SYNC_ONLY_ID "test_err_mixed_sync_texture_only_encoder"
 #define AENC_ID "test_err_audio_encoder"
 #define RECORDING_ID "test_err_recording"
 
@@ -85,6 +90,7 @@ enum result {
 	RESULT_NOT_ENCODING = 8,
 	RESULT_SHUTDOWN_HUNG = 9,
 	RESULT_ENCODER_LEAKED = 10,
+	RESULT_SYNC_DISPATCH_MISMATCH = 11,
 };
 
 static const char *result_name(int r)
@@ -112,6 +118,8 @@ static const char *result_name(int r)
 		return "stopping or releasing the outputs hung";
 	case RESULT_ENCODER_LEAKED:
 		return "the video encoder was never destroyed (a thread still holds it)";
+	case RESULT_SYNC_DISPATCH_MISMATCH:
+		return "synchronous texture encoders did not receive the expected frames";
 	default:
 		return "unknown";
 	}
@@ -127,6 +135,45 @@ static volatile bool async_route_available;
 static volatile long failures;
 static volatile long venc_creates;
 static volatile long venc_destroys;
+static volatile uint32_t test_fps_num = 30;
+
+#define MIXED_ASYNC_SLOTS 10
+#define MIXED_SYNC_CALLS 64
+
+struct retained_texture {
+	void *token;
+	void (*release)(void *token);
+	void *texture;
+	int64_t pts;
+};
+
+struct mixed_async_observation {
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+	volatile long calls;
+	volatile long token_count;
+	volatile long released_count;
+	volatile bool invalid;
+	volatile bool block_after_ten;
+	volatile long worker_blocked;
+	bool release_worker;
+	struct retained_texture submissions[MIXED_ASYNC_SLOTS];
+};
+
+struct mixed_sync_observation {
+	pthread_mutex_t mutex;
+	volatile long calls;
+	volatile bool invalid;
+	void *call_textures[MIXED_SYNC_CALLS];
+	int64_t pts[MIXED_SYNC_CALLS];
+};
+
+static struct mixed_async_observation mixed_async = {
+	.mutex = PTHREAD_MUTEX_INITIALIZER,
+	.cond = PTHREAD_COND_INITIALIZER,
+};
+static struct mixed_sync_observation mixed_sync_raw = {.mutex = PTHREAD_MUTEX_INITIALIZER};
+static struct mixed_sync_observation mixed_sync_only = {.mutex = PTHREAD_MUTEX_INITIALIZER};
 /* encode calls left until the one that fails, -1 when not armed */
 static volatile long fail_in = -1;
 static uint8_t packet_byte;
@@ -258,6 +305,115 @@ static bool async_error_can_encode(void *data, const struct encoder_texture *tex
 	return os_atomic_load_bool(&async_route_available);
 }
 
+static bool mixed_async_encode(void *data, struct encoder_texture *texture, int64_t pts, uint64_t lock_key,
+			       uint64_t *next_key, struct encoder_packet *packet, bool *received)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(lock_key);
+	UNUSED_PARAMETER(next_key);
+	UNUSED_PARAMETER(packet);
+	*received = false;
+	if (!texture || !texture->lease_acquire || !texture->lease_release) {
+		os_atomic_set_bool(&mixed_async.invalid, true);
+		return false;
+	}
+
+	void *token = texture->lease_acquire(texture->lease_context);
+	if (!token) {
+		os_atomic_set_bool(&mixed_async.invalid, true);
+		return false;
+	}
+
+	pthread_mutex_lock(&mixed_async.mutex);
+	long index = os_atomic_load_long(&mixed_async.token_count);
+	os_atomic_inc_long(&mixed_async.calls);
+	if (index < MIXED_ASYNC_SLOTS) {
+		mixed_async.submissions[index] =
+			(struct retained_texture){token, texture->lease_release, texture->tex[0], pts};
+		os_atomic_inc_long(&mixed_async.token_count);
+		if (index + 1 == MIXED_ASYNC_SLOTS && os_atomic_load_bool(&mixed_async.block_after_ten)) {
+			os_atomic_set_long(&mixed_async.worker_blocked, 1);
+			pthread_cond_broadcast(&mixed_async.cond);
+			while (!mixed_async.release_worker)
+				pthread_cond_wait(&mixed_async.cond, &mixed_async.mutex);
+		}
+		pthread_mutex_unlock(&mixed_async.mutex);
+	} else {
+		os_atomic_set_bool(&mixed_async.invalid, true);
+		pthread_mutex_unlock(&mixed_async.mutex);
+		texture->lease_release(token);
+	}
+	return true;
+}
+
+static bool mixed_async_can_encode(void *data, const struct encoder_texture *texture)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(texture);
+	return true;
+}
+
+static void mixed_async_drain(void *data)
+{
+	UNUSED_PARAMETER(data);
+	struct retained_texture submissions[MIXED_ASYNC_SLOTS];
+	pthread_mutex_lock(&mixed_async.mutex);
+	long count = os_atomic_load_long(&mixed_async.token_count);
+	if (count > MIXED_ASYNC_SLOTS)
+		count = MIXED_ASYNC_SLOTS;
+	memcpy(submissions, mixed_async.submissions, (size_t)count * sizeof(submissions[0]));
+	pthread_mutex_unlock(&mixed_async.mutex);
+
+	for (long i = 0; i < count && i < MIXED_ASYNC_SLOTS; i++) {
+		submissions[i].release(submissions[i].token);
+		os_atomic_inc_long(&mixed_async.released_count);
+	}
+}
+
+static void *mixed_async_create(obs_data_t *settings, obs_encoder_t *encoder)
+{
+	UNUSED_PARAMETER(settings);
+	UNUSED_PARAMETER(encoder);
+	return &mixed_async;
+}
+
+static bool mixed_sync_encode(void *data, struct encoder_texture *texture, int64_t pts, uint64_t lock_key,
+			      uint64_t *next_key, struct encoder_packet *packet, bool *received)
+{
+	UNUSED_PARAMETER(lock_key);
+	UNUSED_PARAMETER(next_key);
+	UNUSED_PARAMETER(packet);
+	*received = false;
+	struct mixed_sync_observation *observation = data;
+	if (!texture || !texture->tex[0] || !texture->tex[1] || texture->lease_context || texture->lease_acquire ||
+	    texture->lease_release)
+		os_atomic_set_bool(&observation->invalid, true);
+
+	pthread_mutex_lock(&observation->mutex);
+	long call_index = os_atomic_load_long(&observation->calls);
+	if (call_index < MIXED_SYNC_CALLS) {
+		observation->call_textures[call_index] = texture ? texture->tex[0] : NULL;
+		observation->pts[call_index] = pts;
+	}
+	os_atomic_inc_long(&observation->calls);
+	pthread_mutex_unlock(&observation->mutex);
+	return true;
+}
+
+static void *mixed_sync_raw_create(obs_data_t *settings, obs_encoder_t *encoder)
+{
+	UNUSED_PARAMETER(settings);
+	UNUSED_PARAMETER(encoder);
+	return &mixed_sync_raw;
+}
+
+static void *mixed_sync_only_create(obs_data_t *settings, obs_encoder_t *encoder)
+{
+	UNUSED_PARAMETER(settings);
+	UNUSED_PARAMETER(encoder);
+	return &mixed_sync_only;
+}
+
 static bool aenc_encode(void *data, struct encoder_frame *frame, struct encoder_packet *packet, bool *received)
 {
 	UNUSED_PARAMETER(data);
@@ -344,6 +500,43 @@ static void register_encoders(void)
 		.get_frame_size = aenc_frame_size,
 	};
 	obs_register_encoder(&aenc);
+}
+
+static void register_mixed_encoders(void)
+{
+	struct obs_encoder_info async_info = {
+		.id = MIXED_ASYNC_ID,
+		.type = OBS_ENCODER_VIDEO,
+		.codec = "h264",
+		.get_name = enc_name,
+		.create = mixed_async_create,
+		.destroy = venc_destroy,
+		.encode = raw_venc_encode,
+		.encode_texture2 = mixed_async_encode,
+		.can_encode_texture = mixed_async_can_encode,
+		.drain_texture_encode = mixed_async_drain,
+		.caps = OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_ASYNC_TEXTURE,
+	};
+	obs_register_encoder(&async_info);
+
+	struct obs_encoder_info sync_raw_info = {
+		.id = MIXED_SYNC_RAW_ID,
+		.type = OBS_ENCODER_VIDEO,
+		.codec = "h264",
+		.get_name = enc_name,
+		.create = mixed_sync_raw_create,
+		.destroy = venc_destroy,
+		.encode = raw_venc_encode,
+		.encode_texture2 = mixed_sync_encode,
+		.caps = OBS_ENCODER_CAP_PASS_TEXTURE,
+	};
+	obs_register_encoder(&sync_raw_info);
+
+	struct obs_encoder_info sync_only_info = sync_raw_info;
+	sync_only_info.id = MIXED_SYNC_ONLY_ID;
+	sync_only_info.create = mixed_sync_only_create;
+	sync_only_info.encode = NULL;
+	obs_register_encoder(&sync_only_info);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -450,7 +643,7 @@ static bool init_core(void)
 	 * texture encoders get the GPU encode thread */
 	struct obs_video_info ovi = {
 		.graphics_module = GRAPHICS_MODULE_PATH,
-		.fps_num = 30,
+		.fps_num = test_fps_num,
 		.fps_den = 1,
 		.base_width = 64,
 		.base_height = 64,
@@ -687,6 +880,154 @@ static enum result run_scenario(enum scenario scenario)
 	return RESULT_OK;
 }
 
+#define MIXED_TIMEOUT_MS 25000
+
+enum mixed_start_order {
+	MIXED_ASYNC_FIRST,
+	MIXED_SYNC_FIRST,
+};
+
+static bool start_mixed_output(obs_output_t *output, obs_encoder_t *video_encoder, obs_encoder_t *audio_encoder)
+{
+	obs_output_set_video_encoder(output, video_encoder);
+	obs_output_set_audio_encoder(output, audio_encoder, 0);
+	return obs_output_start(output);
+}
+
+static enum result run_mixed_pool_scenario(enum mixed_start_order start_order)
+{
+	test_fps_num = 30;
+	if (start_order == MIXED_ASYNC_FIRST)
+		os_atomic_set_bool(&mixed_async.block_after_ten, true);
+	if (!init_core())
+		return RESULT_SETUP_FAILED;
+	register_encoders();
+	register_mixed_encoders();
+	register_outputs();
+
+	obs_encoder_t *async_encoder = obs_video_encoder_create(MIXED_ASYNC_ID, "mixed async", NULL, NULL);
+	obs_encoder_t *sync_raw_encoder = obs_video_encoder_create(MIXED_SYNC_RAW_ID, "mixed sync raw", NULL, NULL);
+	obs_encoder_t *sync_only_encoder =
+		obs_video_encoder_create(MIXED_SYNC_ONLY_ID, "mixed sync texture only", NULL, NULL);
+	obs_encoder_t *audio_encoder = obs_audio_encoder_create(AENC_ID, "mixed audio", NULL, 0, NULL);
+	obs_output_t *async_output = obs_output_create(RECORDING_ID, "mixed async output", NULL, NULL);
+	obs_output_t *sync_raw_output = obs_output_create(RECORDING_ID, "mixed sync raw output", NULL, NULL);
+	obs_output_t *sync_only_output = obs_output_create(RECORDING_ID, "mixed sync texture only output", NULL, NULL);
+	if (!async_encoder || !sync_raw_encoder || !sync_only_encoder || !audio_encoder || !async_output ||
+	    !sync_raw_output || !sync_only_output)
+		return RESULT_SETUP_FAILED;
+
+	obs_encoder_set_video(async_encoder, obs_get_video());
+	obs_encoder_set_video(sync_raw_encoder, obs_get_video());
+	obs_encoder_set_video(sync_only_encoder, obs_get_video());
+	obs_encoder_set_audio(audio_encoder, obs_get_audio());
+	bool started;
+	if (start_order == MIXED_ASYNC_FIRST) {
+		started = start_mixed_output(async_output, async_encoder, audio_encoder) &&
+			  start_mixed_output(sync_raw_output, sync_raw_encoder, audio_encoder) &&
+			  start_mixed_output(sync_only_output, sync_only_encoder, audio_encoder);
+	} else {
+		started = start_mixed_output(sync_raw_output, sync_raw_encoder, audio_encoder) &&
+			  start_mixed_output(sync_only_output, sync_only_encoder, audio_encoder) &&
+			  start_mixed_output(async_output, async_encoder, audio_encoder);
+	}
+	if (!started)
+		return RESULT_NO_TEXTURE_PATH;
+
+	if (start_order == MIXED_ASYNC_FIRST) {
+		if (!wait_counter(&mixed_async.worker_blocked, 1, MIXED_TIMEOUT_MS))
+			return RESULT_NO_PACKETS;
+
+		uint32_t total_at_block = obs_get_total_frames();
+		bool rendered_while_blocked = false;
+		for (int i = 0; i < 300; i++) {
+			if (obs_get_total_frames() >= total_at_block + 2) {
+				rendered_while_blocked = true;
+				break;
+			}
+			os_sleep_ms(5);
+		}
+		uint32_t skipped_while_blocked = video_output_get_skipped_frames(obs_get_video());
+		pthread_mutex_lock(&mixed_async.mutex);
+		mixed_async.release_worker = true;
+		pthread_cond_broadcast(&mixed_async.cond);
+		pthread_mutex_unlock(&mixed_async.mutex);
+
+		if (!rendered_while_blocked || !wait_counter(&mixed_sync_raw.calls, 12, MIXED_TIMEOUT_MS) ||
+		    !wait_counter(&mixed_sync_only.calls, 12, MIXED_TIMEOUT_MS))
+			return RESULT_NO_PACKETS;
+		if (os_atomic_load_long(&mixed_async.calls) != MIXED_ASYNC_SLOTS ||
+		    os_atomic_load_long(&mixed_async.token_count) != MIXED_ASYNC_SLOTS ||
+		    os_atomic_load_bool(&mixed_async.invalid) || os_atomic_load_bool(&mixed_sync_raw.invalid) ||
+		    os_atomic_load_bool(&mixed_sync_only.invalid))
+			return RESULT_NO_TEXTURE_PATH;
+
+		bool dispatch_matches = true;
+		for (size_t i = 0; i < 12; i++) {
+			dispatch_matches &= mixed_sync_raw.call_textures[i] == mixed_sync_only.call_textures[i];
+			dispatch_matches &= mixed_sync_raw.pts[i] == mixed_sync_only.pts[i];
+			if (i)
+				dispatch_matches &= mixed_sync_raw.pts[i] > mixed_sync_raw.pts[i - 1];
+			if (i < MIXED_ASYNC_SLOTS) {
+				dispatch_matches &= mixed_sync_raw.pts[i] == mixed_async.submissions[i].pts;
+				dispatch_matches &= mixed_sync_raw.call_textures[i] ==
+						    mixed_async.submissions[i].texture;
+				for (size_t j = 0; j < i; j++)
+					dispatch_matches &= mixed_async.submissions[i].texture !=
+							    mixed_async.submissions[j].texture;
+			}
+		}
+		dispatch_matches &= mixed_sync_raw.call_textures[10] == mixed_sync_raw.call_textures[11];
+		dispatch_matches &= mixed_sync_raw.pts[11] > mixed_sync_raw.pts[10];
+		dispatch_matches &= skipped_while_blocked >= 1;
+		dispatch_matches &= video_output_get_skipped_frames(obs_get_video()) > skipped_while_blocked;
+		bool saw_reserved_slot = false;
+		for (size_t i = 0; i < MIXED_ASYNC_SLOTS; i++)
+			saw_reserved_slot |= mixed_sync_raw.call_textures[10] == mixed_async.submissions[i].texture;
+		dispatch_matches &= !saw_reserved_slot;
+		if (!dispatch_matches)
+			return RESULT_SYNC_DISPATCH_MISMATCH;
+	} else {
+		if (!wait_counter(&mixed_sync_raw.calls, 2, MIXED_TIMEOUT_MS) ||
+		    !wait_counter(&mixed_sync_only.calls, 2, MIXED_TIMEOUT_MS) ||
+		    !wait_counter(&video_packets, 2, MIXED_TIMEOUT_MS))
+			return RESULT_NO_PACKETS;
+		if (mixed_sync_raw.pts[1] <= mixed_sync_raw.pts[0] ||
+		    mixed_sync_only.pts[1] <= mixed_sync_only.pts[0] ||
+		    mixed_sync_raw.pts[0] != mixed_sync_only.pts[0] ||
+		    mixed_sync_raw.pts[1] != mixed_sync_only.pts[1] ||
+		    mixed_sync_raw.call_textures[0] != mixed_sync_only.call_textures[0] ||
+		    mixed_sync_raw.call_textures[1] != mixed_sync_only.call_textures[1] ||
+		    os_atomic_load_long(&mixed_async.calls) != 0 ||
+		    os_atomic_load_long(&mixed_async.token_count) != 0 ||
+		    os_atomic_load_bool(&mixed_sync_raw.invalid) || os_atomic_load_bool(&mixed_sync_only.invalid))
+			return RESULT_SYNC_DISPATCH_MISMATCH;
+	}
+
+	enum result r = stop_with_timeout(sync_only_output);
+	if (r != RESULT_OK)
+		return r;
+	r = stop_with_timeout(sync_raw_output);
+	if (r != RESULT_OK)
+		return r;
+	r = stop_with_timeout(async_output);
+	if (r != RESULT_OK)
+		return r;
+	long expected_releases = start_order == MIXED_ASYNC_FIRST ? MIXED_ASYNC_SLOTS : 0;
+	if (os_atomic_load_long(&mixed_async.released_count) != expected_releases)
+		return RESULT_ENCODER_LEAKED;
+
+	obs_output_release(sync_only_output);
+	obs_output_release(sync_raw_output);
+	obs_output_release(async_output);
+	obs_encoder_release(sync_only_encoder);
+	obs_encoder_release(sync_raw_encoder);
+	obs_encoder_release(async_encoder);
+	obs_encoder_release(audio_encoder);
+	obs_shutdown();
+	return RESULT_OK;
+}
+
 static int run_in_child(int (*fn)(int), int arg)
 {
 	fflush(stderr);
@@ -727,6 +1068,11 @@ static int scenario_child(int scenario)
 	return (int)run_scenario((enum scenario)scenario);
 }
 
+static int mixed_scenario_child(int scenario)
+{
+	return (int)run_mixed_pool_scenario((enum mixed_start_order)scenario);
+}
+
 static int probe_child(int unused)
 {
 	UNUSED_PARAMETER(unused);
@@ -739,6 +1085,31 @@ static int probe_child(int unused)
 static void expect_ok(enum scenario scenario, const char *what)
 {
 	int r = run_in_child(scenario_child, (int)scenario);
+	if (r == RESULT_NO_TEXTURE_PATH) {
+		fprintf(stderr, "%s: the core video mix has no texture encoding path, skipping\n", what);
+		skip();
+	}
+	if (r == -1) {
+		fprintf(stderr, "%s: fork failed\n", what);
+		fail();
+	}
+	if (r == -2) {
+		fprintf(stderr, "%s: did not finish within %d ms\n", what, CHILD_TIMEOUT_MS);
+		fail();
+	}
+	if (r <= -100) {
+		fprintf(stderr, "%s: crashed with signal %d\n", what, -100 - r);
+		fail();
+	}
+	if (r != RESULT_OK) {
+		fprintf(stderr, "%s: %s (result %d)\n", what, result_name(r), r);
+		fail();
+	}
+}
+
+static void expect_mixed(enum mixed_start_order order, const char *what)
+{
+	int r = run_in_child(mixed_scenario_child, (int)order);
 	if (r == RESULT_NO_TEXTURE_PATH) {
 		fprintf(stderr, "%s: the core video mix has no texture encoding path, skipping\n", what);
 		skip();
@@ -829,6 +1200,26 @@ static void async_error_uses_committed_texture_route(void **state)
 #endif
 }
 
+static void async_pool_exhaustion_skips_only_async_encoders(void **state)
+{
+	UNUSED_PARAMETER(state);
+	if (!obs_up)
+		skip();
+#ifndef SCENARIO_UNSUPPORTED
+	expect_mixed(MIXED_ASYNC_FIRST, "async pool exhaustion keeps both sync texture encoders current");
+#endif
+}
+
+static void sync_encoders_keep_route_when_started_before_async(void **state)
+{
+	UNUSED_PARAMETER(state);
+	if (!obs_up)
+		skip();
+#ifndef SCENARIO_UNSUPPORTED
+	expect_mixed(MIXED_SYNC_FIRST, "sync texture encoders started before async encoder");
+#endif
+}
+
 /* libobs is started in a child process per scenario. Probe once that it can
  * start here at all (it needs a display and a graphics module). */
 static int group_setup(void **state)
@@ -854,6 +1245,8 @@ int main(void)
 		cmocka_unit_test(texture_error_idle_replay_buffer_starts),
 		cmocka_unit_test(async_sample_probe_falls_back_and_restarts),
 		cmocka_unit_test(async_error_uses_committed_texture_route),
+		cmocka_unit_test(async_pool_exhaustion_skips_only_async_encoders),
+		cmocka_unit_test(sync_encoders_keep_route_when_started_before_async),
 	};
 	return cmocka_run_group_tests(tests, group_setup, NULL);
 }

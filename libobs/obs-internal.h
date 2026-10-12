@@ -361,6 +361,7 @@ struct obs_tex_frame {
 	uint64_t lock_key;
 	int count;
 	bool released;
+	bool sync_only;
 	struct obs_tex_frame_lease_state *lease_state;
 };
 
@@ -405,9 +406,12 @@ struct obs_core_video_mix {
 	pthread_mutex_t gpu_encoder_mutex;
 	struct deque gpu_encoder_queue;
 	struct deque gpu_encoder_avail_queue;
+	struct obs_tex_frame gpu_encoder_sync_frame;
 	DARRAY(obs_encoder_t *) gpu_encoders;
 	uint32_t gpu_async_texture_encoders;
+	uint32_t gpu_sync_texture_encoders;
 	bool gpu_async_texture_pool;
+	bool gpu_encoder_sync_frame_available;
 	os_sem_t *gpu_encode_semaphore;
 	os_event_t *gpu_encode_inactive;
 	pthread_t gpu_encode_thread;
