@@ -56,3 +56,5 @@ size_t oracle_array_output_data_offset_cur_pos(void)
 {
 	return offsetof(struct array_output_data, cur_pos);
 }
+
+/* cache-key probe */
