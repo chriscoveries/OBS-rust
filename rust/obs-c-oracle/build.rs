@@ -1,15 +1,16 @@
 use std::path::{Path, PathBuf};
 
 /// FNV-1a 64-bit over the bytes that change what the oracle archive contains:
-/// this script, every oracle/*.c and *.h, the libobs/deps files `cc` compiles,
-/// and the flag list. zccache keys an rlib on argv + Rust inputs but never
-/// hashes the native archive a build script bundles, so without this an
-/// oracle-only change can be served a stale cached rlib (see
-/// https://github.com/obs-rust/obs-studio — zccache cache-keying gap).
-/// `env!()` in src/lib.rs turns the value into a rustc `env-dep`, which
-/// zccache does fold into the artifact key. No new dependency: a simple
-/// stable hash is enough for change detection.
-fn oracle_input_hash(extra_files: &[PathBuf], flags: &[&str]) -> u64 {
+/// this script, every *.c and *.h under `oracle/`, `vendor/`, `libobs/` and
+/// `deps/w32-pthreads/`, and the flag list. The whole of libobs is hashed
+/// because oracle wrappers `#include` libobs sources and headers directly, so
+/// any libobs edit can change the compiled archive. zccache keys an rlib on
+/// argv + Rust inputs but never hashes the native archive a build script
+/// bundles, so without this an oracle-affecting change can be served a stale
+/// cached rlib (zackees/zccache#1945). `env!()` in src/lib.rs turns the value
+/// into a rustc `env-dep`, which zccache does fold into the artifact key.
+/// No new dependency: a simple stable hash is enough for change detection.
+fn oracle_input_hash(roots: &[PathBuf], flags: &[&str]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     let mut mix = |bytes: &[u8]| {
         for &b in bytes {
@@ -28,11 +29,9 @@ fn oracle_input_hash(extra_files: &[PathBuf], flags: &[&str]) -> u64 {
         &mut mix,
     );
     let mut hash_inputs: Vec<PathBuf> = Vec::new();
-    collect_oracle_inputs(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("oracle"),
-        &mut hash_inputs,
-    );
-    hash_inputs.extend(extra_files.iter().cloned());
+    for root in roots {
+        collect_c_sources(root, &mut hash_inputs);
+    }
     hash_inputs.sort();
     for path in &hash_inputs {
         hash_file(path, &mut mix);
@@ -43,11 +42,14 @@ fn oracle_input_hash(extra_files: &[PathBuf], flags: &[&str]) -> u64 {
     h
 }
 
-fn collect_oracle_inputs(dir: &Path, out: &mut Vec<PathBuf>) {
+fn collect_c_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    if !dir.is_dir() {
+        return;
+    }
     for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display())) {
         let path = entry.expect("dir entry").path();
         if path.is_dir() {
-            collect_oracle_inputs(&path, out);
+            collect_c_sources(&path, out);
         } else if path.extension().is_some_and(|e| e == "c" || e == "h") {
             out.push(path);
         }
@@ -115,7 +117,6 @@ fn main() {
     // and the system pthread. MSVC has no pthread: libobs builds against
     // deps/w32-pthreads, so the oracle compiles its single-file build and
     // the real threading-windows.c instead.
-    let mut libobs_files = vec![libobs.join("util/base-variadic.c")];
     if oracle.get_compiler().is_like_msvc() {
         let deps = libobs.with_file_name("deps");
         oracle
@@ -124,15 +125,22 @@ fn main() {
             .file(deps.join("w32-pthreads/pthread.c"))
             .file(libobs.join("util/threading-windows.c"));
         flags.push("-DPTW32_STATIC_LIB");
-        libobs_files.push(deps.join("w32-pthreads/pthread.c"));
-        libobs_files.push(libobs.join("util/threading-windows.c"));
     } else {
         oracle.file(libobs.join("util/threading-posix.c"));
-        libobs_files.push(libobs.join("util/threading-posix.c"));
     }
+    // Every directory the oracle can read C/headers from. libobs is the
+    // important one: wrappers include its sources directly, so a libobs-only
+    // change must change the hash. w32-pthreads only exists on Windows
+    // checkouts; collect_c_sources tolerates its absence.
+    let roots = [
+        manifest.join("oracle"),
+        manifest.join("vendor"),
+        libobs.clone(),
+        libobs.with_file_name("deps").join("w32-pthreads"),
+    ];
     println!(
         "cargo:rustc-env=OBS_ORACLE_INPUT_HASH={:016x}",
-        oracle_input_hash(&libobs_files, &flags)
+        oracle_input_hash(&roots, &flags)
     );
     oracle.compile("obs_c_oracle");
 
