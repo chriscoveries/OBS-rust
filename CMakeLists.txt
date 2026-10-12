@@ -36,6 +36,7 @@ option(ENABLE_UNIT_TESTS "Build and register the cmocka unit tests" OFF)
 if(ENABLE_UNIT_TESTS)
   enable_testing()
   add_subdirectory(test/cmocka)
+  add_subdirectory(test/perf)
 endif()
 
 add_subdirectory(frontend)

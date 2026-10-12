@@ -64,9 +64,11 @@ static void test_copies_nv12_1080p(void **state)
 	CVPixelBufferRef pixbuf = make_nv12_buffer();
 	assert_int_equal(CVPixelBufferLockBaseAddress(pixbuf, 0), kCVReturnSuccess);
 
+	vt_copy_bytes_reset();
 	size_t copied = vt_copy_frame_to_pixbuf(pixbuf, data, linesize);
 
 	assert_int_equal(copied, EXPECTED_BYTES);
+	assert_int_equal(vt_copy_bytes_total(), EXPECTED_BYTES);
 
 	/* Spot-check the bytes actually landed per plane. */
 	uint8_t *py = CVPixelBufferGetBaseAddressOfPlane(pixbuf, 0);
@@ -93,9 +95,11 @@ static void test_stops_at_null_plane(void **state)
 	CVPixelBufferRef pixbuf = make_nv12_buffer();
 	assert_int_equal(CVPixelBufferLockBaseAddress(pixbuf, 0), kCVReturnSuccess);
 
+	vt_copy_bytes_reset();
 	size_t copied = vt_copy_frame_to_pixbuf(pixbuf, data, linesize);
 
 	assert_int_equal(copied, (size_t)WIDTH * HEIGHT);
+	assert_int_equal(vt_copy_bytes_total(), (size_t)WIDTH * HEIGHT);
 
 	assert_int_equal(CVPixelBufferUnlockBaseAddress(pixbuf, 0), kCVReturnSuccess);
 	CVPixelBufferRelease(pixbuf);

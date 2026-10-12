@@ -1553,20 +1553,7 @@ static bool vt_encode(void *data, struct encoder_frame *frame, struct encoder_pa
 		goto fail;
 	}
 
-	for (int i = 0; i < MAX_AV_PLANES; i++) {
-		if (frame->data[i] == NULL)
-			break;
-		uint8_t *p = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixbuf, i);
-		uint8_t *f = frame->data[i];
-		size_t plane_linesize = CVPixelBufferGetBytesPerRowOfPlane(pixbuf, i);
-		size_t plane_height = CVPixelBufferGetHeightOfPlane(pixbuf, i);
-
-		for (size_t j = 0; j < plane_height; j++) {
-			memcpy(p, f, frame->linesize[i]);
-			p += plane_linesize;
-			f += frame->linesize[i];
-		}
-	}
+	vt_copy_frame_to_pixbuf(pixbuf, frame->data, frame->linesize);
 
 	code = CVPixelBufferUnlockBaseAddress(pixbuf, 0);
 	if (code != noErr) {
