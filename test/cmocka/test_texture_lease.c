@@ -14,7 +14,10 @@
 
 #include "../../libobs/obs-texture-lease.h"
 
-static void duplicate_frame_counts_keep_texture_leased(void **state)
+/* These tests cover the lease helper state machine. Production dispatch and
+ * lifecycle coverage lives in test_encoder_error_stop. */
+
+static void lease_helper_preserves_duplicate_frame_leases(void **state)
 {
 	(void)state;
 	struct obs_texture_lease_state frame;
@@ -34,7 +37,7 @@ static void duplicate_frame_counts_keep_texture_leased(void **state)
 	assert_true(obs_texture_lease_is_drained(&frame));
 }
 
-static void out_of_order_release_waits_for_last_consumer(void **state)
+static void lease_helper_waits_for_out_of_order_consumers(void **state)
 {
 	(void)state;
 	struct obs_texture_lease_state frame;
@@ -52,7 +55,7 @@ static void out_of_order_release_waits_for_last_consumer(void **state)
 	assert_true(obs_texture_lease_is_drained(&frame));
 }
 
-static void exhausted_texture_pool_drops_new_frame(void **state)
+static void lease_helper_reports_pool_exhaustion_policy(void **state)
 {
 	(void)state;
 	struct obs_texture_lease_state frames[3];
@@ -74,44 +77,12 @@ static void exhausted_texture_pool_drops_new_frame(void **state)
 	assert_true(obs_texture_lease_begin_frame(&frames[0]));
 }
 
-static void encoder_stop_and_video_shutdown_drain(void **state)
-{
-	(void)state;
-	struct obs_texture_lease_state stopped_encoder;
-	struct obs_texture_lease_state shutdown_frame;
-	struct obs_texture_lease_token encoder_hold = {0};
-	struct obs_texture_lease_token shutdown_hold = {0};
-	obs_texture_lease_init(&stopped_encoder);
-	obs_texture_lease_init(&shutdown_frame);
-
-	/* No pending consumer: stopping immediately makes the slot reusable. */
-	assert_true(obs_texture_lease_begin_frame(&stopped_encoder));
-	assert_int_equal(obs_texture_lease_retire(&stopped_encoder), OBS_TEXTURE_LEASE_RECYCLED);
-	assert_true(obs_texture_lease_is_drained(&stopped_encoder));
-
-	/* Shutdown/stop waits for callback release before freeing the texture slot. */
-	assert_true(obs_texture_lease_begin_frame(&shutdown_frame));
-	assert_true(obs_texture_lease_acquire(&shutdown_frame, &shutdown_hold));
-	assert_int_equal(obs_texture_lease_retire(&shutdown_frame), OBS_TEXTURE_LEASE_HELD);
-	assert_false(obs_texture_lease_is_drained(&shutdown_frame));
-	assert_int_equal(obs_texture_lease_release(&shutdown_hold), OBS_TEXTURE_LEASE_RECYCLED);
-	assert_true(obs_texture_lease_is_drained(&shutdown_frame));
-
-	/* A token cannot outlive a slot reused for a later encoder stop. */
-	assert_true(obs_texture_lease_begin_frame(&stopped_encoder));
-	assert_true(obs_texture_lease_acquire(&stopped_encoder, &encoder_hold));
-	assert_int_equal(obs_texture_lease_retire(&stopped_encoder), OBS_TEXTURE_LEASE_HELD);
-	assert_int_equal(obs_texture_lease_release(&encoder_hold), OBS_TEXTURE_LEASE_RECYCLED);
-	assert_true(obs_texture_lease_is_drained(&stopped_encoder));
-}
-
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
-		cmocka_unit_test(duplicate_frame_counts_keep_texture_leased),
-		cmocka_unit_test(out_of_order_release_waits_for_last_consumer),
-		cmocka_unit_test(exhausted_texture_pool_drops_new_frame),
-		cmocka_unit_test(encoder_stop_and_video_shutdown_drain),
+		cmocka_unit_test(lease_helper_preserves_duplicate_frame_leases),
+		cmocka_unit_test(lease_helper_waits_for_out_of_order_consumers),
+		cmocka_unit_test(lease_helper_reports_pool_exhaustion_policy),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
