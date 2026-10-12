@@ -63,6 +63,7 @@ jobs:
           printf '%s\n' "${files[@]}"
           uvx --from clang-format==22.1.3 clang-format --dry-run --Werror "${files[@]}"
       - name: Rust tiers 1-3
+        if: ${{ !cancelled() }}
         run: soldr cargo test --workspace --locked
   # Tier 2 runs directly on the host, without Docker (owner, 2026-10-11).
   # claw (Debian 13) matches the old container: all 65 tests, export parity.
@@ -103,10 +104,17 @@ jobs:
         # release profile here with claw's GCC 14: it catches debug-only test
         # hooks and optimisation-dependent float differences, and GCC 14
         # rejects incompatible pointer types in the C oracles.
-        # Report-only until upstream's own release failures are fixed (e.g.
-        # obs-graphics quat_parity mul_dst_aliases_q1). Read this step's log.
-        continue-on-error: true
-        run: CC=gcc soldr cargo test --workspace --locked --release --no-fail-fast
+        # Test results are report-only until upstream's own release failures are
+        # fixed (e.g. obs-graphics quat_parity mul_dst_aliases_q1).
+        # Test failures stay report-only, but a build or link failure (e.g. a
+        # duplicate symbol after merging master) fails the step: "could not
+        # compile" means the change is broken, not upstream's baseline.
+        run: |
+          set -o pipefail
+          CC=gcc soldr cargo test --workspace --locked --release --no-fail-fast 2>&1 | tee release.log || true
+          if grep -q "error: could not compile" release.log; then
+            echo "::error::release build/link failed (not a test failure)"; exit 1
+          fi
       - name: Tier 2 (native, OFF/ON)
         env:
           # rd4 runs Ubuntu 22.04: GIO is too old for PipeWire, there is no
