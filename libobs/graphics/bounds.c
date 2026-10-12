@@ -23,14 +23,22 @@
 
 void bounds_move(struct bounds *dst, const struct bounds *b, const struct vec3 *v)
 {
-	vec3_add(&dst->min, &b->min, v);
-	vec3_add(&dst->max, &b->max, v);
+	struct vec3 offset;
+
+	vec3_copy(&offset, v);
+
+	vec3_add(&dst->min, &b->min, &offset);
+	vec3_add(&dst->max, &b->max, &offset);
 }
 
 void bounds_scale(struct bounds *dst, const struct bounds *b, const struct vec3 *v)
 {
-	vec3_mul(&dst->min, &b->min, v);
-	vec3_mul(&dst->max, &b->max, v);
+	struct vec3 scale;
+
+	vec3_copy(&scale, v);
+
+	vec3_mul(&dst->min, &b->min, &scale);
+	vec3_mul(&dst->max, &b->max, &scale);
 }
 
 void bounds_merge(struct bounds *dst, const struct bounds *b1, const struct bounds *b2)
@@ -41,8 +49,12 @@ void bounds_merge(struct bounds *dst, const struct bounds *b1, const struct boun
 
 void bounds_merge_point(struct bounds *dst, const struct bounds *b, const struct vec3 *v)
 {
-	vec3_min(&dst->min, &b->min, v);
-	vec3_max(&dst->max, &b->max, v);
+	struct vec3 point;
+
+	vec3_copy(&point, v);
+
+	vec3_min(&dst->min, &b->min, &point);
+	vec3_max(&dst->max, &b->max, &point);
 }
 
 void bounds_get_point(struct vec3 *dst, const struct bounds *b, unsigned int i)
@@ -82,9 +94,13 @@ void bounds_get_point(struct vec3 *dst, const struct bounds *b, unsigned int i)
 
 void bounds_get_center(struct vec3 *dst, const struct bounds *b)
 {
+	struct vec3 min;
+
+	vec3_copy(&min, &b->min);
+
 	vec3_sub(dst, &b->max, &b->min);
 	vec3_mulf(dst, dst, 0.5f);
-	vec3_add(dst, dst, &b->min);
+	vec3_add(dst, dst, &min);
 }
 
 void bounds_transform(struct bounds *dst, const struct bounds *b, const struct matrix4 *m)

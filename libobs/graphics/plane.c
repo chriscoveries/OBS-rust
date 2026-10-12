@@ -21,13 +21,15 @@
 
 void plane_from_tri(struct plane *dst, const struct vec3 *v1, const struct vec3 *v2, const struct vec3 *v3)
 {
-	struct vec3 temp;
+	struct vec3 temp, vertex;
 
-	vec3_sub(&temp, v2, v1);
-	vec3_sub(&dst->dir, v3, v1);
+	vec3_copy(&vertex, v1);
+
+	vec3_sub(&temp, v2, &vertex);
+	vec3_sub(&dst->dir, v3, &vertex);
 	vec3_cross(&dst->dir, &temp, &dst->dir);
 	vec3_norm(&dst->dir, &dst->dir);
-	dst->dist = vec3_dot(v1, &dst->dir);
+	dst->dist = vec3_dot(&vertex, &dst->dir);
 }
 
 void plane_transform(struct plane *dst, const struct plane *p, const struct matrix4 *m)

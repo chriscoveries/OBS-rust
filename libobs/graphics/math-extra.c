@@ -58,10 +58,11 @@ void norm_to_polar(struct vec2 *dst, const struct vec3 *norm)
 void polar_to_norm(struct vec3 *dst, const struct vec2 *polar)
 {
 	float sinx = sinf(polar->x);
+	float cosx = cosf(polar->x);
 
 	dst->x = sinx * cosf(polar->y);
 	dst->y = sinx * sinf(polar->y);
-	dst->z = cosf(polar->x);
+	dst->z = cosx;
 }
 
 float calc_torquef(float val1, float val2, float torque, float min_adjust, float t)
@@ -115,8 +116,10 @@ void calc_torque(struct vec3 *dst, const struct vec3 *v1, const struct vec3 *v2,
 	adjust_dist = torque_dist * t;
 
 	if (adjust_dist <= (orig_dist - LARGE_EPSILON)) {
-		vec3_mulf(dst, &dir, adjust_dist);
-		vec3_add(dst, dst, v1); /* add torque */
+		struct vec3 temp;
+
+		vec3_mulf(&temp, &dir, adjust_dist);
+		vec3_add(dst, &temp, v1); /* add torque */
 	} else {
 		vec3_copy(dst, v2); /* clamp if overshoot */
 	}

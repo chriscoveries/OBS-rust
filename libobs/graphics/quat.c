@@ -31,17 +31,21 @@ void quat_mul(struct quat *dst, const struct quat *q1, const struct quat *q2)
 {
 	struct vec3 q1axis, q2axis;
 	struct vec3 temp1, temp2;
+	float w1, w2;
 
 	quat_vec3(&q1axis, q1);
 	quat_vec3(&q2axis, q2);
 
-	vec3_mulf(&temp1, &q2axis, q1->w);
-	vec3_mulf(&temp2, &q1axis, q2->w);
+	w1 = q1->w;
+	w2 = q2->w;
+
+	vec3_mulf(&temp1, &q2axis, w1);
+	vec3_mulf(&temp2, &q1axis, w2);
 	vec3_add(&temp1, &temp1, &temp2);
 	vec3_cross(&temp2, &q1axis, &q2axis);
 	vec3_add((struct vec3 *)dst, &temp1, &temp2);
 
-	dst->w = (q1->w * q2->w) - vec3_dot(&q1axis, &q2axis);
+	dst->w = (w1 * w2) - vec3_dot(&q1axis, &q2axis);
 }
 
 void quat_from_axisang(struct quat *dst, const struct axisang *aa)
@@ -55,10 +59,6 @@ void quat_from_axisang(struct quat *dst, const struct axisang *aa)
 	dst->w = cosf(halfa);
 }
 
-struct f4x4 {
-	float ptr[4][4];
-};
-
 void quat_from_matrix3(struct quat *dst, const struct matrix3 *m)
 {
 	quat_from_matrix4(dst, (const struct matrix4 *)m);
@@ -66,25 +66,37 @@ void quat_from_matrix3(struct quat *dst, const struct matrix3 *m)
 
 void quat_from_matrix4(struct quat *dst, const struct matrix4 *m)
 {
-	float tr = (m->x.x + m->y.y + m->z.z);
-	float inv_half;
-	float four_d;
+	/* The 3x3 block is snapshotted first: quat_from_matrix3 hands a matrix3
+	 * cast to a matrix4, and a caller may place dst at the same address as
+	 * m, so no read below may observe a quaternion lane written earlier. */
+	float mm[3][3];
+	float tr, inv_half, four_d;
 	int i, j, k;
+
+	mm[0][0] = m->x.x;
+	mm[0][1] = m->x.y;
+	mm[0][2] = m->x.z;
+	mm[1][0] = m->y.x;
+	mm[1][1] = m->y.y;
+	mm[1][2] = m->y.z;
+	mm[2][0] = m->z.x;
+	mm[2][1] = m->z.y;
+	mm[2][2] = m->z.z;
+
+	tr = (mm[0][0] + mm[1][1] + mm[2][2]);
 
 	if (tr > 0.0f) {
 		four_d = sqrtf(tr + 1.0f);
 		dst->w = four_d * 0.5f;
 
 		inv_half = 0.5f / four_d;
-		dst->x = (m->y.z - m->z.y) * inv_half;
-		dst->y = (m->z.x - m->x.z) * inv_half;
-		dst->z = (m->x.y - m->y.x) * inv_half;
+		dst->x = (mm[1][2] - mm[2][1]) * inv_half;
+		dst->y = (mm[2][0] - mm[0][2]) * inv_half;
+		dst->z = (mm[0][1] - mm[1][0]) * inv_half;
 	} else {
-		struct f4x4 *val = (struct f4x4 *)m;
+		i = (mm[0][0] > mm[1][1]) ? 0 : 1;
 
-		i = (m->x.x > m->y.y) ? 0 : 1;
-
-		if (m->z.z > val->ptr[i][i])
+		if (mm[2][2] > mm[i][i])
 			i = 2;
 
 		j = (i + 1) % 3;
@@ -92,14 +104,14 @@ void quat_from_matrix4(struct quat *dst, const struct matrix4 *m)
 
 		/* ---------------------------------- */
 
-		four_d = sqrtf((val->ptr[i][i] - val->ptr[j][j] - val->ptr[k][k]) + 1.0f);
+		four_d = sqrtf((mm[i][i] - mm[j][j] - mm[k][k]) + 1.0f);
 
 		dst->ptr[i] = four_d * 0.5f;
 
 		inv_half = 0.5f / four_d;
-		dst->ptr[j] = (val->ptr[i][j] + val->ptr[j][i]) * inv_half;
-		dst->ptr[k] = (val->ptr[i][k] + val->ptr[k][i]) * inv_half;
-		dst->w = (val->ptr[j][k] - val->ptr[k][j]) * inv_half;
+		dst->ptr[j] = (mm[i][j] + mm[j][i]) * inv_half;
+		dst->ptr[k] = (mm[i][k] + mm[k][i]) * inv_half;
+		dst->w = (mm[j][k] - mm[k][j]) * inv_half;
 	}
 }
 

@@ -15,6 +15,8 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ******************************************************************************/
 
+#include <string.h>
+
 #include "math-defs.h"
 #include "matrix4.h"
 #include "matrix3.h"
@@ -115,6 +117,7 @@ void matrix4_mul_4x3_only(struct matrix4 *dst, const struct matrix4 *m1, const s
 static inline void get_3x3_submatrix(float *dst, const struct matrix4 *m, int i, int j)
 {
 	const float *mf = (const float *)m;
+	float out[9];
 	int ti, tj, idst, jdst;
 
 	for (ti = 0; ti < 4; ti++) {
@@ -133,9 +136,11 @@ static inline void get_3x3_submatrix(float *dst, const struct matrix4 *m, int i,
 			else
 				continue;
 
-			dst[(idst * 3) + jdst] = mf[(ti * 4) + tj];
+			out[(idst * 3) + jdst] = mf[(ti * 4) + tj];
 		}
 	}
+
+	memcpy(dst, out, sizeof(out));
 }
 
 static inline float get_3x3_determinant(const float *m)

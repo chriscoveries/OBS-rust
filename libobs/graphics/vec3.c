@@ -37,11 +37,17 @@ float vec3_plane_dist(const struct vec3 *v, const struct plane *p)
 void vec3_rotate(struct vec3 *dst, const struct vec3 *v, const struct matrix3 *m)
 {
 	struct vec3 temp;
+	float x, y, z;
+
 	vec3_copy(&temp, v);
 
-	dst->x = vec3_dot(&temp, &m->x);
-	dst->y = vec3_dot(&temp, &m->y);
-	dst->z = vec3_dot(&temp, &m->z);
+	x = vec3_dot(&temp, &m->x);
+	y = vec3_dot(&temp, &m->y);
+	z = vec3_dot(&temp, &m->z);
+
+	dst->x = x;
+	dst->y = y;
+	dst->z = z;
 	dst->w = 0.0f;
 }
 
@@ -56,11 +62,17 @@ void vec3_transform(struct vec3 *dst, const struct vec3 *v, const struct matrix4
 void vec3_transform3x4(struct vec3 *dst, const struct vec3 *v, const struct matrix3 *m)
 {
 	struct vec3 temp;
+	float x, y, z;
+
 	vec3_sub(&temp, v, &m->t);
 
-	dst->x = vec3_dot(&temp, &m->x);
-	dst->y = vec3_dot(&temp, &m->y);
-	dst->z = vec3_dot(&temp, &m->z);
+	x = vec3_dot(&temp, &m->x);
+	y = vec3_dot(&temp, &m->y);
+	z = vec3_dot(&temp, &m->z);
+
+	dst->x = x;
+	dst->y = y;
+	dst->z = z;
 	dst->w = 0.0f;
 }
 

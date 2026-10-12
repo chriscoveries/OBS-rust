@@ -41,10 +41,17 @@ static inline float gs_u8_to_float(uint8_t u)
 
 static inline void gs_u8x4_to_float4(float *f, const uint8_t *u)
 {
-	f[0] = gs_u8_to_float(u[0]);
-	f[1] = gs_u8_to_float(u[1]);
-	f[2] = gs_u8_to_float(u[2]);
-	f[3] = gs_u8_to_float(u[3]);
+	/* The bytes are read before any store: the caller may pass buffers that
+	 * share the same base address. */
+	float f0 = gs_u8_to_float(u[0]);
+	float f1 = gs_u8_to_float(u[1]);
+	float f2 = gs_u8_to_float(u[2]);
+	float f3 = gs_u8_to_float(u[3]);
+
+	f[0] = f0;
+	f[1] = f1;
+	f[2] = f2;
+	f[3] = f3;
 }
 
 static inline uint8_t gs_float_to_u8(float f)
