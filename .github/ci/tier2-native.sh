@@ -57,15 +57,20 @@ for mode in OFF ON; do
   cmake --build "$build" --target libobs cmocka-tests decklink \
     >"$build.build.log" 2>&1 || { grep -E "error|Error" "$build.build.log" | head -40; exit 1; }
 
-  # Most tests run ${CTEST_JOBS:-4}-wide. Tests that measure timing or drive
-  # real playback/capture/encoding run in a second, narrower pass after the
-  # CPU-heavy tests finish. They mostly wait on real time (about 270 s of
-  # sleeps in total, the longest about 75 s), so 3-wide keeps their timing intact.
-  serial='clock|drift|sync|deinterlace|vlc|ffmpeg|media|transition|portal|pipewire|v4l2|restart'
-  echo "== [$mode] ctest -j${CTEST_JOBS:-4}, then timing-sensitive tests -j${CTEST_TIMED_JOBS:-3}${xvfb:+ (under xvfb-run)}"
+  # Three passes. Most tests run ${CTEST_JOBS:-4}-wide. Tests that measure
+  # timing or drive real playback/encoding mostly wait on real time (about
+  # 270 s of sleeps in total, the longest about 75 s), so they run 3-wide after
+  # the CPU-heavy pass. Tests that share a desktop session service (the D-Bus
+  # portal, PipeWire, Wayland) run strictly one at a time: two portal tests at
+  # once collide on the shared session.
+  timed='clock|drift|sync|deinterlace|vlc|ffmpeg|media|transition|v4l2|restart'
+  exclusive='portal|pipewire|wayland'
+  ct=($xvfb ctest --test-dir "$build" --output-on-failure --timeout 600)
+  echo "== [$mode] ctest: -j${CTEST_JOBS:-4}, timed -j${CTEST_TIMED_JOBS:-3}, session tests serial${xvfb:+ (under xvfb-run)}"
   rc=0
-  $xvfb ctest --test-dir "$build" --output-on-failure --timeout 600 -j "${CTEST_JOBS:-4}" -E "$serial" || rc=$?
-  $xvfb ctest --test-dir "$build" --output-on-failure --timeout 600 -j "${CTEST_TIMED_JOBS:-3}" -R "$serial" || rc=$?
+  "${ct[@]}" -j "${CTEST_JOBS:-4}" -E "$timed|$exclusive" || rc=$?
+  "${ct[@]}" -j "${CTEST_TIMED_JOBS:-3}" -R "$timed" -E "$exclusive" || rc=$?
+  "${ct[@]}" -R "$exclusive" || rc=$?
   [ "$rc" -eq 0 ] || exit "$rc"
   if [ "$repeat" -gt 0 ]; then
     echo "== [$mode] ctest --repeat until-fail:$repeat${tests:+ -R $tests}"
