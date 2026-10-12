@@ -62,6 +62,7 @@ const char *obs_module_text(const char *lookup)
 #define RAW_VENC_ID "test_err_raw_video_encoder"
 #define TEX_VENC_ID "test_err_texture_video_encoder"
 #define PREFLIGHT_FALLBACK_ID "test_err_async_preflight_fallback_encoder"
+#define ASYNC_ERROR_ID "test_err_async_route_loss_encoder"
 #define AENC_ID "test_err_audio_encoder"
 #define RECORDING_ID "test_err_recording"
 
@@ -122,6 +123,7 @@ static const char *result_name(int r)
 static volatile long video_packets;
 static volatile long texture_encodes;
 static volatile long async_sample_probes;
+static volatile bool async_route_available;
 static volatile long failures;
 static volatile long venc_creates;
 static volatile long venc_destroys;
@@ -233,6 +235,29 @@ static void async_preflight_drain(void *data)
 	UNUSED_PARAMETER(data);
 }
 
+static bool async_error_encode(void *data, struct encoder_texture *texture, int64_t pts, uint64_t lock_key,
+			       uint64_t *next_key, struct encoder_packet *packet, bool *received)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(texture);
+	UNUSED_PARAMETER(lock_key);
+	UNUSED_PARAMETER(next_key);
+	os_atomic_inc_long(&texture_encodes);
+	if (encode_should_fail()) {
+		os_atomic_set_bool(&async_route_available, false);
+		return false;
+	}
+	make_video_packet(packet, pts, received);
+	return true;
+}
+
+static bool async_error_can_encode(void *data, const struct encoder_texture *texture)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(texture);
+	return os_atomic_load_bool(&async_route_available);
+}
+
 static bool aenc_encode(void *data, struct encoder_frame *frame, struct encoder_packet *packet, bool *received)
 {
 	UNUSED_PARAMETER(data);
@@ -292,6 +317,21 @@ static void register_encoders(void)
 		.caps = OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_ASYNC_TEXTURE,
 	};
 	obs_register_encoder(&async_preflight);
+
+	struct obs_encoder_info async_error = {
+		.id = ASYNC_ERROR_ID,
+		.type = OBS_ENCODER_VIDEO,
+		.codec = "h264",
+		.get_name = enc_name,
+		.create = venc_create,
+		.destroy = venc_destroy,
+		.encode = raw_venc_encode,
+		.encode_texture2 = async_error_encode,
+		.can_encode_texture = async_error_can_encode,
+		.drain_texture_encode = async_preflight_drain,
+		.caps = OBS_ENCODER_CAP_PASS_TEXTURE | OBS_ENCODER_CAP_ASYNC_TEXTURE,
+	};
+	obs_register_encoder(&async_error);
 
 	struct obs_encoder_info aenc = {
 		.id = AENC_ID,
@@ -397,6 +437,8 @@ enum scenario {
 	/* async route probe succeeds, sample probe rejects, then raw fallback
 	 * stops and restarts after the GPU worker is joined */
 	SCENARIO_ASYNC_PREFLIGHT_FALLBACK,
+	/* async texture encode fails and capability disappears before full_stop */
+	SCENARIO_ASYNC_ERROR_ROUTE_LOST,
 };
 
 static bool init_core(void)
@@ -516,16 +558,23 @@ static enum result run_scenario(enum scenario scenario)
 {
 	bool texture = scenario == SCENARIO_TEXTURE_RECORDING || scenario == SCENARIO_TEXTURE_IDLE_REPLAY_BUFFER;
 	bool async_preflight = scenario == SCENARIO_ASYNC_PREFLIGHT_FALLBACK;
-	bool with_rb = scenario != SCENARIO_TEXTURE_RECORDING && !async_preflight;
+	bool async_error = scenario == SCENARIO_ASYNC_ERROR_ROUTE_LOST;
+	texture = texture || async_error;
+	bool with_rb = scenario != SCENARIO_TEXTURE_RECORDING && !async_preflight && !async_error;
 	bool rb_running = scenario == SCENARIO_RAW_ACTIVE_REPLAY_BUFFER;
 	enum result r;
 
 	if (!init_core())
 		return RESULT_SETUP_FAILED;
+	if (async_error)
+		os_atomic_set_bool(&async_route_available, true);
 	register_encoders();
 	register_outputs();
 
-	const char *venc_id = async_preflight ? PREFLIGHT_FALLBACK_ID : texture ? TEX_VENC_ID : RAW_VENC_ID;
+	const char *venc_id = async_preflight ? PREFLIGHT_FALLBACK_ID
+			      : async_error   ? ASYNC_ERROR_ID
+			      : texture       ? TEX_VENC_ID
+					      : RAW_VENC_ID;
 	obs_encoder_t *venc = obs_video_encoder_create(venc_id, "venc", NULL, NULL);
 	obs_encoder_t *aenc = obs_audio_encoder_create(AENC_ID, "aenc", NULL, 0, NULL);
 	obs_output_t *rec = obs_output_create(RECORDING_ID, "recording", NULL, NULL);
@@ -770,6 +819,16 @@ static void async_sample_probe_falls_back_and_restarts(void **state)
 #endif
 }
 
+static void async_error_uses_committed_texture_route(void **state)
+{
+	UNUSED_PARAMETER(state);
+	if (!obs_up)
+		skip();
+#ifndef SCENARIO_UNSUPPORTED
+	expect_ok(SCENARIO_ASYNC_ERROR_ROUTE_LOST, "async encoder error uses committed texture route");
+#endif
+}
+
 /* libobs is started in a child process per scenario. Probe once that it can
  * start here at all (it needs a display and a graphics module). */
 static int group_setup(void **state)
@@ -794,6 +853,7 @@ int main(void)
 		cmocka_unit_test(texture_error_does_not_deadlock),
 		cmocka_unit_test(texture_error_idle_replay_buffer_starts),
 		cmocka_unit_test(async_sample_probe_falls_back_and_restarts),
+		cmocka_unit_test(async_error_uses_committed_texture_route),
 	};
 	return cmocka_run_group_tests(tests, group_setup, NULL);
 }

@@ -1463,7 +1463,10 @@ void full_stop(struct obs_encoder *encoder)
 		/* stopping a texture encoder waits for the gpu encode thread,
 		 * which is this thread, so let the outputs stop it when they
 		 * end capture. Flag it before they can. */
-		bool gpu_encode = gpu_encode_available(encoder);
+		/* Use the route committed by add_connection(). Re-probing here can
+		 * route an active texture encoder through raw cleanup on its own GPU
+		 * worker after a transient capability failure. */
+		bool gpu_encode = encoder->gpu_encode_active;
 		if (gpu_encode)
 			os_atomic_set_bool(&encoder->gpu_encode_failed, true);
 
