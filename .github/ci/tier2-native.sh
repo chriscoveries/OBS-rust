@@ -11,6 +11,13 @@
 # so several runners on one host never share a build tree.
 set -euo pipefail
 
+# Tests that call obs_startup() need an X display on Linux. Upstream's Tier 2
+# image runs them under xvfb-run; do the same when it is installed.
+xvfb=""
+if command -v xvfb-run >/dev/null 2>&1; then
+  xvfb="xvfb-run -a"
+fi
+
 src=$(cd "$1" && pwd)
 shift
 repeat=0
@@ -50,11 +57,11 @@ for mode in OFF ON; do
   cmake --build "$build" --target libobs cmocka-tests decklink \
     >"$build.build.log" 2>&1 || { grep -E "error|Error" "$build.build.log" | head -40; exit 1; }
 
-  echo "== [$mode] ctest"
-  ctest --test-dir "$build" --output-on-failure
+  echo "== [$mode] ctest${xvfb:+ (under xvfb-run)}"
+  $xvfb ctest --test-dir "$build" --output-on-failure
   if [ "$repeat" -gt 0 ]; then
     echo "== [$mode] ctest --repeat until-fail:$repeat${tests:+ -R $tests}"
-    ctest --test-dir "$build" --output-on-failure --repeat "until-fail:$repeat" ${tests:+-R "$tests"}
+    $xvfb ctest --test-dir "$build" --output-on-failure --repeat "until-fail:$repeat" ${tests:+-R "$tests"}
   fi
 
   lib=$(ls "$build"/libobs/libobs.so.* | head -1)
