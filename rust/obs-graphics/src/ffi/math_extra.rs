@@ -2,17 +2,14 @@
 //!
 //! The shims only convert to the safe core in [`crate::math_extra`].
 //! `polar_to_norm` writes `x`, `y`, and `z` and leaves `w` alone, as C does.
-//! `calc_torque` re-reads `v1` after storing the scaled step so an aliased
-//! `dst` matches C.
 
 use core::ffi::c_int;
 use core::ptr;
 
 use super::vec2::vec2;
 use super::vec3::vec3;
-use crate::math_extra::{self, TorqueWrite};
+use crate::math_extra;
 use crate::vec2::Vec2;
-use crate::vec3::Vec3;
 
 /// Writes the cartesian form of polar `*v` to `*dst`. `w` is 0.
 ///
@@ -83,6 +80,13 @@ pub extern "C" fn calc_torquef(val1: f32, val2: f32, torque: f32, min_adjust: f3
 ///
 /// `v1` and `v2` must be readable and `dst` writable. They may overlap. On the
 /// move path the scaled direction is stored before `v1` is read again.
+/// Steps `*v1` towards `*v2` by `torque * t`, clamped, and writes it to
+/// `*dst`.
+///
+/// # Safety
+///
+/// `v1` and `v2` must be readable `vec3`s and `dst` writable. They may
+/// overlap: both inputs are read in full before `dst` is written.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn calc_torque(
     dst: *mut vec3,
@@ -94,20 +98,15 @@ pub unsafe extern "C" fn calc_torque(
 ) {
     // SAFETY: the caller guarantees both inputs are readable.
     let (a, b) = unsafe { (ptr::read(v1), ptr::read(v2)) };
-    match math_extra::calc_torque_step(Vec3::from(a), b.into(), torque, min_adjust, t) {
-        TorqueWrite::Copy(v) => {
-            // SAFETY: the caller guarantees `dst` is writable.
-            unsafe { ptr::write(dst, v.into()) };
-        }
-        TorqueWrite::Move(scaled) => {
-            // SAFETY: store the scaled direction first, then re-read `v1`,
-            // which may be `dst`.
-            unsafe { ptr::write(dst, scaled.into()) };
-            let v1_now = unsafe { ptr::read(v1) };
-            let sum = scaled.add_xyz(v1_now.into());
-            unsafe { ptr::write(dst, sum.into()) };
-        }
-    }
+    // SAFETY: the caller guarantees `dst` is writable. The stepped value is
+    // computed from the copies before the single store, so an overlapping
+    // `v1` contributes its original lanes, as the fixed C does.
+    unsafe {
+        ptr::write(
+            dst,
+            math_extra::calc_torque(a.into(), b.into(), torque, min_adjust, t).into(),
+        )
+    };
 }
 
 /// One `rand()` draw, mapped like `math-extra.c`.

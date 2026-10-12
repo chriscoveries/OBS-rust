@@ -1,9 +1,8 @@
 //! C ABI shims for the exported functions in `libobs/graphics/plane.h`.
 //!
 //! The shims only convert to the safe core in [`crate::plane`]. Each reads
-//! its inputs before writing `dst`, except `plane_from_tri` when `v1` is
-//! `&dst->dir`: C dots that slot after normalizing into it, and the shim
-//! does the same. Header-inline helpers (`plane_copy`, `plane_set`,
+//! its inputs before writing `dst`, including `plane_from_tri` when `v1` is
+//! `&dst->dir`. Header-inline helpers (`plane_copy`, `plane_set`,
 //! `plane_setf`, `plane_close`, `plane_coplanar`) stay in the C header.
 
 use core::ptr;
@@ -46,6 +45,13 @@ impl From<Plane> for plane {
 ///
 /// `v1`, `v2`, and `v3` must be readable `vec3`s and `dst` writable. `v1`
 /// may be `&dst->dir`.
+/// Writes the plane through `*v1`, `*v2` and `*v3` to `*dst`.
+///
+/// # Safety
+///
+/// `v1`, `v2` and `v3` must be readable `vec3`s and `dst` writable. They may
+/// overlap: all three are read in full before `dst` is written, so a `v1`
+/// that is `&dst->dir` contributes its original value to the distance.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn plane_from_tri(
     dst: *mut plane,
@@ -53,20 +59,16 @@ pub unsafe extern "C" fn plane_from_tri(
     v2: *const vec3,
     v3: *const vec3,
 ) {
-    // SAFETY: the caller guarantees `v2` and `v3` are readable.
-    let (b, c) = unsafe { (ptr::read(v2), ptr::read(v3)) };
-    // `v1` may be the dir this call is about to overwrite.
-    // SAFETY: `addr_of` does not read `*dst`; it only forms the field address.
-    let v1_aliases_dir = unsafe { ptr::eq(v1, ptr::addr_of!((*dst).dir)) };
-    // SAFETY: the caller guarantees `v1` is readable. When it aliases `dst`,
-    // the dir still holds the caller's original value.
-    let a = unsafe { ptr::read(v1) };
-    let mut out = Plane::from_tri(Vec3::from(a), Vec3::from(b), Vec3::from(c));
-    if v1_aliases_dir {
-        out.dist = out.dir.dot(out.dir);
-    }
-    // SAFETY: the caller guarantees `dst` is writable.
-    unsafe { ptr::write(dst, out.into()) };
+    // SAFETY: the caller guarantees all three inputs are readable.
+    let (a, b, c) = unsafe { (ptr::read(v1), ptr::read(v2), ptr::read(v3)) };
+    // SAFETY: the caller guarantees `dst` is writable. The plane is built
+    // from the copies before the single store.
+    unsafe {
+        ptr::write(
+            dst,
+            Plane::from_tri(Vec3::from(a), Vec3::from(b), Vec3::from(c)).into(),
+        )
+    };
 }
 
 /// Writes `*p` transformed by `*m` to `*dst`.

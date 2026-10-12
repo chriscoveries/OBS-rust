@@ -35,8 +35,24 @@ fn same_vec(r: vec3, c: OracleVec3) -> bool {
     same(r.x, c.x) && same(r.y, c.y) && same(r.z, c.z) && same(r.w, c.w)
 }
 
+fn same_vec_rs(r: vec3, c: vec3) -> bool {
+    same(r.x, c.x) && same(r.y, c.y) && same(r.z, c.z) && same(r.w, c.w)
+}
+
+fn same_vec_cs(c: OracleVec3, d: OracleVec3) -> bool {
+    same(c.x, d.x) && same(c.y, d.y) && same(c.z, d.z) && same(c.w, d.w)
+}
+
 fn same_plane(r: plane, c: OraclePlane) -> bool {
     same_vec(r.dir, c.dir) && same(r.dist, c.dist)
+}
+
+fn same_plane_rs(r: plane, c: plane) -> bool {
+    same_vec_rs(r.dir, c.dir) && same(r.dist, c.dist)
+}
+
+fn same_plane_cs(c: OraclePlane, d: OraclePlane) -> bool {
+    same_vec_cs(c.dir, d.dir) && same(c.dist, d.dist)
 }
 
 fn rs_v(v: [f32; 4]) -> vec3 {
@@ -288,6 +304,9 @@ fn check(case: Case) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+/// `test_plane_from_tri_v1_aliases_dir` from the cmocka file. `v1` is
+/// `dst->dir`; the distance is now the dot with the original vertex, so it
+/// matches the non-aliased call on both sides.
 #[test]
 fn plane_from_tri_v1_alias_matches_c() {
     let mut rs_dst = rs_p([0.0, 0.0, 1.0, 0.0], 0.0);
@@ -296,7 +315,9 @@ fn plane_from_tri_v1_alias_matches_c() {
     let rc = rs_v([0.0, 1.0, 0.0, 0.0]);
     let cb = c_v([1.0, 0.0, 0.0, 0.0]);
     let cc = c_v([0.0, 1.0, 0.0, 0.0]);
-    // SAFETY: `v1` points at `dst->dir`, which is the alias the C function allows.
+    let ra = rs_v([0.0, 0.0, 1.0, 0.0]);
+    // SAFETY: `v1` points at `dst->dir`, which is the alias the C function
+    // allows, and both implementations read it before writing `dst`.
     unsafe {
         let dst = &mut rs_dst as *mut plane;
         rs::plane_from_tri(dst, ptr::addr_of!((*dst).dir), &rb, &rc);
@@ -307,7 +328,23 @@ fn plane_from_tri_v1_alias_matches_c() {
         same_plane(rs_dst, c_dst),
         "alias shim {rs_dst:?} != C {c_dst:?}"
     );
-    assert!(same(rs_dst.dist, 0.99999994), "alias dist {}", rs_dst.dist);
+    assert!(same(rs_dst.dist, 0.57735026), "alias dist {}", rs_dst.dist);
+
+    let mut rs_ref = plane::default();
+    let mut c_ref = OraclePlane::default();
+    // SAFETY: all pointers refer to live, properly aligned locals.
+    unsafe {
+        rs::plane_from_tri(&mut rs_ref, &ra, &rb, &rc);
+        c::oracle_plane_from_tri(&mut c_ref, &c_v([0.0, 0.0, 1.0, 0.0]), &cb, &cc);
+    }
+    assert!(
+        same_plane_rs(rs_ref, rs_dst),
+        "alias {rs_dst:?} != clean {rs_ref:?}"
+    );
+    assert!(
+        same_plane_cs(c_dst, c_ref),
+        "C alias {c_dst:?} != clean {c_ref:?}"
+    );
 }
 
 fn any_bits() -> impl Strategy<Value = f32> {

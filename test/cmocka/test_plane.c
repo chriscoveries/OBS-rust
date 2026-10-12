@@ -72,20 +72,26 @@ static void test_plane_from_tri_degenerate(void **state)
 	assert_plane(&p, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 }
 
-/* v1 is dst->dir. The final dot reads the normalized dir, so dist is
- * dir·dir (just under 1), not the dot with the original v1.
- * Characterized, not endorsed. */
+/* v1 is dst->dir. The distance used to dot the normalized dir, because the
+ * vertex was read after dst->dir was written and normalized; the vertex is
+ * now read first, so the aliased call matches the non-aliased one. */
 static void test_plane_from_tri_v1_aliases_dir(void **state)
 {
-	struct vec3 v2, v3;
-	struct plane p;
+	struct vec3 v1, v2, v3;
+	struct plane p, expect;
 
 	UNUSED_PARAMETER(state);
-	set_vec(&p.dir, 0.0f, 0.0f, 1.0f, 0.0f);
+	set_vec(&v1, 0.0f, 0.0f, 1.0f, 0.0f);
 	set_vec(&v2, 1.0f, 0.0f, 0.0f, 0.0f);
 	set_vec(&v3, 0.0f, 1.0f, 0.0f, 0.0f);
+
+	set_vec(&p.dir, 0.0f, 0.0f, 1.0f, 0.0f);
+	p.dist = 9.0f;
 	plane_from_tri(&p, &p.dir, &v2, &v3);
-	assert_plane(&p, 0.57735026f, 0.57735026f, 0.57735026f, 0.0f, 0.99999994f);
+	assert_plane(&p, 0.57735026f, 0.57735026f, 0.57735026f, 0.0f, 0.57735026f);
+
+	plane_from_tri(&expect, &v1, &v2, &v3);
+	assert_plane(&p, expect.dir.x, expect.dir.y, expect.dir.z, expect.dir.w, expect.dist);
 }
 
 /* vec3_sub clears w before the cross, but the final dot still multiplies
