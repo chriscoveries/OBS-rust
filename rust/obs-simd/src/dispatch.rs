@@ -178,6 +178,17 @@ pub fn force_tier_for_test(tier: Tier) -> Result<ForcedTierGuard, UnsupportedTie
 mod tests {
     use super::*;
 
+    fn assert_detection_and_force(tier: Tier, detected: bool) {
+        let host = features();
+        assert_eq!(host.supports(tier), detected);
+
+        if detected {
+            let guard = force_tier_for_test(tier).expect("detected tier is supported");
+            assert_eq!(selected_tier(), tier);
+            drop(guard);
+        }
+    }
+
     #[test]
     fn best_tier_uses_feature_bits_in_priority_order() {
         assert_eq!(CpuFeatures::from_bits(0).best_tier(), Tier::Scalar);
@@ -217,43 +228,31 @@ mod tests {
     }
 
     #[test]
-    fn detected_bits_match_architecture_feature_checks() {
-        let host = features();
+    fn scalar_tier_can_be_forced() {
+        let guard = force_tier_for_test(Tier::Scalar).expect("scalar tier is always supported");
+        assert_eq!(selected_tier(), Tier::Scalar);
+        drop(guard);
+    }
 
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            assert_eq!(
-                host.supports(Tier::Avx512Bw),
-                std::arch::is_x86_feature_detected!("avx512bw")
-            );
-            assert_eq!(
-                host.supports(Tier::Avx2),
-                std::arch::is_x86_feature_detected!("avx2")
-            );
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        assert_eq!(
-            host.supports(Tier::Neon),
-            std::arch::is_aarch64_feature_detected!("neon")
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn avx512bw_detection_and_override_match_runtime_support() {
+        assert_detection_and_force(
+            Tier::Avx512Bw,
+            std::arch::is_x86_feature_detected!("avx512bw"),
         );
     }
 
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[test]
-    fn every_supported_tier_can_be_forced() {
-        let default = selected_tier();
-        let host = features();
+    fn avx2_detection_and_override_match_runtime_support() {
+        assert_detection_and_force(Tier::Avx2, std::arch::is_x86_feature_detected!("avx2"));
+    }
 
-        for tier in [Tier::Avx512Bw, Tier::Avx2, Tier::Neon, Tier::Scalar] {
-            if !host.supports(tier) {
-                continue;
-            }
-
-            let guard = force_tier_for_test(tier).expect("host supports forced tier");
-            assert_eq!(selected_tier(), tier);
-            drop(guard);
-            assert_eq!(selected_tier(), default);
-        }
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_detection_and_override_match_runtime_support() {
+        assert_detection_and_force(Tier::Neon, std::arch::is_aarch64_feature_detected!("neon"));
     }
 
     #[test]
