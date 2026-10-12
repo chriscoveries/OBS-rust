@@ -10,6 +10,13 @@
 //! from `util/base-variadic.c`), so any test binary using the oracle resolves
 //! them.
 
+// Fingerprint of the native inputs build.rs feeds to `cc` (oracle/*.c, *.h,
+// the libobs/deps sources it compiles, the flag list). Reading it with
+// `env!` records a rustc `env-dep`, which the compilation cache folds into
+// this crate's artifact key — without it a native-only change can be served
+// a stale cached rlib whose bundled objects predate the change.
+const _: &str = env!("OBS_ORACLE_INPUT_HASH");
+
 pub mod array_serializer;
 #[cfg(unix)]
 pub mod audio_io;
