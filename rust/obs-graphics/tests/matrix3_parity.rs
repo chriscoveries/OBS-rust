@@ -41,6 +41,22 @@ fn same_m(r: matrix3, c: OracleMatrix3) -> bool {
     same_row(r.x, c.x) && same_row(r.y, c.y) && same_row(r.z, c.z) && same_row(r.t, c.t)
 }
 
+fn same_row_rs(r: vec3, c: vec3) -> bool {
+    same(r.x, c.x) && same(r.y, c.y) && same(r.z, c.z) && same(r.w, c.w)
+}
+
+fn same_row_cs(c: OracleVec3, d: OracleVec3) -> bool {
+    same(c.x, d.x) && same(c.y, d.y) && same(c.z, d.z) && same(c.w, d.w)
+}
+
+fn same_m_rs(r: matrix3, c: matrix3) -> bool {
+    same_row_rs(r.x, c.x) && same_row_rs(r.y, c.y) && same_row_rs(r.z, c.z) && same_row_rs(r.t, c.t)
+}
+
+fn same_m_cs(c: OracleMatrix3, d: OracleMatrix3) -> bool {
+    same_row_cs(c.x, d.x) && same_row_cs(c.y, d.y) && same_row_cs(c.z, d.z) && same_row_cs(c.t, d.t)
+}
+
 fn rs_row(v: [f32; 4]) -> vec3 {
     vec3 {
         x: v[0],
@@ -358,4 +374,134 @@ proptest! {
     ) {
         check(rows, other, q, dist)?;
     }
+}
+
+/// `dst` may hold the vector operand: C re-read `v` for every row until the
+/// alias fix, so a `v` inside the output used rows that were already
+/// overwritten. The Rust shim read it once from the start.
+fn check_aliased_vec_row(
+    rows: [[f32; 4]; 4],
+    v: [f32; 4],
+    rs_op: unsafe extern "C" fn(*mut matrix3, *const matrix3, *const vec3),
+    c_op: unsafe extern "C" fn(*mut OracleMatrix3, *const OracleMatrix3, *const OracleVec3),
+) {
+    let (rm, cm) = (rs_m(rows), c_m(rows));
+    let (rv, cv) = (rs_row(v), c_row(v));
+    let mut rr = matrix3::default();
+    let mut cr = OracleMatrix3::default();
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs_op(&mut rr, &rm, &rv);
+        c_op(&mut cr, &cm, &cv);
+    }
+
+    let mut r_alias = rs_m(rows);
+    let mut c_alias = c_m(rows);
+    r_alias.x = rv;
+    c_alias.x = cv;
+    let r_v: *const vec3 = &r_alias.x;
+    let c_v: *const OracleVec3 = &c_alias.x;
+    // SAFETY: the vector operand may share storage with dst; all pointers
+    // name live locals.
+    unsafe {
+        rs_op(&mut r_alias, &rm, r_v);
+        c_op(&mut c_alias, &cm, c_v);
+    }
+    assert!(
+        same_m(r_alias, c_alias),
+        "shim {r_alias:?} != C {c_alias:?}"
+    );
+    assert!(
+        same_m_rs(r_alias, rr),
+        "shim {r_alias:?} != non-aliased {rr:?}"
+    );
+    assert!(
+        same_m_cs(c_alias, cr),
+        "C {c_alias:?} != non-aliased {cr:?}"
+    );
+}
+
+const SCALE_ROWS: [[f32; 4]; 4] = [
+    [2.0, 3.0, 4.0, 0.0],
+    [5.0, 6.0, 7.0, 0.0],
+    [9.0, 10.0, 11.0, 0.0],
+    [13.0, 14.0, 15.0, 0.0],
+];
+
+const MIRROR_ROWS: [[f32; 4]; 4] = [
+    [2.0, 1.0, 0.0, 0.0],
+    [1.0, 2.0, 3.0, 0.0],
+    [4.0, 5.0, 6.0, 0.0],
+    [7.0, 8.0, 9.0, 0.0],
+];
+
+#[test]
+fn scale_vec_aliases_row() {
+    check_aliased_vec_row(
+        SCALE_ROWS,
+        [2.0, -1.0, 0.5, 0.0],
+        rs::matrix3_scale,
+        c::oracle_matrix3_scale,
+    );
+}
+
+#[test]
+fn mirrorv_vec_aliases_row() {
+    check_aliased_vec_row(
+        MIRROR_ROWS,
+        [0.6, 0.8, 0.0, 0.0],
+        rs::matrix3_mirrorv,
+        c::oracle_matrix3_mirrorv,
+    );
+}
+
+/// A `matrix3` and a `plane` sharing storage: C read the plane after writing
+/// the rows until the alias fix, so a plane in the destination was read back
+/// corrupted. The Rust shim read it first from the start.
+#[repr(C)]
+union Matrix3Plane {
+    m: matrix3,
+    p: plane,
+}
+
+/// The oracle side of the same arrangement.
+#[repr(C)]
+union OracleMatrix3Plane {
+    m: OracleMatrix3,
+    p: OraclePlane,
+}
+
+#[test]
+fn mirror_plane_same_address() {
+    let rows = MIRROR_ROWS;
+    let (rm, cm) = (rs_m(rows), c_m(rows));
+    let mut rr = matrix3::default();
+    let mut cr = OracleMatrix3::default();
+    let mut rp = plane::default();
+    let mut cp = OraclePlane::default();
+    rp.dir = rs_row([0.6, 0.8, 0.0, 0.0]);
+    rp.dist = 2.0;
+    cp.dir = c_row([0.6, 0.8, 0.0, 0.0]);
+    cp.dist = 2.0;
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs::matrix3_mirror(&mut rr, &rm, &rp);
+        c::oracle_matrix3_mirror(&mut cr, &cm, &cp);
+    }
+
+    let mut shared = Matrix3Plane { m: rm };
+    let mut shared_c = OracleMatrix3Plane { m: cm };
+    shared.p = rp;
+    shared_c.p = cp;
+    // SAFETY: the plane may share storage with the destination matrix; both
+    // implementations must tolerate it, and the unions name live locals.
+    unsafe {
+        rs::matrix3_mirror(&mut shared.m, &rm, &shared.p);
+        c::oracle_matrix3_mirror(&mut shared_c.m, &cm, &shared_c.p);
+    }
+    // SAFETY: each union holds the written matrix, read whole.
+    let (r, c) = unsafe { (shared.m, shared_c.m) };
+    assert!(same_m(r, c), "shim {r:?} != C {c:?}");
+    assert!(same_m_rs(r, rr), "shim {r:?} != non-aliased {rr:?}");
+    assert!(same_m_cs(c, cr), "C {c:?} != non-aliased {cr:?}");
 }

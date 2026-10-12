@@ -28,6 +28,14 @@ fn same3(r: vec3, c: OracleVec3) -> bool {
     same(r.x, c.x) && same(r.y, c.y) && same(r.z, c.z) && same(r.w, c.w)
 }
 
+fn same_rs(r: vec3, c: vec3) -> bool {
+    same(r.x, c.x) && same(r.y, c.y) && same(r.z, c.z) && same(r.w, c.w)
+}
+
+fn same_cs(c: OracleVec3, d: OracleVec3) -> bool {
+    same(c.x, d.x) && same(c.y, d.y) && same(c.z, d.z) && same(c.w, d.w)
+}
+
 type Lanes = [f32; 4];
 
 /// Any bit pattern, so NaNs, infinities, zeros and subnormals all appear.
@@ -368,4 +376,91 @@ fn cmocka_cases_match_c_oracle() {
         translate,
     )
     .unwrap();
+}
+
+/// Both matrix types are four 16-byte vec3 rows, so the same offset serves
+/// the Rust and the oracle side.
+fn row_of(m: *mut matrix3, i: usize) -> *mut vec3 {
+    // SAFETY: i is in 0..4 and a matrix3 is four vec3 rows.
+    unsafe { m.cast::<vec3>().add(i) }
+}
+
+fn c_row_of(m: *mut OracleMatrix3, i: usize) -> *mut OracleVec3 {
+    // SAFETY: i is in 0..4 and an OracleMatrix3 is four OracleVec3 rows.
+    unsafe { m.cast::<OracleVec3>().add(i) }
+}
+
+/// `dst` may be a row of the matrix: C stored dst->x before reading m->y and
+/// m->z until the alias fix, and the Rust shim reads every row first. Every
+/// row destination must match a separate destination, on both sides.
+fn check_aliased_row(
+    v: Lanes,
+    rows: [Lanes; 4],
+    row: usize,
+    rs_op: unsafe extern "C" fn(*mut vec3, *const vec3, *const matrix3),
+    c_op: unsafe extern "C" fn(*mut OracleVec3, *const OracleVec3, *const OracleMatrix3),
+) {
+    let (rm, cm) = (rm3(rows), cm3(rows));
+    let (rv, cv) = (r3(v), c3(v));
+    let mut rr = vec3::default();
+    let mut cr = OracleVec3::default();
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs_op(&mut rr, &rv, &rm);
+        c_op(&mut cr, &cv, &cm);
+    }
+
+    let mut r_alias = rm3(rows);
+    let mut c_alias = cm3(rows);
+    let r_base: *mut matrix3 = &mut r_alias;
+    let c_base: *mut OracleMatrix3 = &mut c_alias;
+    // SAFETY: row is in 0..4, so both destinations name a row of a live local.
+    let (r_dst, c_dst) = (row_of(r_base, row), c_row_of(c_base, row));
+    // SAFETY: dst may be a row of its own matrix; all pointers name live
+    // locals and row is in range.
+    unsafe {
+        rs_op(r_dst, &rv, r_base);
+        c_op(c_dst, &cv, c_base);
+    }
+    // SAFETY: each destination names a row of a live local, read whole.
+    let (r, c) = unsafe { (core::ptr::read(r_dst), core::ptr::read(c_dst)) };
+    assert!(same3(r, c), "row {row}: shim {r:?} != C {c:?}");
+    assert!(
+        same_rs(r, rr),
+        "row {row}: shim {r:?} != non-aliased {rr:?}"
+    );
+    assert!(same_cs(c, cr), "row {row}: C {c:?} != non-aliased {cr:?}");
+}
+
+const ALIAS_ROWS: [Lanes; 4] = [
+    [1.0, 2.0, 3.0, 0.0],
+    [4.0, 5.0, 6.0, 0.0],
+    [7.0, 8.0, 9.0, 0.0],
+    [0.5, -1.0, 2.0, 0.0],
+];
+
+#[test]
+fn rotate_dst_aliases_matrix_row() {
+    for row in 0..4 {
+        check_aliased_row(
+            [2.0, -3.0, 0.25, 0.0],
+            ALIAS_ROWS,
+            row,
+            rs::vec3_rotate,
+            c::oracle_vec3_rotate,
+        );
+    }
+}
+
+#[test]
+fn transform3x4_dst_aliases_matrix_row() {
+    for row in 0..4 {
+        check_aliased_row(
+            [2.0, -3.0, 0.25, 0.0],
+            ALIAS_ROWS,
+            row,
+            rs::vec3_transform3x4,
+            c::oracle_vec3_transform3x4,
+        );
+    }
 }

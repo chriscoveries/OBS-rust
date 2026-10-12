@@ -416,27 +416,198 @@ proptest! {
     }
 }
 
-/// `dst` may alias an input. The shim reads first, as the C copies do.
+/// Every arrangement of overlapping pointers must give the non-aliased
+/// result, on the shim and on the oracle alike.
+fn assert_aliased(r: quat, c: OracleQuat, rref: quat, cref: OracleQuat, what: &str) {
+    assert!(same_q(r, c), "{what}: shim {r:?} != C {c:?}");
+    assert!(
+        same(r.x, rref.x) && same(r.y, rref.y) && same(r.z, rref.z) && same(r.w, rref.w),
+        "{what}: shim {r:?} != non-aliased {rref:?}"
+    );
+    assert!(
+        same(c.x, cref.x) && same(c.y, cref.y) && same(c.z, cref.z) && same(c.w, cref.w),
+        "{what}: C {c:?} != non-aliased {cref:?}"
+    );
+}
+
+/// `dst` may alias an input, and all three pointers may name the same
+/// object. The C and Rust results must both match the non-aliased product.
 #[test]
-fn mul_dst_aliases_q1() {
-    let mut r = quat {
-        x: 0.2,
-        y: -0.3,
-        z: 0.4,
-        w: 0.8,
-    };
-    let mut c = OracleQuat {
-        x: 0.2,
-        y: -0.3,
-        z: 0.4,
-        w: 0.8,
-    };
-    // SAFETY: both pointers refer to live locals. The source and dest alias.
+fn mul_dst_aliases_input() {
+    let (ra, ca) = pair([0.2, -0.3, 0.4, 0.8]);
+    let (rb, cb) = pair([-0.5, 0.6, -0.7, 0.9]);
+    let mut rr = quat::default();
+    let mut cr = OracleQuat::default();
+    // SAFETY: all pointers refer to live locals.
     unsafe {
-        rs::quat_mul(&mut r, &r, &r);
-        c::oracle_quat_mul(&mut c, &c, &c);
+        rs::quat_mul(&mut rr, &ra, &rb);
+        c::oracle_quat_mul(&mut cr, &ca, &cb);
     }
-    assert!(same_q(r, c), "shim {r:?} != C {c:?}");
+
+    // Quaternion squared, the reference for the all-equal arrangement.
+    let mut rr_sq = quat::default();
+    let mut cr_sq = OracleQuat::default();
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs::quat_mul(&mut rr_sq, &ra, &ra);
+        c::oracle_quat_mul(&mut cr_sq, &ca, &ca);
+    }
+
+    let mut r1 = ra;
+    let mut c1 = ca;
+    let r1_ptr: *mut quat = &mut r1;
+    let c1_ptr: *mut OracleQuat = &mut c1;
+    // SAFETY: dst may alias q1; the pointers name live locals.
+    unsafe {
+        rs::quat_mul(r1_ptr, r1_ptr, &rb);
+        c::oracle_quat_mul(c1_ptr, c1_ptr, &cb);
+    }
+    assert_aliased(r1, c1, rr, cr, "dst == q1");
+
+    let mut r2 = rb;
+    let mut c2 = cb;
+    let r2_ptr: *mut quat = &mut r2;
+    let c2_ptr: *mut OracleQuat = &mut c2;
+    // SAFETY: dst may alias q2; the pointers name live locals.
+    unsafe {
+        rs::quat_mul(r2_ptr, &ra, r2_ptr);
+        c::oracle_quat_mul(c2_ptr, &ca, c2_ptr);
+    }
+    assert_aliased(r2, c2, rr, cr, "dst == q2");
+
+    let mut r3 = ra;
+    let mut c3 = ca;
+    let r3_ptr: *mut quat = &mut r3;
+    let c3_ptr: *mut OracleQuat = &mut c3;
+    // SAFETY: all three pointers may name one object; it is live.
+    unsafe {
+        rs::quat_mul(r3_ptr, r3_ptr, r3_ptr);
+        c::oracle_quat_mul(c3_ptr, c3_ptr, c3_ptr);
+    }
+    assert_aliased(r3, c3, rr_sq, cr_sq, "dst == q1 == q2");
+}
+
+/// A `quat` and a `matrix3` sharing storage. `quat_from_matrix3` reaches its
+/// matrix through a `matrix4` cast, so an output lane can overwrite a matrix
+/// element that the formula still has to read.
+#[repr(C)]
+union Matrix3Quat {
+    m: matrix3,
+    q: quat,
+}
+
+/// The oracle side of the same arrangement.
+#[repr(C)]
+union OracleMatrix3Quat {
+    m: OracleMatrix3,
+    q: OracleQuat,
+}
+
+/// A `quat` and a `matrix4` sharing storage, for the matrix4 entry point.
+#[repr(C)]
+union Matrix4Quat {
+    m: matrix4,
+    q: quat,
+}
+
+/// The oracle side of the same arrangement.
+#[repr(C)]
+union OracleMatrix4Quat {
+    m: OracleMatrix4,
+    q: OracleQuat,
+}
+
+#[test]
+fn from_matrix3_same_address() {
+    let rows = [
+        [0.0, 1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0],
+    ];
+    let (rm, cm) = m3_pair(rows);
+    let mut rr = quat::default();
+    let mut cr = OracleQuat::default();
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs::quat_from_matrix3(&mut rr, &rm);
+        c::oracle_quat_from_matrix3(&mut cr, &cm);
+    }
+
+    let mut shared = Matrix3Quat { m: rm };
+    let mut shared_c = OracleMatrix3Quat { m: cm };
+    // SAFETY: the destination quaternion and the source matrix share storage,
+    // which both implementations must tolerate.
+    unsafe {
+        rs::quat_from_matrix3(&mut shared.q, &shared.m);
+        c::oracle_quat_from_matrix3(&mut shared_c.q, &shared_c.m);
+    }
+    // SAFETY: each union holds the written quaternion, read whole.
+    let (r, c) = unsafe { (shared.q, shared_c.q) };
+    assert_aliased(r, c, rr, cr, "matrix3 same address");
+}
+
+#[test]
+fn from_matrix4_same_address() {
+    // Positive trace: the `tr > 0` branch reads m->x.y after writing dst->y.
+    let rows = [
+        [0.0, 1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let (rm, cm) = m4_pair(rows);
+    let mut rr = quat::default();
+    let mut cr = OracleQuat::default();
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs::quat_from_matrix4(&mut rr, &rm);
+        c::oracle_quat_from_matrix4(&mut cr, &cm);
+    }
+
+    let mut shared = Matrix4Quat { m: rm };
+    let mut shared_c = OracleMatrix4Quat { m: cm };
+    // SAFETY: the destination quaternion and the source matrix share storage,
+    // which both implementations must tolerate.
+    unsafe {
+        rs::quat_from_matrix4(&mut shared.q, &shared.m);
+        c::oracle_quat_from_matrix4(&mut shared_c.q, &shared_c.m);
+    }
+    // SAFETY: each union holds the written quaternion, read whole.
+    let (r, c) = unsafe { (shared.q, shared_c.q) };
+    assert_aliased(r, c, rr, cr, "matrix4 same address");
+}
+
+#[test]
+fn from_matrix4_same_address_negative_trace() {
+    // 180 degrees about Y: the negative branch picks diagonal index 1, where
+    // dst->ptr[0] reads the lanes dst->ptr[1] just overwrote.
+    let rows = [
+        [-1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let (rm, cm) = m4_pair(rows);
+    let mut rr = quat::default();
+    let mut cr = OracleQuat::default();
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs::quat_from_matrix4(&mut rr, &rm);
+        c::oracle_quat_from_matrix4(&mut cr, &cm);
+    }
+
+    let mut shared = Matrix4Quat { m: rm };
+    let mut shared_c = OracleMatrix4Quat { m: cm };
+    // SAFETY: the destination quaternion and the source matrix share storage,
+    // which both implementations must tolerate.
+    unsafe {
+        rs::quat_from_matrix4(&mut shared.q, &shared.m);
+        c::oracle_quat_from_matrix4(&mut shared_c.q, &shared_c.m);
+    }
+    // SAFETY: each union holds the written quaternion, read whole.
+    let (r, c) = unsafe { (shared.q, shared_c.q) };
+    assert_aliased(r, c, rr, cr, "matrix4 negative trace same address");
 }
 
 /// The cmocka cases, checked bit-for-bit against the oracle where the C
