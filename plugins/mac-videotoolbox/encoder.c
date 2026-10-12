@@ -1401,8 +1401,13 @@ static bool vt_can_encode_texture(void *data, const struct encoder_texture *text
 	if (!vt_is_nv12_or_p010((OSType)enc->vt_pix_fmt))
 		return false;
 
+	/* The NULL route probe runs outside the graphics context. Check format
+	 * here, then validate Metal and IOSurface support against a real frame. */
 	if (!texture)
-		return gs_get_device_type() == GS_DEVICE_METAL;
+		return true;
+
+	if (gs_get_device_type() != GS_DEVICE_METAL)
+		return false;
 
 	if (!texture->iosurface || !texture->tex[0] || !texture->tex[1])
 		return false;
