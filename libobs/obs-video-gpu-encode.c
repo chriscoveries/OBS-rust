@@ -60,7 +60,14 @@ static void encoder_texture_lease_release(void *opaque)
 
 #define NBSP "\xC2\xA0"
 static const char *gpu_encode_frame_name = "gpu_encode_frame";
-static void *gpu_encode_thread(void *data)
+#ifdef OBS_TEST_GPU_ENCODE_THREAD
+#define GPU_ENCODE_THREAD_LINKAGE
+#define GPU_ENCODE_THREAD_NAME obs_gpu_encode_thread
+#else
+#define GPU_ENCODE_THREAD_LINKAGE static
+#define GPU_ENCODE_THREAD_NAME gpu_encode_thread
+#endif
+GPU_ENCODE_THREAD_LINKAGE void *GPU_ENCODE_THREAD_NAME(void *data)
 {
 	struct obs_core_video_mix *video = data;
 	uint64_t interval = video_output_get_frame_time(video->video);
@@ -335,7 +342,7 @@ bool init_gpu_encoding(struct obs_core_video_mix *video, bool async_texture)
 		return false;
 	if (os_event_init(&video->gpu_encode_inactive, OS_EVENT_TYPE_MANUAL) != 0)
 		return false;
-	if (pthread_create(&video->gpu_encode_thread, NULL, gpu_encode_thread, video) != 0)
+	if (pthread_create(&video->gpu_encode_thread, NULL, GPU_ENCODE_THREAD_NAME, video) != 0)
 		return false;
 
 	os_event_signal(video->gpu_encode_inactive);
