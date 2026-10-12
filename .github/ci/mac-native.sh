@@ -68,7 +68,10 @@ cmake -S "$src" -B "$build" -G Xcode \
   -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
   "${flags[@]}" \
   >"$build.configure.log" 2>&1 || { tail -40 "$build.configure.log"; exit 1; }
-$NICE cmake --build "$build" --config Debug --target libobs cmocka-tests \
+# libobs-metal is a separate, dynamically loaded target: neither libobs nor
+# the cmocka tests depend on it, so name it explicitly or Metal code is never
+# compiled here.
+$NICE cmake --build "$build" --config Debug --target libobs libobs-metal cmocka-tests \
   >"$build.build.log" 2>&1 || { grep -E "error|Error" "$build.build.log" | head -40; exit 1; }
 
 # Test binaries and libobs itself carry LC_RPATH @executable_path/../Frameworks
