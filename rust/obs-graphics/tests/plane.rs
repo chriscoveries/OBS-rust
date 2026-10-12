@@ -67,8 +67,8 @@ fn test_plane_from_tri_degenerate() {
 }
 
 /// Same inputs as the C alias test, passed by value. dist is `v1·dir`
-/// (`1/sqrt(3)`). The shim test covers `v1 == &dst->dir`, where C dots the
-/// normalized dir with itself instead.
+/// (`1/sqrt(3)`), and the shim test covers `v1 == &dst->dir`, where the
+/// distance is the same dot.
 #[test]
 fn test_plane_from_tri_tilted() {
     let p = Plane::from_tri(

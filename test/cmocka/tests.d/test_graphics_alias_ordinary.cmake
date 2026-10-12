@@ -1,0 +1,10 @@
+# graphics math ordinary alias safety (libobs/graphics/{bounds,plane}.c)
+add_executable(test_graphics_alias_ordinary test_graphics_alias_ordinary.c)
+target_include_directories(test_graphics_alias_ordinary PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_graphics_alias_ordinary PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+if(NOT MSVC)
+  target_link_libraries(test_graphics_alias_ordinary PRIVATE m)
+endif()
+
+add_dependencies(cmocka-tests test_graphics_alias_ordinary)
+add_test(test_graphics_alias_ordinary ${CMAKE_CURRENT_BINARY_DIR}/test_graphics_alias_ordinary)

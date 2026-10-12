@@ -1,10 +1,11 @@
 //! Tier 3: the Rust C ABI shim and safe core behave exactly like the
 //! original C, compiled as an oracle.
 //!
-//! No intentional differences. `plane_from_tri` with `v1 == &dst->dir` dots
-//! the normalized direction with itself, as C does. `plane_intersection_line`
-//! leaves `*t` unchanged on a miss. `vec3_cross` / `vec3_norm` follow the
-//! header SSE, so parity is bit-exact (0 ULP).
+//! No intentional differences. `plane_from_tri` accepts `v1 == &dst->dir` and
+//! uses the original vertex for the distance, as C does since the alias
+//! repair. `plane_intersection_line` leaves `*t` unchanged on a miss.
+//! `vec3_cross` / `vec3_norm` follow the header SSE, so parity is bit-exact
+//! (0 ULP).
 //!
 //! Reminder: the mutation check (break the core, see this file fail) is done
 //! once per port, not on every change.
@@ -37,6 +38,20 @@ fn same_vec(r: vec3, c: OracleVec3) -> bool {
 
 fn same_plane(r: plane, c: OraclePlane) -> bool {
     same_vec(r.dir, c.dir) && same(r.dist, c.dist)
+}
+
+fn same_plane_rs(r: plane, c: plane) -> bool {
+    same(r.dir.x, c.dir.x)
+        && same(r.dir.y, c.dir.y)
+        && same(r.dir.z, c.dir.z)
+        && same(r.dist, c.dist)
+}
+
+fn same_plane_cs(c: OraclePlane, d: OraclePlane) -> bool {
+    same(c.dir.x, d.dir.x)
+        && same(c.dir.y, d.dir.y)
+        && same(c.dir.z, d.dir.z)
+        && same(c.dist, d.dist)
 }
 
 fn rs_v(v: [f32; 4]) -> vec3 {
@@ -307,7 +322,26 @@ fn plane_from_tri_v1_alias_matches_c() {
         same_plane(rs_dst, c_dst),
         "alias shim {rs_dst:?} != C {c_dst:?}"
     );
-    assert!(same(rs_dst.dist, 0.99999994), "alias dist {}", rs_dst.dist);
+    /* the distance is the dot with the original vertex now, not dir·dir */
+    assert!(same(rs_dst.dist, 0.57735026), "alias dist {}", rs_dst.dist);
+
+    let mut rs_ref = plane::default();
+    let mut c_ref = OraclePlane::default();
+    let ra = rs_v([0.0, 0.0, 1.0, 0.0]);
+    let ca = c_v([0.0, 0.0, 1.0, 0.0]);
+    // SAFETY: all pointers refer to live locals, with distinct destinations.
+    unsafe {
+        rs::plane_from_tri(&mut rs_ref, &ra, &rb, &rc);
+        c::oracle_plane_from_tri(&mut c_ref, &ca, &cb, &cc);
+    }
+    assert!(
+        same_plane_rs(rs_dst, rs_ref),
+        "alias {rs_dst:?} != separate {rs_ref:?}"
+    );
+    assert!(
+        same_plane_cs(c_dst, c_ref),
+        "C alias {c_dst:?} != separate {c_ref:?}"
+    );
 }
 
 fn any_bits() -> impl Strategy<Value = f32> {

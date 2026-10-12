@@ -43,6 +43,22 @@ fn same_bounds(r: bounds, c: OracleBounds) -> bool {
     same_vec(r.min, c.min) && same_vec(r.max, c.max)
 }
 
+fn same_vec_rs(r: vec3, c: vec3) -> bool {
+    same(r.x, c.x) && same(r.y, c.y) && same(r.z, c.z) && same(r.w, c.w)
+}
+
+fn same_vec_cs(c: OracleVec3, d: OracleVec3) -> bool {
+    same(c.x, d.x) && same(c.y, d.y) && same(c.z, d.z) && same(c.w, d.w)
+}
+
+fn same_bounds_rs(r: bounds, c: bounds) -> bool {
+    same_vec_rs(r.min, c.min) && same_vec_rs(r.max, c.max)
+}
+
+fn same_bounds_cs(c: OracleBounds, d: OracleBounds) -> bool {
+    same_vec_cs(c.min, d.min) && same_vec_cs(c.max, d.max)
+}
+
 fn rv(v: [f32; 4]) -> vec3 {
     vec3 {
         x: v[0],
@@ -603,4 +619,141 @@ fn plane_test_abi_byte() {
         assert!(rs_byte, "safe code {code}");
         assert_eq!(c_byte, 1, "safe code {code}");
     }
+}
+
+/// The vector operand overlaps `dst` (it is `dst.min`), the arrangement the
+/// alias audit measured as broken for all four helpers. `b` stays separate
+/// here; the C regression in `test_graphics_alias_ordinary.c` also covers
+/// `dst == b` with the operand in `dst.min`. Both implementations read their
+/// inputs in full before writing, so the aliased call equals a separate one.
+#[test]
+fn move_vec_aliases_dst_min_matches_c() {
+    let rb_src = rb([1.0, 2.0, 3.0, 0.0], [10.0, 20.0, 30.0, 0.0]);
+    let cb_src = cb([1.0, 2.0, 3.0, 0.0], [10.0, 20.0, 30.0, 0.0]);
+    let v = [10.0, -1.0, 0.5, 9.0];
+    let mut rd = bounds::default();
+    let mut cd = OracleBounds::default();
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs::bounds_move(&mut rd, &rb_src, &rv(v));
+        c::oracle_bounds_move(&mut cd, &cb_src, &cv(v));
+    }
+
+    let mut r_alias = rb_src;
+    let mut c_alias = cb_src;
+    r_alias.min = rv(v);
+    c_alias.min = cv(v);
+    // SAFETY: the operand points into `dst`, which both implementations allow.
+    unsafe {
+        rs::bounds_move(&mut r_alias, &rb_src, &r_alias.min);
+        c::oracle_bounds_move(&mut c_alias, &cb_src, &c_alias.min);
+    }
+    assert!(same_bounds(r_alias, c_alias), "alias shim != C");
+    assert!(
+        same_bounds_rs(r_alias, rd),
+        "alias shim {r_alias:?} != non-aliased {rd:?}"
+    );
+    assert!(
+        same_bounds_cs(c_alias, cd),
+        "C alias {c_alias:?} != non-aliased {cd:?}"
+    );
+}
+
+/// `bounds_scale` with the vector operand inside the output.
+#[test]
+fn scale_vec_aliases_dst_min_matches_c() {
+    let rb_src = rb([2.0, 3.0, 4.0, 0.0], [10.0, 20.0, 30.0, 0.0]);
+    let cb_src = cb([2.0, 3.0, 4.0, 0.0], [10.0, 20.0, 30.0, 0.0]);
+    let v = [2.0, -1.0, 0.5, 9.0];
+    let mut rd = bounds::default();
+    let mut cd = OracleBounds::default();
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs::bounds_scale(&mut rd, &rb_src, &rv(v));
+        c::oracle_bounds_scale(&mut cd, &cb_src, &cv(v));
+    }
+
+    let mut r_alias = rb_src;
+    let mut c_alias = cb_src;
+    r_alias.min = rv(v);
+    c_alias.min = cv(v);
+    // SAFETY: the operand points into `dst`, which both implementations allow.
+    unsafe {
+        rs::bounds_scale(&mut r_alias, &rb_src, &r_alias.min);
+        c::oracle_bounds_scale(&mut c_alias, &cb_src, &c_alias.min);
+    }
+    assert!(same_bounds(r_alias, c_alias), "scale alias shim != C");
+    assert!(
+        same_bounds_rs(r_alias, rd),
+        "scale alias shim {r_alias:?} != non-aliased {rd:?}"
+    );
+    assert!(
+        same_bounds_cs(c_alias, cd),
+        "scale C alias {c_alias:?} != non-aliased {cd:?}"
+    );
+}
+
+/// `bounds_merge_point` with the point inside the output.
+#[test]
+fn merge_point_vec_aliases_dst_min_matches_c() {
+    let rb_src = rb([5.0, 5.0, 5.0, 0.0], [10.0, 10.0, 10.0, 0.0]);
+    let cb_src = cb([5.0, 5.0, 5.0, 0.0], [10.0, 10.0, 10.0, 0.0]);
+    let v = [20.0, 20.0, 20.0, 7.0];
+    let mut rd = rb([20.0, 20.0, 20.0, 0.0], [30.0, 30.0, 30.0, 0.0]);
+    let mut cd = cb([20.0, 20.0, 20.0, 0.0], [30.0, 30.0, 30.0, 0.0]);
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs::bounds_merge_point(&mut rd, &rb_src, &rv(v));
+        c::oracle_bounds_merge_point(&mut cd, &cb_src, &cv(v));
+    }
+
+    let mut r_alias = rb([20.0, 20.0, 20.0, 0.0], [30.0, 30.0, 30.0, 0.0]);
+    let mut c_alias = cb([20.0, 20.0, 20.0, 0.0], [30.0, 30.0, 30.0, 0.0]);
+    r_alias.min = rv(v);
+    c_alias.min = cv(v);
+    // SAFETY: the point points into `dst`, which both implementations allow.
+    unsafe {
+        rs::bounds_merge_point(&mut r_alias, &rb_src, &r_alias.min);
+        c::oracle_bounds_merge_point(&mut c_alias, &cb_src, &c_alias.min);
+    }
+    assert!(same_bounds(r_alias, c_alias), "merge_point alias shim != C");
+    assert!(
+        same_bounds_rs(r_alias, rd),
+        "merge_point alias shim {r_alias:?} != non-aliased {rd:?}"
+    );
+    assert!(
+        same_bounds_cs(c_alias, cd),
+        "merge_point C alias {c_alias:?} != non-aliased {cd:?}"
+    );
+}
+
+/// `bounds_get_center` with `dst` sharing storage with `b.min`.
+#[test]
+fn get_center_dst_aliases_min_matches_c() {
+    let rb_src = rb([0.0, 0.0, 0.0, 0.0], [10.0, 20.0, 30.0, 0.0]);
+    let cb_src = cb([0.0, 0.0, 0.0, 0.0], [10.0, 20.0, 30.0, 0.0]);
+    let mut rd = vec3::default();
+    let mut cd = OracleVec3::default();
+    // SAFETY: all pointers refer to live locals.
+    unsafe {
+        rs::bounds_get_center(&mut rd, &rb_src);
+        c::oracle_bounds_get_center(&mut cd, &cb_src);
+    }
+
+    let mut r_alias = rb_src;
+    let mut c_alias = cb_src;
+    // SAFETY: `dst` is `b.min`, which the C audit found broken.
+    unsafe {
+        rs::bounds_get_center(&mut r_alias.min, &r_alias);
+        c::oracle_bounds_get_center(&mut c_alias.min, &c_alias);
+    }
+    assert!(same_vec(r_alias.min, c_alias.min), "center alias shim != C");
+    assert!(
+        same_vec_rs(r_alias.min, rd),
+        "center alias shim != non-aliased {rd:?}"
+    );
+    assert!(
+        same_vec_cs(c_alias.min, cd),
+        "center C alias != non-aliased {cd:?}"
+    );
 }
