@@ -13,14 +13,14 @@ pub const DEFAULT_WINDOW_DURATION_MS: u64 = 5_000;
 const MAX_CPU_PERCENT: f64 = 100.0;
 const MAX_OUTPUT_CONGESTION: f64 = 1.0;
 
-// Keep at least one fifth of each frame interval available for bursts. This is
-// a provisional headroom margin; OBS does not define a corresponding warning.
+// Provisional Preflight M0 policy, owner-approved 2026-10-13: keep at least one
+// fifth of each interval available for render bursts; OBS defines no such band.
 pub const MARGINAL_RENDER_HEADROOM_RATIO: f64 = 0.20;
 // Negative render headroom means rendering took longer than the frame interval.
 pub const FAIL_RENDER_HEADROOM_NS: i64 = 0;
 
-// Any render lag or network frame drop is visible degradation, so it is
-// marginal; one percent is a clear sustained failure band for a short test.
+// Provisional Preflight M0 policy, owner-approved 2026-10-13: any render lag
+// or output drop is visible; one percent is sustained short-test failure.
 pub const MARGINAL_RENDER_LAG_PERCENT: f64 = 0.0;
 pub const FAIL_RENDER_LAG_PERCENT: f64 = 1.0;
 pub const MARGINAL_OUTPUT_DROP_PERCENT: f64 = 0.0;
@@ -30,17 +30,19 @@ pub const FAIL_OUTPUT_DROP_PERCENT: f64 = 1.0;
 // >= 0.1 and only after >10 new skipped frames. Thus 0.1 is 0.1%, not 10%.
 pub const MARGINAL_ENCODER_SKIP_PERCENT: f64 = 0.1;
 pub const MIN_ENCODER_SKIPS_FOR_UI_WARNING: u64 = 10;
-// One percent skipped is a provisional fail band above OBS's existing warning.
+// Provisional Preflight M0 policy, owner-approved 2026-10-13: one percent is a
+// sustained fail band above OBS's existing warning; OBS sets no fail threshold.
 pub const FAIL_ENCODER_SKIP_PERCENT: f64 = 1.0;
 
-// Congestion below 5% is treated as ordinary network variation; 20% means a
-// material share of the output is being held back. OBS exposes a 0..=100% UI
-// value but does not assign verdict bands, so these remain provisional.
+// Provisional Preflight M0 policy, owner-approved 2026-10-13: below 5% is
+// ordinary variation; 20% means a material share of output is held back. OBS
+// exposes congestion but defines no verdict bands.
 pub const MARGINAL_CONGESTION_PERCENT: f64 = 5.0;
 pub const FAIL_CONGESTION_PERCENT: f64 = 20.0;
 
-// CPU below 90% leaves room for scene and OS bursts; at 98% there is almost no
-// spare capacity. OBS does not define a preflight CPU warning threshold.
+// Provisional Preflight M0 policy, owner-approved 2026-10-13: below 90% leaves
+// room for scene and OS bursts; at 98% little spare capacity remains. OBS does
+// not define a preflight CPU warning threshold.
 pub const MARGINAL_CPU_PERCENT: f64 = 90.0;
 pub const FAIL_CPU_PERCENT: f64 = 98.0;
 
@@ -53,7 +55,8 @@ pub const SERVER_CAPACITY_PERCENT: u32 = 70;
 pub const SERVER_BITRATE_TIE_KBPS: u32 = 400;
 
 /// One timestamped set of counters sampled from the running OBS pipeline.
-/// Counts are cumulative within one test run; frame-time values are nanoseconds.
+/// Counts are cumulative within one run; any decrease starts a fresh window
+/// and the interval crossing the reset is omitted. Frame times are nanoseconds.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct StatSample {
     pub timestamp_ms: u64,
@@ -95,7 +98,7 @@ pub struct WindowRollup {
     pub cpu_percent: f64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Verdict {
     Pass,
@@ -233,7 +236,7 @@ impl WindowAccumulator {
             .saturating_add(encoder_frames_skipped);
         self.lagged_frames = self
             .lagged_frames
-            .saturating_add(current.lagged_frames.wrapping_sub(previous.lagged_frames) as u64);
+            .saturating_add((current.lagged_frames - previous.lagged_frames) as u64);
         self.expected_render_frames +=
             (duration_ms as f64 * 1_000_000.0) / current.frame_interval_ns as f64;
         self.weighted_frame_time_ns += current.average_frame_time_ns as f64 * duration;
@@ -324,6 +327,15 @@ fn validate_sample(sample: &StatSample, sample_index: usize) -> Result<(), Analy
     Ok(())
 }
 
+fn counters_decreased(previous: &StatSample, current: &StatSample) -> bool {
+    current.lagged_frames < previous.lagged_frames
+        || current.output_total_bytes < previous.output_total_bytes
+        || current.output_total_frames < previous.output_total_frames
+        || current.output_frames_dropped < previous.output_frames_dropped
+        || current.encoder_total_frames < previous.encoder_total_frames
+        || current.encoder_skipped_frames < previous.encoder_skipped_frames
+}
+
 fn roll_up(
     samples: &[StatSample],
     window_duration_ms: Option<u64>,
@@ -341,22 +353,29 @@ fn roll_up(
         }
     }
 
-    let first_timestamp_ms = samples[0].timestamp_ms;
-    let mut windows = BTreeMap::<u64, WindowAccumulator>::new();
+    let mut segment_index = 0_u64;
+    let mut segment_start_ms = samples[0].timestamp_ms;
+    let mut windows = BTreeMap::<(u64, u64), WindowAccumulator>::new();
     for (sample_index, pair) in samples.windows(2).enumerate() {
         let previous = &pair[0];
         let current = &pair[1];
+        if counters_decreased(previous, current) {
+            // A restarted output/video counter is a new run segment. The
+            // crossing interval combines incomparable counters, so discard it.
+            segment_index = segment_index.saturating_add(1);
+            segment_start_ms = current.timestamp_ms;
+            continue;
+        }
         let window_index = match window_duration_ms {
             Some(window_duration_ms) => {
-                (current.timestamp_ms - first_timestamp_ms - 1) / window_duration_ms
+                (current.timestamp_ms - segment_start_ms - 1) / window_duration_ms
             }
             None => 0,
         };
-        windows.entry(window_index).or_default().add_interval(
-            previous,
-            current,
-            sample_index + 1,
-        )?;
+        windows
+            .entry((segment_index, window_index))
+            .or_default()
+            .add_interval(previous, current, sample_index + 1)?;
     }
 
     Ok(windows
@@ -365,15 +384,29 @@ fn roll_up(
         .collect())
 }
 
-/// Roll up a whole set of timestamped samples into one window.
+/// Roll up the latest contiguous set of timestamped samples into one window.
+/// When a counter resets, earlier completed segments are ignored here; use
+/// [`roll_up_windows`] to receive a separate rollup for each segment.
 pub fn roll_up_window(samples: &[StatSample]) -> Result<WindowRollup, AnalysisError> {
-    let mut windows = roll_up(samples, None)?;
-    Ok(windows.remove(0))
+    if samples.len() < 2 {
+        return Err(AnalysisError::TooFewSamples);
+    }
+    let latest_segment_start = samples
+        .windows(2)
+        .enumerate()
+        .rev()
+        .find(|(_, pair)| counters_decreased(&pair[0], &pair[1]))
+        .map(|(index, _)| index + 1)
+        .unwrap_or(0);
+    let mut windows = roll_up(&samples[latest_segment_start..], None)?;
+    windows.pop().ok_or(AnalysisError::TooFewSamples)
 }
 
 /// Split a trace into windows of the requested duration and roll up each one.
 /// A sample interval crossing a boundary is assigned to the window containing
 /// its ending sample; frequent sampling keeps that boundary assignment small.
+/// Any decreasing cumulative counter starts a new segment and drops the
+/// crossing interval; the segment's first completed interval begins a new window.
 pub fn roll_up_windows(
     samples: &[StatSample],
     window_duration_ms: u64,
@@ -497,9 +530,11 @@ fn promote(current: &mut Verdict, candidate: Verdict) {
     }
 }
 
-/// Per-server trace captured during one test. Failed connections use a
-/// negative final connect_time_ms and are skipped, matching the wizard's
-/// success-only server list.
+/// Per-server trace captured during one isolated test. Its counters must not
+/// include unrelated earlier output runs. Positive dropped-frame totals seen
+/// anywhere in this test include warm-up drops and trigger the wizard penalty.
+/// Failed connections use a negative final connect_time_ms and are skipped,
+/// matching the wizard's success-only server list.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct ServerTest {
     pub name: String,
@@ -536,14 +571,17 @@ pub fn choose_server(
         let measured_bitrate_kbps = ((rollup.output_bytes as u128 * 8) / rollup.duration_ms as u128)
             .min(u32::MAX as u128) as u32;
         let minimum_target_bitrate_kbps =
-            starting_bitrate_kbps.saturating_mul(SERVER_MINIMUM_TARGET_PERCENT) / 100;
-        let ideal_bitrate_kbps = if rollup.output_frames_dropped > 0
-            || measured_bitrate_kbps < minimum_target_bitrate_kbps
-        {
-            measured_bitrate_kbps.saturating_mul(SERVER_CAPACITY_PERCENT) / 100
-        } else {
-            starting_bitrate_kbps
-        };
+            percent_of_u32(starting_bitrate_kbps, SERVER_MINIMUM_TARGET_PERCENT);
+        let dropped_any_frames = test
+            .samples
+            .iter()
+            .any(|sample| sample.output_frames_dropped > 0);
+        let ideal_bitrate_kbps =
+            if dropped_any_frames || measured_bitrate_kbps < minimum_target_bitrate_kbps {
+                percent_of_u32(measured_bitrate_kbps, SERVER_CAPACITY_PERCENT)
+            } else {
+                starting_bitrate_kbps
+            };
         let candidate = ServerChoice {
             name: test.name.clone(),
             address: test.address.clone(),
@@ -571,6 +609,11 @@ pub fn choose_server(
     best.ok_or(AnalysisError::NoSuccessfulServer)
 }
 
+fn percent_of_u32(value: u32, percent: u32) -> u32 {
+    // The product fits u64, and a percentage <= 100 cannot exceed `value`.
+    ((u64::from(value) * u64::from(percent)) / 100) as u32
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Candidate {
     pub encoder: String,
@@ -586,6 +629,8 @@ pub struct CandidatePlan {
     pub order: usize,
     pub candidate: Candidate,
     pub duration_ms: u64,
+    /// Lets the caller end this candidate's sample time early on fail; the
+    /// planner still records the result and advances to the next candidate.
     pub stop_if_fail: bool,
 }
 
@@ -617,13 +662,21 @@ impl fmt::Display for PlannerError {
 
 impl std::error::Error for PlannerError {}
 
-/// Sequential bake-off planner. Input order is preserved; a fail stops the
-/// planner immediately, while pass and marginal results continue.
+/// Sequential bake-off planner. Input order is preserved and each completed
+/// verdict is recorded. A fail ends that candidate's test, then the planner
+/// continues so one unusable encoder cannot hide other candidates.
 pub struct BakeoffPlanner {
     plan: Vec<CandidatePlan>,
     next_index: usize,
     active: bool,
-    stopped: bool,
+    completed: Vec<CandidateOutcome>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CandidateOutcome {
+    pub order: usize,
+    pub candidate: Candidate,
+    pub verdict: Verdict,
 }
 
 impl BakeoffPlanner {
@@ -658,7 +711,7 @@ impl BakeoffPlanner {
             plan,
             next_index: 0,
             active: false,
-            stopped: false,
+            completed: Vec::new(),
         })
     }
 
@@ -666,11 +719,15 @@ impl BakeoffPlanner {
         &self.plan
     }
 
+    pub fn completed(&self) -> &[CandidateOutcome] {
+        &self.completed
+    }
+
     pub fn next_candidate(&mut self) -> Result<Option<CandidatePlan>, PlannerError> {
         if self.active {
             return Err(PlannerError::CandidateAlreadyRunning);
         }
-        if self.stopped || self.next_index >= self.plan.len() {
+        if self.next_index >= self.plan.len() {
             return Ok(None);
         }
         self.active = true;
@@ -681,12 +738,14 @@ impl BakeoffPlanner {
         if !self.active {
             return Err(PlannerError::NoCandidateRunning);
         }
+        let candidate = &self.plan[self.next_index];
+        self.completed.push(CandidateOutcome {
+            order: candidate.order,
+            candidate: candidate.candidate.clone(),
+            verdict,
+        });
         self.active = false;
-        if verdict == Verdict::Fail {
-            self.stopped = true;
-        } else {
-            self.next_index += 1;
-        }
+        self.next_index += 1;
         Ok(())
     }
 }
