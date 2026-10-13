@@ -186,18 +186,21 @@ pub unsafe extern "C" fn cf_lexer_lex(
 ///
 /// # Safety
 ///
-/// `literal` must be null, or readable for `count` bytes and from there up
-/// to a NUL (C may read past `count`); with `count` 0 it must be a
-/// NUL-terminated string.
+/// `literal` must be null, or readable for `count` bytes when `count` is
+/// nonzero. With `count` 0 it must be a NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cf_literal_to_str(literal: *const c_char, count: usize) -> *mut c_char {
     if literal.is_null() {
         return ptr::null_mut();
     }
-    // SAFETY: per the contract: `count` bytes, then up to the NUL.
+    // SAFETY: count == 0 follows the C-string contract; otherwise the caller
+    // guarantees the counted span is readable.
     let bytes = unsafe {
-        let tail = CStr::from_ptr(literal.add(count)).to_bytes().len();
-        core::slice::from_raw_parts(literal.cast::<u8>(), count + tail)
+        if count == 0 {
+            CStr::from_ptr(literal).to_bytes()
+        } else {
+            core::slice::from_raw_parts(literal.cast::<u8>(), count)
+        }
     };
 
     match safe::cf_literal_to_str(bytes, count, c_ulong::BITS) {

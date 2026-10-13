@@ -133,6 +133,33 @@ unsafe fn strref_bytes<'a>(r: *const Strref) -> &'a [u8] {
     }
 }
 
+/// Compares nullable C strings without reading farther than the C bounded
+/// compare loop would.
+///
+/// # Safety
+///
+/// Each non-null pointer must be readable through the first differing byte,
+/// a NUL byte, or n bytes, whichever comes first.
+unsafe fn compare_cstr_n(a: *const c_char, b: *const c_char, n: usize, fold: bool) -> c_int {
+    // SAFETY: the core requests bytes in order and stops at a mismatch, NUL,
+    // or n; the caller guarantees those bytes are readable.
+    core_dstr::compare_n_by(n, fold, |i| {
+        let x = if a.is_null() {
+            0
+        } else {
+            // SAFETY: the caller guarantees readability through this index.
+            unsafe { *a.add(i) as u8 }
+        };
+        let y = if b.is_null() {
+            0
+        } else {
+            // SAFETY: the caller guarantees readability through this index.
+            unsafe { *b.add(i) as u8 }
+        };
+        (x, y)
+    })
+}
+
 /// # Safety
 ///
 /// `a` and `b` must each be null or NUL-terminated strings.
@@ -144,20 +171,22 @@ pub unsafe extern "C" fn astrcmpi(a: *const c_char, b: *const c_char) -> c_int {
 
 /// # Safety
 ///
-/// `a` and `b` must each be null or NUL-terminated strings.
+/// Each non-null pointer must be readable through the first differing byte,
+/// a NUL byte, or n bytes, whichever comes first.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn astrcmp_n(a: *const c_char, b: *const c_char, n: usize) -> c_int {
     // SAFETY: forwarded to the caller.
-    unsafe { core_dstr::astrcmp_n(opt_cstr(a), opt_cstr(b), n) }
+    unsafe { compare_cstr_n(a, b, n, false) }
 }
 
 /// # Safety
 ///
-/// `a` and `b` must each be null or NUL-terminated strings.
+/// Each non-null pointer must be readable through the first differing byte,
+/// a NUL byte, or n bytes, whichever comes first.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn astrcmpi_n(a: *const c_char, b: *const c_char, n: usize) -> c_int {
     // SAFETY: forwarded to the caller.
-    unsafe { core_dstr::astrcmpi_n(opt_cstr(a), opt_cstr(b), n) }
+    unsafe { compare_cstr_n(a, b, n, true) }
 }
 
 /// # Safety

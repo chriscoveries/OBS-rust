@@ -51,15 +51,14 @@ fn is_padding(b: u8) -> bool {
 /// Shared body of `astrcmpi`, `astrcmp_n` and `astrcmpi_n`. Characters are
 /// compared as C `char` (signed on most platforms); `n` is `None` for the
 /// unbounded `astrcmpi`.
-fn compare(a: Option<&[u8]>, b: Option<&[u8]>, n: Option<usize>, fold: bool) -> i32 {
-    let (a, b) = (a.unwrap_or(&[]), b.unwrap_or(&[]));
+fn compare_by(mut read: impl FnMut(usize) -> (u8, u8), n: Option<usize>, fold: bool) -> i32 {
     let mut n = n;
     if n == Some(0) {
         return 0;
     }
     let mut i = 0;
     loop {
-        let (x, y) = (at(a, i), at(b, i));
+        let (x, y) = read(i);
         let (c1, c2) = if fold {
             (upper(x) as c_char, upper(y) as c_char)
         } else {
@@ -81,6 +80,17 @@ fn compare(a: Option<&[u8]>, b: Option<&[u8]>, n: Option<usize>, fold: bool) -> 
         }
         i += 1;
     }
+}
+
+fn compare(a: Option<&[u8]>, b: Option<&[u8]>, n: Option<usize>, fold: bool) -> i32 {
+    let (a, b) = (a.unwrap_or(&[]), b.unwrap_or(&[]));
+    compare_by(|i| (at(a, i), at(b, i)), n, fold)
+}
+
+/// Bounded compare over a lazy byte-pair reader, used by the C ABI shim so
+/// pointer reads stop at the first mismatch, NUL, or n bytes as in C.
+pub(crate) fn compare_n_by(n: usize, fold: bool, read: impl FnMut(usize) -> (u8, u8)) -> i32 {
+    compare_by(read, Some(n), fold)
 }
 
 /// `astrcmpi`: case-insensitive compare; `None` is the empty string.

@@ -430,10 +430,21 @@ fn strtoul_low_byte(at: impl Fn(usize) -> u8, mut i: usize, base: u32, ulong_bit
 /// `cf_literal_to_str`: strips the quotes from a `"..."` or `'...'` literal
 /// and converts its escape sequences.
 ///
-/// `literal` holds the literal and whatever follows it up to the next NUL
-/// (C may read past `count`); `count` is the literal's length, or 0 for up
-/// to the first NUL. `ulong_bits` is the width of C `unsigned long`, which
-/// decides when `\x` and octal escapes overflow to 0xff.
+/// `literal` holds only the bytes the caller supplied: the `count` bytes of
+/// the literal when `count` is nonzero (the FFI passes exactly that counted
+/// slice, with no trailing NUL needed), or the string up to its NUL when
+/// `count` is 0. Any index at or past the end of `literal` reads as NUL, so
+/// this never looks beyond the supplied bytes.
+///
+/// C differs only in that read. Its loop tests `*temp_src` before
+/// `temp_src < end` (`cf-tokenizer.c:110`), so when an escape ends at the
+/// closing quote and its skip leaves `temp_src` at or past `end`, C reads one
+/// byte outside the counted span. That value is discarded, because the second
+/// conjunct is already false, so the output is identical; `strtoul` in the
+/// `\x` and octal escapes cannot cross the span, since it starts before the
+/// closing quote and the quote stops it. `ulong_bits` is the width of C
+/// `unsigned long`, which decides when `\x` and octal escapes overflow to
+/// 0xff.
 ///
 /// Returns the zero-filled `count - 1` byte buffer C allocates, or `None`
 /// if the text is not a quoted literal. Copying stops at the closing quote
