@@ -1,16 +1,17 @@
 /* Test-only oracle: the original libobs/util/file-serializer.c, unmodified,
  * with every global symbol renamed to oracle_* so it can link next to the Rust
- * implementation. os_fopen and the bmem helpers it calls come from
- * file_serializer_host.c and test_bmem.c. */
+ * implementation. The platform helpers it calls are renamed below to the copies
+ * oracle/platform.c and oracle/platform_nix_posix.c compile from the real
+ * platform.c and platform-nix.c. */
 #define _FILE_OFFSET_BITS 64
 #define file_input_serializer_init oracle_file_input_serializer_init
 #define file_input_serializer_free oracle_file_input_serializer_free
 #define file_output_serializer_init oracle_file_output_serializer_init
 #define file_output_serializer_init_safe oracle_file_output_serializer_init_safe
 #define file_output_serializer_free oracle_file_output_serializer_free
-/* Unix os_safe_replace is the Rust shim. This oracle keeps the C copy. */
-#ifndef _WIN32
-#define os_safe_replace oracle_host_os_safe_replace
-#endif
+#define os_fopen oracle_os_fopen
+#define os_fseeki64 oracle_os_fseeki64
+#define os_ftelli64 oracle_os_ftelli64
+#define os_safe_replace oracle_os_safe_replace
 
 #include "util/file-serializer.c"

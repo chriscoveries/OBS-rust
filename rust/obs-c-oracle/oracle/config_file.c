@@ -1,9 +1,10 @@
 /* Test-only oracle: the original libobs/util/config-file.c, unmodified,
  * with every exported symbol renamed to oracle_* so it can link next to
  * the Rust implementation. The lexer comes from util/lexer.c, dstr from
- * util/dstr.c, bmem from test_bmem.c, blog from oracle/base.c, and the
- * os_* platform helpers from config_file_host.c and
- * file_serializer_host.c. */
+ * util/dstr.c, bmem from the oracle's bmem.c, blog from oracle/base.c, and
+ * the os_* platform helpers are renamed below to the copies
+ * oracle/platform.c and oracle/platform_nix_posix.c compile from the real
+ * platform.c and platform-nix.c. */
 #define _FILE_OFFSET_BITS 64
 /* PTHREAD_MUTEX_RECURSIVE is behind _GNU_SOURCE with -std=c11. */
 #define _GNU_SOURCE
@@ -42,10 +43,14 @@
 #define config_has_user_value oracle_config_has_user_value
 #define config_has_default_value oracle_config_has_default_value
 #define blog oracle_blog
+/* the platform helpers it calls, from oracle/platform.c */
+#define os_fopen oracle_os_fopen
+#define os_fread_utf8 oracle_os_fread_utf8
+#define os_strtod oracle_os_strtod
+#define os_dtostr oracle_os_dtostr
+#define os_fseeki64 oracle_os_fseeki64
+#define os_ftelli64 oracle_os_ftelli64
+#define os_safe_replace oracle_os_safe_replace
 #define blogva oracle_blogva
-/* Unix os_safe_replace is the Rust shim. This oracle keeps the C copy. */
-#ifndef _WIN32
-#define os_safe_replace oracle_host_os_safe_replace
-#endif
 
 #include "util/config-file.c"

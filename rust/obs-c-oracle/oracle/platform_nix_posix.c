@@ -34,8 +34,12 @@
 #define os_copyfile oracle_os_copyfile
 #define os_getcwd oracle_os_getcwd
 #define os_chdir oracle_os_chdir
-#define os_breakpoint oracle_os_breakpoint
-#define os_oom oracle_os_oom
+/* os_breakpoint / os_oom are provided by oracle/platform_host.c under the
+ * oracle_* names, as loud aborts rather than libobs's SIGTRAP. Renaming these
+ * two to names nothing references keeps their real bodies out of the way
+ * without dropping them from the TU. */
+#define os_breakpoint unreferenced_nix_os_breakpoint
+#define os_oom unreferenced_nix_os_oom
 #define os_generate_uuid oracle_os_generate_uuid
 #define os_cpu_usage_info_start oracle_os_cpu_usage_info_start
 #define os_cpu_usage_info_query oracle_os_cpu_usage_info_query
