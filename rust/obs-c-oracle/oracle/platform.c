@@ -77,4 +77,21 @@
 #define obs_get_video_info oracle_obs_get_video_info
 
 /* platform.c - the real libobs source, unmodified, compiled here. */
+
+/* libobs' own build explicitly disables -Wsign-conversion
+ * (cmake/linux/compilerconfig.cmake:30 and cmake/windows/
+ * compilerconfig.cmake:123), so its code does not build clean under the
+ * oracle's stricter ratchet (rust/obs-c-oracle/build.rs's STRICT_FLAGS,
+ * obs-rust/obs-studio#516). Widen only inside this include: the oracle's job
+ * is to keep the wrappers it owns warning-clean, not to rewrite libobs for a
+ * warning libobs does not ask for. A no-diagnostic push is harmless where the
+ * compiler already supports the pragma. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#elif defined(_MSC_VER)
+#pragma warning(disable : 4245)
+#else
+#pragma clang diagnostic ignored "-Wsign-conversion"
+#endif
+
 #include "util/platform.c"

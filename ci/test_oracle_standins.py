@@ -19,22 +19,33 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ORACLE = ROOT / "rust" / "obs-c-oracle" / "oracle"
-STANDINS = ("test_stubs.c", *(p.name for p in sorted(ORACLE.glob("*_host.c"))))
+STANDINS = tuple(sorted(p.name for p in ORACLE.glob("*_host.c")))
 DEFINITION = re.compile(
     r"^(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w \t*]*?\b([a-z_][a-z0-9_]*)\s*\([^;{}]*\)\s*\{", re.M
 )
 
 # Stand-ins that intentionally differ from libobs, and why.
+# Windows-only forwarders in platform_host.c: the Rust crates declare these on
+# Windows, the oracle's only copies are the oracle_-renamed ones platform.c
+# compiles, so they forward to those instead of repeating the bodies. Unused on
+# Unix, where the oracle itself calls the oracle_ names.
+WINDOWS_FORWARDER = "Windows forwarder to the oracle_ copy from oracle/platform.c"
+
 DIFFERENT = {
-    "os_breakpoint": "test-only empty stub (weak on Unix so the Rust shim wins)",
-    "os_oom": "test-only empty stub (weak on Unix so the Rust shim wins)",
     "os_gettime_ns": "test-only zero clock where no Rust shim exists (macOS, Windows)",
-    "os_fread_utf8": "ftell/memcmp instead of os_ftelli64/astrcmp_n: same result below 2 GiB, "
-    "and test_stubs.c links without dstr",
-    "os_fopen": "the libobs #ifdef _WIN32 body split into one definition per platform",
-    "os_fseeki64": "the libobs #ifdef _MSC_VER body split into one definition per platform",
-    "os_ftelli64": "the libobs #ifdef _MSC_VER body split into one definition per platform",
-    "os_file_exists": "platform-windows.c logic over a malloc'd wide path (config_file_host.c has no bmem)",
+    "os_breakpoint": WINDOWS_FORWARDER,
+    "os_oom": WINDOWS_FORWARDER,
+    "os_mbs_to_wcs": WINDOWS_FORWARDER,
+    "os_utf8_to_wcs": WINDOWS_FORWARDER,
+    "os_wcs_to_utf8": WINDOWS_FORWARDER,
+    "os_wcs_to_mbs": WINDOWS_FORWARDER,
+    "os_mbs_to_wcs_ptr": WINDOWS_FORWARDER,
+    "os_utf8_to_wcs_ptr": WINDOWS_FORWARDER,
+    "os_wcs_to_utf8_ptr": WINDOWS_FORWARDER,
+    "os_mbs_to_utf8_ptr": WINDOWS_FORWARDER,
+    "os_fopen": WINDOWS_FORWARDER,
+    "os_fseeki64": WINDOWS_FORWARDER,
+    "os_ftelli64": WINDOWS_FORWARDER,
 }
 
 

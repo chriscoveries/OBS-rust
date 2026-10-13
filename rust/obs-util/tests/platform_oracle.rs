@@ -35,6 +35,7 @@ enum Outcome {
 enum Op {
     BmallocZero,
     BreallocZero,
+    BmallocOom,
     Bcrash,
 }
 
@@ -46,6 +47,11 @@ fn child_body(op: &Op) {
         }
         Op::BreallocZero => {
             let _ = unsafe { oracle_brealloc(std::ptr::null_mut(), 0) };
+        }
+        /* An allocation no allocator can satisfy, so bmem takes the
+         * os_oom path rather than the 0-size one. */
+        Op::BmallocOom => {
+            let _ = unsafe { oracle_bmalloc(usize::MAX / 2) };
         }
         Op::Bcrash => {
             let msg = CString::new("oracle-bcrash-probe").unwrap();
@@ -134,7 +140,7 @@ fn oracle_bmalloc_zero_dies_loudly() {
 }
 
 /// `oracle_brealloc(NULL, 0)` reaches the same place through
-/// `libobs/util/bmem.c:111`.
+/// `libobs/util/bmem.c:125`.
 #[test]
 fn oracle_brealloc_zero_dies_loudly() {
     let (outcome, stderr) = run_captured(&Op::BreallocZero);
@@ -147,6 +153,26 @@ fn oracle_brealloc_zero_dies_loudly() {
         stderr.contains("oracle: os_breakpoint"),
         "the child died but did not print the marker; stderr was:\n{stderr}"
     );
+}
+
+/// A failing allocation reaches `os_oom`, which no other test covers.
+///
+/// `usize::MAX / 2` cannot be satisfied by any allocator, so bmem calls
+/// os_oom (`libobs/util/bmem.c:132`) instead of the 0-size path, and the
+/// oracle's abort is what makes that visible. Without this test an
+/// `oracle_os_oom` that merely returns would go unnoticed.
+#[test]
+fn oracle_bmalloc_oom_dies_loudly() {
+	let (outcome, stderr) = run_captured(&Op::BmallocOom);
+
+	assert!(
+		matches!(outcome, Outcome::Killed),
+		"oracle_bmalloc(usize::MAX / 2) returned instead of dying: the oracle's 		 os_oom is a no-op again"
+	);
+	assert!(
+		stderr.contains("oracle: os_oom"),
+		"the child died but did not print the oom marker; stderr was:\n{stderr}"
+	);
 }
 
 /// The oracle's `bcrash` is the real `base-variadic.c` one, which prints and
@@ -167,8 +193,9 @@ fn oracle_bcrash_alone_exits_zero() {
     );
 }
 
-/// The port's own allocation paths are unaffected by the oracle's aborts, so
-/// the tests above are not accidentally exercising a broken shim.
+/// The port's own allocation paths are unaffected by the oracle's aborts: the
+/// shim's aligned allocation still works and stays 32-byte aligned, so the
+/// tests above are not accidentally exercising a broken allocator.
 #[test]
 fn aligned_allocations_still_work() {
     let p = unsafe { rs::bmalloc(64) };
