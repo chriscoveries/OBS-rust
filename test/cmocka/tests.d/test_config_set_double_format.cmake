@@ -1,0 +1,5 @@
+add_executable(test_config_set_double_format test_config_set_double_format.c)
+target_include_directories(test_config_set_double_format PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_config_set_double_format PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+add_dependencies(cmocka-tests test_config_set_double_format)
+add_test(test_config_set_double_format ${CMAKE_CURRENT_BINARY_DIR}/test_config_set_double_format)
