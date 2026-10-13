@@ -2097,30 +2097,60 @@ obs_sceneitem_t *obs_scene_find_sceneitem_by_id(obs_scene_t *scene, int64_t id)
 	return item;
 }
 
+/* Must be called with the scene locked. Only compares pointers and follows the
+ * links of items that are in the scene, which the scene lock protects. An item
+ * that left the scene may be changed by whoever holds its new scene's lock, so
+ * its fields must not be read here. */
+static bool scene_has_item(const struct obs_scene *scene, const struct obs_scene_item *item)
+{
+	for (const struct obs_scene_item *cur = scene->first_item; cur; cur = cur->next) {
+		if (cur == item)
+			return true;
+	}
+	return false;
+}
+
 void obs_scene_enum_items(obs_scene_t *scene, bool (*callback)(obs_scene_t *, obs_sceneitem_t *, void *), void *param)
 {
 	struct obs_scene_item *item;
+	obs_scene_item_ptr_array_t items;
 
 	if (!scene || !callback)
 		return;
 
+	da_init(items);
+
 	full_lock(scene);
 
+	/* The callback may remove items other than the current one, or move them
+	 * to another scene (a group), so walk a snapshot that holds a reference
+	 * to every item and skip the ones that are no longer in this scene.
+	 * Membership is decided by the scene's own item list, which the scene
+	 * lock we hold protects; the fields of an item that has left the scene
+	 * are not read. An item being removed stays in the list until it is
+	 * detached, but it is already marked removed (also while its removal
+	 * signals run), and its removal needs this scene's lock. */
 	item = scene->first_item;
 	while (item) {
-		struct obs_scene_item *next = item->next;
-
 		obs_sceneitem_addref(item);
-
-		if (!callback(scene, item, param)) {
-			obs_sceneitem_release(item);
-			break;
-		}
-
-		obs_sceneitem_release(item);
-
-		item = next;
+		da_push_back(items, &item);
+		item = item->next;
 	}
+
+	for (size_t i = 0; i < items.num; i++) {
+		item = items.array[i];
+
+		if (!scene_has_item(scene, item) || item->removed)
+			continue;
+
+		if (!callback(scene, item, param))
+			break;
+	}
+
+	for (size_t i = 0; i < items.num; i++)
+		obs_sceneitem_release(items.array[i]);
+
+	da_free(items);
 
 	full_unlock(scene);
 }
