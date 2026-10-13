@@ -95,6 +95,38 @@ mod process {
     use crate::pipe::Pipe;
     use core::ffi::c_int;
 
+    /// Copy the current public argv view into owned arguments before spawn.
+    /// The owned strings in `Args` provide storage, but callers may reorder
+    /// the mutable pointer array returned by `os_process_args_get_argv`.
+    ///
+    /// # Safety
+    /// Every non-null pointer in the public array must refer to a readable,
+    /// NUL-terminated string, and the array must remain readable through
+    /// `args.argc()` entries for the duration of this call.
+    unsafe fn snapshot_public_argv(args: &Args) -> Option<Args> {
+        let argv = args.argv_ptr();
+        if argv.is_null() {
+            return None;
+        }
+
+        let mut snapshot: Option<Args> = None;
+        for index in 0..args.argc() {
+            // SAFETY: guaranteed by this function's contract.
+            let arg = unsafe { *argv.add(index) };
+            if arg.is_null() {
+                break;
+            }
+            let arg = bytes(arg)?;
+            if let Some(snapshot) = snapshot.as_mut() {
+                snapshot.add_arg(arg);
+            } else {
+                snapshot = Some(Args::new(arg));
+            }
+        }
+
+        snapshot
+    }
+
     #[cfg(windows)]
     unsafe extern "C" {
         fn blog(log_level: c_int, format: *const c_char, ...);
@@ -152,12 +184,14 @@ mod process {
         let args = if args.is_null() {
             None
         } else {
-            Some(unsafe { &*args })
+            // SAFETY: the public argv array and its non-null strings must
+            // remain readable for this call, as required by the helper above.
+            unsafe { snapshot_public_argv(&*args) }
         };
         #[cfg(unix)]
-        let pipe = Pipe::create2(args, type_);
+        let pipe = Pipe::create2(args.as_ref(), type_);
         #[cfg(windows)]
-        let pipe = Pipe::create2_logged(args, type_, log_create_process_error);
+        let pipe = Pipe::create2_logged(args.as_ref(), type_, log_create_process_error);
         match pipe {
             Some(pipe) => Box::into_raw(Box::new(pipe)),
             None => ptr::null_mut(),
