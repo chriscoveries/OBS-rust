@@ -290,6 +290,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "obs-preflight-ffi"
+version = "0.1.0"
+dependencies = [
+ "obs-preflight",
+]
+
+[[package]]
 name = "obs-studio-rust"
 version = "0.1.0"
 dependencies = [

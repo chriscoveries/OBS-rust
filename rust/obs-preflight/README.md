@@ -34,6 +34,26 @@ Choose another window size or read from stdin with:
 The CLI prints one JSON document with each window's rollup, `pass`, `marginal`,
 or `fail` verdict, and a plain-words reason.
 
+## C ABI and OBS sampler
+
+`frontend/preflight/obs-preflight.h` is the hand-written C ABI, implemented in
+`rust/obs-preflight/src/ffi/` and built as a static library by the thin
+`obs-preflight-ffi` workspace crate. The engine remains an ordinary Rust
+library for the CLI and Tier 1 tests. Its opaque C handle accepts cumulative,
+timestamped `obs_preflight_sample` values and returns one
+`obs_preflight_window` per populated window, including the verdict and a
+NUL-terminated reason. Create a new engine for each run. If output or video
+counters reset, the next sample starts a new window and the crossing interval
+is omitted. A zero custom window duration is rejected, and window queries
+return an analysis error until two valid samples are present.
+
+`frontend/preflight/obs-preflight-collector.c` owns the OBS-facing sampling:
+create one collector per run, then call `obs_preflight_collect_sample` with
+the active output and video mix. It samples output byte/frame/drop totals,
+frame timing and lag, video total/skipped frames, output congestion and
+connection time, and CPU usage. The collector uses `os_gettime_ns()` for a
+monotonic millisecond timestamp. Destroy the collector before OBS shuts down.
+
 ## M0 thresholds
 
 | Signal | Pass | Marginal | Fail | Basis |
