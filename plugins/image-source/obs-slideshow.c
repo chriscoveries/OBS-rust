@@ -249,31 +249,71 @@ static inline bool item_valid(struct slideshow *ss)
 	return ss->files.num && ss->cur_item < ss->files.num;
 }
 
-static void do_transition(void *data, bool to_null)
+/* A transition decision captured while holding ss->mutex. Running it emits
+ * transition and media signals, whose subscribers may synchronously enumerate
+ * this source (ss_enum_sources locks ss->mutex), so it must run unlocked. */
+struct transition_plan {
+	obs_source_t *transition;
+	obs_source_t *dest;
+	char *path;
+	size_t index;
+	uint32_t tr_speed;
+	bool valid;
+	bool use_cut;
+	bool to_null;
+};
+
+static void prepare_transition(struct slideshow *ss, bool to_null, struct transition_plan *plan)
 {
-	struct slideshow *ss = data;
-	bool valid = item_valid(ss);
+	memset(plan, 0, sizeof(*plan));
+	plan->transition = obs_source_get_ref(ss->transition);
+	plan->tr_speed = ss->tr_speed;
+	plan->use_cut = ss->use_cut;
+	plan->to_null = to_null;
+	plan->valid = item_valid(ss);
 
-	if (valid && ss->use_cut) {
-		obs_transition_set(ss->transition, ss->files.array[ss->cur_item].source);
+	if (plan->valid) {
+		plan->index = ss->cur_item;
+		plan->dest = obs_source_get_ref(ss->files.array[ss->cur_item].source);
+		plan->path = bstrdup(ss->files.array[ss->cur_item].path);
+	}
+}
 
-	} else if (valid && !to_null) {
-		obs_transition_start(ss->transition, OBS_TRANSITION_MODE_AUTO, ss->tr_speed,
-				     ss->files.array[ss->cur_item].source);
+static void run_transition(struct slideshow *ss, struct transition_plan *plan)
+{
+	if (plan->valid && plan->use_cut) {
+		obs_transition_set(plan->transition, plan->dest);
+
+	} else if (plan->valid && !plan->to_null) {
+		obs_transition_start(plan->transition, OBS_TRANSITION_MODE_AUTO, plan->tr_speed, plan->dest);
 
 	} else {
-		obs_transition_start(ss->transition, OBS_TRANSITION_MODE_AUTO, ss->tr_speed, NULL);
+		obs_transition_start(plan->transition, OBS_TRANSITION_MODE_AUTO, plan->tr_speed, NULL);
 		set_media_state(ss, OBS_MEDIA_STATE_ENDED);
 		obs_source_media_ended(ss->source);
 	}
 
-	if (valid && !to_null) {
-		calldata_set_int(&ss->cd, "index", ss->cur_item);
-		calldata_set_string(&ss->cd, "path", ss->files.array[ss->cur_item].path);
+	if (plan->valid && !plan->to_null) {
+		calldata_set_int(&ss->cd, "index", plan->index);
+		calldata_set_string(&ss->cd, "path", plan->path);
 
 		signal_handler_t *sh = obs_source_get_signal_handler(ss->source);
 		signal_handler_signal(sh, "slide_changed", &ss->cd);
 	}
+
+	obs_source_release(plan->dest);
+	obs_source_release(plan->transition);
+	bfree(plan->path);
+}
+
+/* Callers must not hold ss->mutex. */
+static void do_transition(void *data, bool to_null)
+{
+	struct slideshow *ss = data;
+	struct transition_plan plan;
+
+	prepare_transition(ss, to_null, &plan);
+	run_transition(ss, &plan);
 }
 
 static void ss_update(void *data, obs_data_t *settings)
@@ -715,6 +755,8 @@ static void ss_video_render(void *data, gs_effect_t *effect)
 static void ss_video_tick(void *data, float seconds)
 {
 	struct slideshow *ss = data;
+	struct transition_plan plan = {0};
+	bool run_plan = false;
 
 	pthread_mutex_lock(&ss->mutex);
 
@@ -724,26 +766,37 @@ static void ss_video_tick(void *data, float seconds)
 	if (ss->restart_on_activate && ss->use_cut) {
 		ss->elapsed = 0.0f;
 		ss->cur_item = ss->randomize ? random_file(ss) : 0;
-		do_transition(ss, false);
+		prepare_transition(ss, false, &plan);
+		run_plan = true;
 		ss->restart_on_activate = false;
 		ss->use_cut = false;
 		ss->stop = false;
 		goto finish;
 	}
 
-	if (ss->pause_on_deactivate || ss->manual || ss->stop || ss->paused)
-		goto finish;
-
 	/* ----------------------------------------------------- */
 	/* fade to transparency when the file list becomes empty */
 	if (!ss->files.num) {
-		obs_source_t *active_transition_source = obs_transition_get_active_source(ss->transition);
+		obs_source_t *transition = obs_source_get_ref(ss->transition);
+		obs_source_t *active_transition_source = obs_transition_get_active_source(transition);
+		uint32_t tr_speed = ss->tr_speed;
+
+		/* Transition and media signals may synchronously enumerate this source. */
+		pthread_mutex_unlock(&ss->mutex);
 
 		if (active_transition_source) {
 			obs_source_release(active_transition_source);
-			do_transition(ss, true);
+			obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO, tr_speed, NULL);
+			set_media_state(ss, OBS_MEDIA_STATE_ENDED);
+			obs_source_media_ended(ss->source);
 		}
+
+		obs_source_release(transition);
+		return;
 	}
+
+	if (ss->pause_on_deactivate || ss->manual || ss->stop || ss->paused)
+		goto finish;
 
 	/* ----------------------------------------------------- */
 	/* do transition when slide time reached                 */
@@ -753,11 +806,8 @@ static void ss_video_tick(void *data, float seconds)
 		ss->elapsed -= ss->slide_time;
 
 		if (!ss->loop && ss->cur_item == ss->files.num - 1) {
-			if (ss->hide)
-				do_transition(ss, true);
-			else
-				do_transition(ss, false);
-
+			prepare_transition(ss, ss->hide, &plan);
+			run_plan = true;
 			goto finish;
 		}
 
@@ -766,6 +816,9 @@ static void ss_video_tick(void *data, float seconds)
 
 finish:
 	pthread_mutex_unlock(&ss->mutex);
+
+	if (run_plan)
+		run_transition(ss, &plan);
 }
 
 static inline bool ss_audio_render_(obs_source_t *transition, uint64_t *ts_out,
