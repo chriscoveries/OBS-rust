@@ -46,6 +46,10 @@ flags=(-DENABLE_FRONTEND=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF
 read -r -a extra <<<"${TIER2_EXTRA_CMAKE:-}"
 flags+=(${extra[@]+"${extra[@]}"})
 
+# A ctest failure doesn't stop the run: the other mode, the export dump and
+# the OFF/ON export diff still run, so one flaky test can't hide the rest.
+# The script exits with the first ctest failure code at the end.
+ctest_rc=0
 for mode in OFF ON; do
   build="$root/rust-$mode"
   echo "== [$mode] configure + build"
@@ -83,7 +87,10 @@ for mode in OFF ON; do
     [ -n "$exe" ] && gdb -batch -ex 'thread apply all bt' "$exe" "$core" 2>&1 | tail -200 || true
     rm -f "$core"
   done < <(find "$build" -xdev -type f \( -name core -o -name 'core.[0-9]*' \) -newer "$build/.ctest-start" 2>/dev/null)
-  [ "$rc" -eq 0 ] || exit "$rc"
+  if [ "$rc" -ne 0 ]; then
+    echo "== [$mode] ctest FAILED (rc=$rc); continuing with the remaining checks"
+    [ "$ctest_rc" -ne 0 ] || ctest_rc=$rc
+  fi
   if [ "$repeat" -gt 0 ]; then
     echo "== [$mode] ctest --repeat until-fail:$repeat${tests:+ -R $tests}"
     $xvfb ctest --test-dir "$build" --output-on-failure --timeout 600 --repeat "until-fail:$repeat" ${tests:+-R "$tests"}
@@ -136,3 +143,8 @@ echo "IDENTICAL ($(wc -l <"$root/exports-ON.txt") symbols)"
 
 echo "== ccache"
 ccache -s | grep -E "Hits|Misses|Cache size" || true
+
+if [ "$ctest_rc" -ne 0 ]; then
+  echo "== ctest failed in at least one mode (rc=$ctest_rc); see the FAILED lines above"
+  exit "$ctest_rc"
+fi
