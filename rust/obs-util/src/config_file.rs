@@ -681,32 +681,19 @@ fn g_parts(v: f64, prec: usize) -> (String, i64, bool) {
     }
 }
 
-fn nan_inf(v: f64) -> Option<Vec<u8>> {
-    if v.is_nan() {
-        Some(if v.is_sign_negative() {
-            b"-nan".to_vec()
-        } else {
-            b"nan".to_vec()
-        })
-    } else if v.is_infinite() {
-        Some(if v < 0.0 {
-            b"-inf".to_vec()
-        } else {
-            b"inf".to_vec()
-        })
-    } else {
-        None
-    }
-}
+use crate::platform::{DoubleFormat, snprintf_double};
 
-/// `snprintf("%.*g", prec, v)` for prec > 0: `%e`/`%f` chosen by the C
-/// rule, trailing zeros and a bare `.` stripped, exponent signed with at
-/// least two digits (`1e+06`, `1e-05`).
-fn g_format(v: f64, prec: usize) -> Vec<u8> {
-    if let Some(s) = nan_inf(v) {
-        return s;
+/// `snprintf(format, v)` for `format` (`%.17g` or `%g`): `%e`/`%f` chosen
+/// by the C rule, trailing zeros and a bare `.` stripped, exponent signed
+/// with at least two digits (`1e+06`, `1e-05`). `inf` and `nan` come from
+/// the C library itself, because their spelling is the libc's choice: the
+/// sign of a NaN (glibc `-nan`, Apple libc `nan`) and UCRT's
+/// `-nan(ind)` and `nan(snan)`.
+fn g_format(v: f64, format: DoubleFormat) -> Vec<u8> {
+    if !v.is_finite() {
+        return snprintf_double(format, v);
     }
-    let (mant, exp, e_form) = g_parts(v, prec);
+    let (mant, exp, e_form) = g_parts(v, format.precision());
     if e_form {
         format!(
             "{}e{}{:02}",
@@ -729,17 +716,16 @@ fn strip_zeros(s: &str) -> &str {
     s.strip_suffix('.').unwrap_or(s)
 }
 
-/// `os_dtostr`: `%.17g`, `.0` appended when no `.`/`e`, then the C
-/// exponent normalization simulated byte-for-byte — including its quirk:
+/// `os_dtostr`: `%.17g`, `.0` appended when no `.`/`e` (so `inf.0`, `-inf.0`
+/// and `nan.0` too), then the C exponent normalization simulated
+/// byte-for-byte — including its quirk:
 /// `memmove(start, end, length - (end - dst))` never reaches the NUL, so
-/// a `+` exponent's tail digits stay behind and the last digit is
-/// duplicated (`1e+18` -> `1e188`, `1e+151` -> `1e1511`). `-` exponents
-/// lose leading zeros cleanly (`1e-05` -> `1e-5`).
+/// the exponent's tail digits stay behind and the last digit is
+/// duplicated (`1e+18` -> `1e188`, `1e+151` -> `1e1511`). That is a C bug
+/// mirrored for parity, and it hits `-` exponents with a leading zero too
+/// (`1.5e-05` -> `1.5e-55`); it is tracked separately.
 fn dtostr(v: f64) -> Vec<u8> {
-    if let Some(s) = nan_inf(v) {
-        return s;
-    }
-    let mut s = g_format(v, 17);
+    let mut s = g_format(v, DoubleFormat::G17);
     if !s.contains(&b'.') && !s.contains(&b'e') {
         s.extend_from_slice(b".0");
     }
@@ -1075,7 +1061,7 @@ impl Config {
 
     /// `config_set_default_double` (plain `%g`, 6 significant digits).
     pub fn set_default_double(&self, section: &[u8], name: &[u8], value: f64) {
-        self.set_default(section, name, g_format(value, 6));
+        self.set_default(section, name, g_format(value, DoubleFormat::G));
     }
 
     /// `config_get_default_string`.

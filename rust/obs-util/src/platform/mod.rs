@@ -49,3 +49,6 @@ cfg_select! {
 /// the exact quotient (and fault when it overflows 64 bits); everywhere
 /// else it uses the overflowing split formula.
 pub const MUL_DIV64_IS_UDIV128: bool = cfg!(all(target_env = "msvc", target_arch = "x86_64"));
+
+mod stdio;
+pub use stdio::{DoubleFormat, snprintf_double};
