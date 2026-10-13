@@ -2736,6 +2736,8 @@ static void reset_raw_output(obs_output_t *output)
 
 static void calculate_batch_size(struct obs_output *output)
 {
+	output->interleaver_max_batch_size = 0;
+
 	struct obs_video_info ovi;
 	obs_get_video_info(&ovi);
 	DARRAY(uint64_t) intervals;
