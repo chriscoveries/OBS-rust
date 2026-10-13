@@ -8,3 +8,11 @@ wchar_to_utf8
 # platform-nix.c: obs-module.c calls this inside libobs. The C file is not
 # exported (no EXPORT). The unix shim is hidden the same way.
 get_plugin_info
+# obs-preflight's static C ABI is linked directly by its caller, not exported
+# through libobs's shared-library ABI.
+obs_preflight_engine_create
+obs_preflight_engine_create_with_window
+obs_preflight_engine_destroy
+obs_preflight_engine_get_window
+obs_preflight_engine_get_window_count
+obs_preflight_engine_push_sample

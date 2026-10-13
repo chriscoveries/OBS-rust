@@ -20,4 +20,11 @@
     wchar_to_utf8;
     /* platform-nix.c. obs-module.c calls it; the C build does not export it. */
     get_plugin_info;
+    /* The preflight static C ABI is linked directly, not exported by libobs. */
+    obs_preflight_engine_create;
+    obs_preflight_engine_create_with_window;
+    obs_preflight_engine_destroy;
+    obs_preflight_engine_get_window;
+    obs_preflight_engine_get_window_count;
+    obs_preflight_engine_push_sample;
 };

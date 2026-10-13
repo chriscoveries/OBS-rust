@@ -12,6 +12,13 @@ _utf8_to_wchar
 _wchar_to_utf8
 # platform-nix.c is not exported by the C libobs.
 _get_plugin_info
+# The preflight static C ABI is linked directly, not exported by libobs.
+_obs_preflight_engine_create
+_obs_preflight_engine_create_with_window
+_obs_preflight_engine_destroy
+_obs_preflight_engine_get_window
+_obs_preflight_engine_get_window_count
+_obs_preflight_engine_push_sample
 # compiler-rt @available helpers (__isOSVersionAtLeast,
 # __isPlatformVersionAtLeast) that Rust's compiler_builtins brings in; the C
 # build does not export them. Wildcards: no error if absent.
