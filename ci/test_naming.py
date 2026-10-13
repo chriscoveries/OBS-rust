@@ -34,11 +34,13 @@ class NamingTest(unittest.TestCase):
                 self.assertRegex(name, PORT, "crates are obs-<area> (see naming.md)")
                 self.assertFalse(name.endswith("-rust"), "only libobs-rust and obs-studio-rust end in -rust")
 
-    def test_binaries_use_the_product_name(self):
+    def test_binaries_use_their_tool_name(self):
         for manifest in crates().values():
             for binary in manifest.get("bin", []):
                 with self.subTest(binary=binary["name"]):
-                    self.assertEqual(binary["name"], "obs-studio-rust")
+                    package_name = manifest["package"]["name"]
+                    expected = "obs-studio-rust" if package_name == "obs-studio-rust" else package_name
+                    self.assertEqual(binary["name"], expected)
 
 
 if __name__ == "__main__":
