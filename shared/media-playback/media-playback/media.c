@@ -180,6 +180,7 @@ static int mp_media_next_packet(mp_media_t *media)
 	if (ret < 0) {
 		if (ret != AVERROR_EOF && ret != AVERROR_EXIT)
 			blog(LOG_WARNING, "MP: av_read_frame failed: %s (%d)", av_err2str(ret), ret);
+		mp_media_free_packet(media, pkt);
 		return ret;
 	}
 
