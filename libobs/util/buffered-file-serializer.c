@@ -234,7 +234,9 @@ static int64_t file_output_seek(void *opaque, int64_t offset, enum serialize_see
 	return (int64_t)out->io.next_pos;
 }
 
-#ifndef _WIN32
+/* MSVC's <stdlib.h> defines min/max macros; other toolchains, MinGW on
+ * Windows included, need these. */
+#if !defined(min) && !defined(max)
 static inline size_t max(size_t a, size_t b)
 {
 	return a > b ? a : b;

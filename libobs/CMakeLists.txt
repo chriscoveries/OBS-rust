@@ -181,7 +181,7 @@ target_sources(
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-fourcc.c>
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-frame.c>
     media-io/video-frame.h
-    media-io/video-io.c
+    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-io.c>
     media-io/video-io.h
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-matrices.c>
     media-io/video-scaler-ffmpeg.c

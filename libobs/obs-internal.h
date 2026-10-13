@@ -38,6 +38,7 @@
 #include "media-io/audio-io.h"
 
 #include "obs.h"
+#include "obs-video-stats.h"
 
 #include <obsversion.h>
 #include <caption/caption.h>
@@ -442,11 +443,8 @@ struct obs_core_video {
 	uint64_t video_time;
 	uint64_t video_frame_interval_ns;
 	uint64_t video_half_frame_interval_ns;
-	uint64_t video_avg_frame_time_ns;
-	double video_fps;
 	pthread_t video_thread;
-	uint32_t total_frames;
-	uint32_t lagged_frames;
+	struct obs_video_stats stats;
 	bool thread_initialized;
 
 	gs_texture_t *transparent_texture;

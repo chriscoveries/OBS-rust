@@ -387,8 +387,8 @@ bool obs_output_actual_start(obs_output_t *output)
 		success = output->info.start(output->context.data);
 
 	if (success) {
-		output->starting_drawn_count = obs->video.total_frames;
-		output->starting_lagged_count = obs->video.lagged_frames;
+		obs_video_stats_frame_counts(&obs->video.stats, &output->starting_drawn_count,
+					     &output->starting_lagged_count);
 	}
 
 	if (!success)
@@ -444,8 +444,11 @@ static void log_frame_info(struct obs_output *output)
 {
 	struct obs_core_video *video = &obs->video;
 
-	uint32_t drawn = video->total_frames - output->starting_drawn_count;
-	uint32_t lagged = video->lagged_frames - output->starting_lagged_count;
+	uint32_t total_frames;
+	uint32_t lagged_frames;
+	obs_video_stats_frame_counts(&video->stats, &total_frames, &lagged_frames);
+	uint32_t drawn = total_frames - output->starting_drawn_count;
+	uint32_t lagged = lagged_frames - output->starting_lagged_count;
 
 	int dropped = obs_output_get_frames_dropped(output);
 	int total = output->total_frames;

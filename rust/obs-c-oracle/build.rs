@@ -139,8 +139,10 @@ fn main() {
     // Those helpers come from oracle/threading_posix.c or
     // oracle/threading_windows.c, included under private names. MSVC has no
     // pthread: libobs builds against deps/w32-pthreads, so the oracle compiles
-    // its single-file build.
-    if oracle.get_compiler().is_like_msvc() {
+    // its single-file build. Chosen by target, not compiler: GCC/Clang
+    // targeting Windows (MinGW) has no system pthread either
+    // (obs-rust/obs-studio#291).
+    if windows {
         let deps = libobs.with_file_name("deps");
         oracle
             .include(deps.join("w32-pthreads"))

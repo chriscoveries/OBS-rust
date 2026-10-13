@@ -821,8 +821,7 @@ static inline void video_sleep(struct obs_core_video *video, uint64_t *p_time, u
 		*p_time = cur_time + interval_ns * count;
 	}
 
-	video->total_frames += count;
-	video->lagged_frames += count - 1;
+	obs_video_stats_add_frames(&video->stats, count, count - 1);
 
 	vframe_info.timestamp = cur_time;
 	vframe_info.count = count;
@@ -1143,9 +1142,9 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 	context->fps_total_frames++;
 
 	if (context->fps_total_ns >= 1000000000ULL) {
-		obs->video.video_fps =
-			(double)context->fps_total_frames / ((double)context->fps_total_ns / 1000000000.0);
-		obs->video.video_avg_frame_time_ns = context->frame_time_total_ns / (uint64_t)context->fps_total_frames;
+		const double fps = (double)context->fps_total_frames / ((double)context->fps_total_ns / 1000000000.0);
+		const uint64_t frame_time_ns = context->frame_time_total_ns / (uint64_t)context->fps_total_frames;
+		obs_video_stats_set_timing(&obs->video.stats, fps, frame_time_ns);
 
 		context->frame_time_total_ns = 0;
 		context->fps_total_ns = 0;

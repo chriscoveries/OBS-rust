@@ -5,6 +5,10 @@
 //! native OS paths (`std::os::*`, `libc::`, Win32) outside this module and
 //! [`crate::ffi`].
 
+#[allow(unsafe_code)] // the cell is touched only while this thread holds the lock
+mod re_mutex;
+pub(crate) use re_mutex::ReMutex;
+
 cfg_select! {
     unix => {
         #[allow(unsafe_code)] // pthread mutex calls; see the module docs

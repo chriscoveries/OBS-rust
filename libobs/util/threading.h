@@ -35,7 +35,10 @@
 extern "C" {
 #endif
 
-#ifdef _WIN32
+/* threading-windows.h uses MSVC intrinsics; GCC and Clang targeting Windows
+ * (MinGW) use the compiler __atomic builtins in threading-posix.h, which do
+ * not depend on the OS. */
+#ifdef _MSC_VER
 #include "threading-windows.h"
 #else
 #include "threading-posix.h"

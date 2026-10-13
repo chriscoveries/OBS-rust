@@ -20,9 +20,10 @@ void os_oom(void);
 size_t os_fread_utf8(FILE *file, char **pstr);
 
 /* Unix cargo tests also link the Rust os_breakpoint / os_oom shims.
- * The weak stubs lose that link. MSVC has no weak symbols; Windows does
- * not build the unix shim, so these stay strong and empty. */
-#if defined(_MSC_VER)
+ * The weak stubs lose that link. Windows does not build the unix shim, so
+ * these stay strong and empty there, with any compiler (MinGW drops a
+ * weak-only definition from a static archive; #291). */
+#if defined(_WIN32)
 void os_breakpoint(void) {}
 void os_oom(void) {}
 #else

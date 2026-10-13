@@ -90,3 +90,24 @@ this document covers *who does what, and when*.
   follow-up issue for the rest.
 - A superseded PR is closed by its author (or a maintainer) with a link to the
   replacement.
+
+## 8. Master branch protection (decision for #139)
+
+`master` blocks force pushes and deletion, including for administrators. It
+does not require pull requests or status checks, and it allows merge commits.
+The maintainer's direct-push tooling can therefore continue to publish a
+locally tested, attested commit. Contributors should still use the claim and
+PR workflow above; this setting is not a waiver of those rules.
+
+Do not require the Linux Rust or Tier 2 CI jobs while the local-gate
+attestation legitimately skips them. A skipped job is not a successful
+required check. Revisit required checks only after CI exposes a stable,
+always-reported aggregate result for both attested and full runs. Do not
+enable a merge queue before that result exists; queued runs would need the
+same gate and would delay the current grind and maintainer flows.
+
+Do not require linear history while the project uses merge commits for PRs.
+Review this policy again if direct pushes are retired or the gate's CI
+reporting changes. Every PR still targets `master` as section 4 requires;
+GitHub branch protection cannot prevent an author from choosing a `grind/*`
+base, so check the base before merging.

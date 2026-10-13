@@ -1237,6 +1237,12 @@ extern void log_system_info(void);
 static bool obs_init(const char *locale, const char *module_config_path, profiler_name_store_t *store)
 {
 	obs = bzalloc(sizeof(struct obs_core));
+	if (obs_video_stats_init(&obs->video.stats) != 0) {
+		blog(LOG_ERROR, "Failed to initialize video statistics mutex");
+		bfree(obs);
+		obs = NULL;
+		return false;
+	}
 
 	pthread_mutex_init_value(&obs->audio.monitoring_mutex);
 	pthread_mutex_init_value(&obs->audio.task_mutex);
@@ -1349,8 +1355,16 @@ bool obs_startup(const char *locale, const char *module_config_path, profiler_na
 
 	success = obs_init(locale, module_config_path, store);
 	profile_end(obs_startup_name);
-	if (!success)
-		obs_shutdown();
+	if (!success) {
+		if (obs)
+			obs_shutdown();
+#ifdef _WIN32
+		else if (com_initialized) {
+			uninitialize_com();
+			com_initialized = false;
+		}
+#endif
+	}
 
 	return success;
 }
@@ -1449,6 +1463,7 @@ void obs_shutdown(void)
 	obs_free_data();
 	obs_free_audio();
 	obs_free_video();
+	obs_video_stats_destroy(&obs->video.stats);
 	os_task_queue_destroy(obs->destruction_task_thread);
 	obs_free_hotkeys();
 	obs_free_graphics();
@@ -2903,12 +2918,12 @@ uint64_t obs_get_video_frame_time(void)
 
 double obs_get_active_fps(void)
 {
-	return obs->video.video_fps;
+	return obs_video_stats_fps(&obs->video.stats);
 }
 
 uint64_t obs_get_average_frame_time_ns(void)
 {
-	return obs->video.video_avg_frame_time_ns;
+	return obs_video_stats_avg_frame_time_ns(&obs->video.stats);
 }
 
 uint64_t obs_get_frame_interval_ns(void)
@@ -3091,12 +3106,12 @@ void obs_remove_main_rendered_callback(void (*rendered)(void *param), void *para
 
 uint32_t obs_get_total_frames(void)
 {
-	return obs->video.total_frames;
+	return obs_video_stats_total_frames(&obs->video.stats);
 }
 
 uint32_t obs_get_lagged_frames(void)
 {
-	return obs->video.lagged_frames;
+	return obs_video_stats_lagged_frames(&obs->video.stats);
 }
 
 /* An encoder that rescales on the GPU encodes from an encoder-only mix of

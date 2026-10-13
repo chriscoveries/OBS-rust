@@ -14,7 +14,8 @@ Lanes:
                build-aux/run-clang-format and run-gersemi, plus rustfmt,
                clippy -D warnings and the repo Dylints (dylints/*). Formatters are pinned through uvx, so no
                brew/zsh install is needed.
-  rust-test    soldr cargo test --workspace --locked (Tiers 1-3).
+  rust-test    soldr cargo test --workspace --locked (Tiers 1-3), plus a
+               --no-run build of the tests for x86_64-pc-windows-gnu.
 
 Cargo runs with SOLDR_RUSTC_WRAPPER=none (soldr's zccache has replayed stale
 rustc output; #134). Set OBS_GATE_ZCCACHE=1 to keep the cache locally.
@@ -164,6 +165,13 @@ def lane_lint(fix: bool) -> None:
 
 def lane_rust_test(fix: bool) -> None:
     soldr_cargo(["test", "--workspace", "--locked"])
+    # Every test binary, C oracle included, must also link for a GCC-based
+    # Windows target (obs-rust/obs-studio#291). soldr provides the
+    # mingw-w64 cross toolchain; nothing runs, so no Wine is needed.
+    # The target is added here, not in rust-toolchain.toml: listing it there
+    # made soldr on a Windows host build and run every test as windows-gnu.
+    run(["soldr", "rustup", "target", "add", "x86_64-pc-windows-gnu"])
+    soldr_cargo(["test", "--workspace", "--locked", "--no-run", "--target", "x86_64-pc-windows-gnu"])
 
 
 def lane_tier2_linux(fix: bool) -> None:

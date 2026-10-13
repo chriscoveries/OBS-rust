@@ -19,6 +19,13 @@ _obs_preflight_engine_destroy
 _obs_preflight_engine_get_window
 _obs_preflight_engine_get_window_count
 _obs_preflight_engine_push_sample
+# video-io.c is not exported for these six.
+_video_output_inc_texture_encoders
+_video_output_dec_texture_encoders
+_video_output_inc_texture_frames
+_video_output_inc_texture_skipped_frames
+_video_output_create_with_frame_rate_divisor
+_video_output_free_frame_rate_divisor
 # compiler-rt @available helpers (__isOSVersionAtLeast,
 # __isPlatformVersionAtLeast) that Rust's compiler_builtins brings in; the C
 # build does not export them. Wildcards: no error if absent.

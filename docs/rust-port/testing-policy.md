@@ -17,6 +17,25 @@ in Rust. Concretely, the following stay compatible:
 - The frontend API (`obs-frontend-api`), scripting bindings, and the
   `window.obsstudio` browser-source API.
 
+### Public and internal boundaries
+
+Public headers, exported symbols, opaque-handle behavior, and public struct
+layouts are compatibility contracts. `obs-internal.h` is a private header,
+not a public ABI contract: its layouts may change when the C users of a field
+have been ported or moved behind an internal accessor. Inventory those users
+before changing a field. Adapt remaining C callers in a separate,
+behavior-neutral commit or PR, with the existing C tests still passing;
+then port the isolated unit. Do not edit a public header or an existing C test
+to accommodate the Rust implementation.
+
+This distinction matters for Phase 6. Core files share `obs-internal.h` by
+direct field access, while `obs-data.h` exposes opaque handles whose layouts
+live only in `obs-data.c`. The first core seam is `obs-data.c`, after its C
+behavior has been characterized. Large files enter through the function
+extraction workflow below: extract a C unit verbatim and land that change
+before replacing the extracted file with Rust. The four tiers still apply to
+each resulting unit, including symbol parity and differential tests.
+
 Tests exist to prove two separate things: that the Rust code is correct, and
 that it is a drop-in replacement for the C code it replaces. One kind of test
 cannot prove both, so every ported unit carries the four tiers below.
@@ -40,8 +59,9 @@ cannot prove both, so every ported unit carries the four tiers below.
 - The Rust crate exports the original C symbols through a thin
   `#[no_mangle] pub extern "C"` shim with `#[repr(C)]` structs. The shim only
   converts types and delegates to the safe core; it contains no logic.
-- The **existing C header is the source of truth**. Do not generate a
-  replacement header and do not edit the public header as part of a port.
+- The **existing public C header is the source of truth** for the public ABI.
+  Do not generate a replacement header or edit the public header as part of a
+  port.
   Public struct layouts MUST match the C layout exactly, including any
   awkward field types (e.g. `uint8_t pos` stays `u8` at the C boundary even if
   the safe core uses `usize`).
@@ -112,8 +132,12 @@ cannot prove both, so every ported unit carries the four tiers below.
 - Known, intentional differences from the C behavior (bug fixes) MUST be
   listed in the test file and in the tracking issue, and the property test
   must exclude exactly those inputs, no more.
-- The oracle for a unit is deleted only after the C source itself is deleted
-  from the tree, in that same change.
+- When a C source is removed from the production tree, move that original
+  source to `rust/obs-c-oracle/legacy/` in the same change and update its
+  oracle wrapper. Keep Tier 3 parity running; the production source's
+  deletion does not end the behavioral baseline. See
+  [release-criteria.md](release-criteria.md) for the release and rollback
+  gates before removing a C implementation.
 
 ### Tier 4 — Black-box protocol tests (external network API)
 
@@ -203,7 +227,8 @@ Tier 2 checks.
 1. `file-serializer.c` and `buffered-file-serializer.c`
 2. `config-file.c`
 3. `task.c`
-4. `profiler.c` and `source-profiler.c`
+4. `profiler.c` (`source-profiler.c` is Phase 6 core work because it accesses
+   `obs-internal.h` and source/graphics state directly)
 5. `pipe.c` / `pipe-posix.c` / `pipe-windows.c`
 6. `threading-posix.c` / `threading-windows.c`
 7. `platform.c`, then `platform-nix*.c` / `platform-windows.c`
@@ -234,7 +259,8 @@ Tier 2 checks.
    `quat.c`, `matrix3.c`, `matrix4.c`, `plane.c`, `bounds.c`, `axisang.c`,
    `math-extra.c`.
 2. `media-io` in crate `obs-media-io`.
-3. obs-websocket Tier 4 suite, then the port.
+3. obs-websocket Tier 4 suite, then the staged port described in
+   [websocket-port.md](websocket-port.md).
 
 - Tier 3 parity is exact bit equality (NaN == NaN) where the C is scalar and
   deterministic. Only where the C uses SIMD (`vec3`, `vec4`, `matrix4` via
