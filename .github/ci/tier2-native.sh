@@ -53,6 +53,13 @@ ctest_rc=0
 for mode in OFF ON; do
   build="$root/rust-$mode"
   echo "== [$mode] configure + build"
+  # The persistent build dir is shared by every branch. UseSWIG tracks only
+  # the .i files, not the libobs headers they include, so the generated
+  # Lua/Python wrappers of test_scripting_obs_defs go stale when a branch adds
+  # or removes a graphics/obs function. Touch the .i files so SWIG always
+  # regenerates them.
+  touch "$src/shared/obs-scripting/obslua/obslua.i" \
+    "$src/shared/obs-scripting/obspython/obspython.i"
   cmake -S "$src" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DENABLE_UNIT_TESTS=ON \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
