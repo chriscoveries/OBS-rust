@@ -35,6 +35,9 @@ static inline float clamp(float x, float min, float max)
 
 static inline float smoothstep(float min, float max, float x)
 {
+	if (min == max)
+		return x >= max ? 1.0f : 0.0f;
+
 	x = clamp((x - min) / (max - min), 0.0f, 1.0f);
 	return x * x * (3 - 2 * x);
 }
