@@ -13,14 +13,14 @@ pub const DEFAULT_WINDOW_DURATION_MS: u64 = 5_000;
 const MAX_CPU_PERCENT: f64 = 100.0;
 const MAX_OUTPUT_CONGESTION: f64 = 1.0;
 
-// Provisional Preflight M0 policy, owner-approved 2026-10-13: keep at least one
-// fifth of each interval available for render bursts; OBS defines no such band.
+// Provisional M0 default, pending owner review: keep one fifth of each interval
+// available for render bursts; OBS defines no such verdict band.
 pub const MARGINAL_RENDER_HEADROOM_RATIO: f64 = 0.20;
 // Negative render headroom means rendering took longer than the frame interval.
 pub const FAIL_RENDER_HEADROOM_NS: i64 = 0;
 
-// Provisional Preflight M0 policy, owner-approved 2026-10-13: any render lag
-// or output drop is visible; one percent is sustained short-test failure.
+// Provisional M0 defaults, pending owner review: any render lag or output drop
+// is visible; one percent is sustained short-test failure.
 pub const MARGINAL_RENDER_LAG_PERCENT: f64 = 0.0;
 pub const FAIL_RENDER_LAG_PERCENT: f64 = 1.0;
 pub const MARGINAL_OUTPUT_DROP_PERCENT: f64 = 0.0;
@@ -30,19 +30,17 @@ pub const FAIL_OUTPUT_DROP_PERCENT: f64 = 1.0;
 // >= 0.1 and only after >10 new skipped frames. Thus 0.1 is 0.1%, not 10%.
 pub const MARGINAL_ENCODER_SKIP_PERCENT: f64 = 0.1;
 pub const MIN_ENCODER_SKIPS_FOR_UI_WARNING: u64 = 10;
-// Provisional Preflight M0 policy, owner-approved 2026-10-13: one percent is a
-// sustained fail band above OBS's existing warning; OBS sets no fail threshold.
+// Provisional M0 default, pending owner review: one percent is a sustained fail
+// band above OBS's existing warning; OBS sets no fail threshold.
 pub const FAIL_ENCODER_SKIP_PERCENT: f64 = 1.0;
 
-// Provisional Preflight M0 policy, owner-approved 2026-10-13: below 5% is
-// ordinary variation; 20% means a material share of output is held back. OBS
-// exposes congestion but defines no verdict bands.
+// Provisional M0 defaults, pending owner review: below 5% is ordinary variation;
+// 20% means a material share of output is held back. OBS defines no verdict bands.
 pub const MARGINAL_CONGESTION_PERCENT: f64 = 5.0;
 pub const FAIL_CONGESTION_PERCENT: f64 = 20.0;
 
-// Provisional Preflight M0 policy, owner-approved 2026-10-13: below 90% leaves
-// room for scene and OS bursts; at 98% little spare capacity remains. OBS does
-// not define a preflight CPU warning threshold.
+// Provisional M0 defaults, pending owner review: below 90% leaves room for scene
+// and OS bursts; at 98% little spare capacity remains. OBS defines no such band.
 pub const MARGINAL_CPU_PERCENT: f64 = 90.0;
 pub const FAIL_CPU_PERCENT: f64 = 98.0;
 
@@ -116,6 +114,7 @@ pub struct WindowResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AnalysisError {
     TooFewSamples,
+    NoMeasurableInterval,
     ZeroWindowDuration,
     InvalidSample {
         sample_index: usize,
@@ -135,6 +134,12 @@ impl fmt::Display for AnalysisError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooFewSamples => write!(f, "a window needs at least two samples"),
+            Self::NoMeasurableInterval => {
+                write!(
+                    f,
+                    "trace has no measurable sample interval after counter resets"
+                )
+            }
             Self::ZeroWindowDuration => write!(f, "window duration must be greater than zero"),
             Self::InvalidSample {
                 sample_index,
@@ -336,15 +341,9 @@ fn counters_decreased(previous: &StatSample, current: &StatSample) -> bool {
         || current.encoder_skipped_frames < previous.encoder_skipped_frames
 }
 
-fn roll_up(
-    samples: &[StatSample],
-    window_duration_ms: Option<u64>,
-) -> Result<Vec<WindowRollup>, AnalysisError> {
+fn validate_history(samples: &[StatSample]) -> Result<(), AnalysisError> {
     if samples.len() < 2 {
         return Err(AnalysisError::TooFewSamples);
-    }
-    if window_duration_ms == Some(0) {
-        return Err(AnalysisError::ZeroWindowDuration);
     }
     for (sample_index, sample) in samples.iter().enumerate() {
         validate_sample(sample, sample_index)?;
@@ -352,7 +351,14 @@ fn roll_up(
             return Err(AnalysisError::NonIncreasingTimestamp { sample_index });
         }
     }
+    Ok(())
+}
 
+fn roll_up_validated(
+    samples: &[StatSample],
+    window_duration_ms: Option<u64>,
+    sample_index_offset: usize,
+) -> Result<Vec<WindowRollup>, AnalysisError> {
     let mut segment_index = 0_u64;
     let mut segment_start_ms = samples[0].timestamp_ms;
     let mut windows = BTreeMap::<(u64, u64), WindowAccumulator>::new();
@@ -375,7 +381,7 @@ fn roll_up(
         windows
             .entry((segment_index, window_index))
             .or_default()
-            .add_interval(previous, current, sample_index + 1)?;
+            .add_interval(previous, current, sample_index_offset + sample_index + 1)?;
     }
 
     Ok(windows
@@ -384,13 +390,25 @@ fn roll_up(
         .collect())
 }
 
+fn roll_up(
+    samples: &[StatSample],
+    window_duration_ms: Option<u64>,
+) -> Result<Vec<WindowRollup>, AnalysisError> {
+    if samples.len() < 2 {
+        return Err(AnalysisError::TooFewSamples);
+    }
+    if window_duration_ms == Some(0) {
+        return Err(AnalysisError::ZeroWindowDuration);
+    }
+    validate_history(samples)?;
+    roll_up_validated(samples, window_duration_ms, 0)
+}
+
 /// Roll up the latest contiguous set of timestamped samples into one window.
 /// When a counter resets, earlier completed segments are ignored here; use
 /// [`roll_up_windows`] to receive a separate rollup for each segment.
 pub fn roll_up_window(samples: &[StatSample]) -> Result<WindowRollup, AnalysisError> {
-    if samples.len() < 2 {
-        return Err(AnalysisError::TooFewSamples);
-    }
+    validate_history(samples)?;
     let latest_segment_start = samples
         .windows(2)
         .enumerate()
@@ -398,7 +416,8 @@ pub fn roll_up_window(samples: &[StatSample]) -> Result<WindowRollup, AnalysisEr
         .find(|(_, pair)| counters_decreased(&pair[0], &pair[1]))
         .map(|(index, _)| index + 1)
         .unwrap_or(0);
-    let mut windows = roll_up(&samples[latest_segment_start..], None)?;
+    let mut windows =
+        roll_up_validated(&samples[latest_segment_start..], None, latest_segment_start)?;
     windows.pop().ok_or(AnalysisError::TooFewSamples)
 }
 

@@ -52,6 +52,85 @@ fn parse_server_tests(trace: &str) -> Vec<ServerTest> {
     tests.into_values().collect()
 }
 
+fn jsonl_for_samples(samples: &[StatSample]) -> String {
+    samples
+        .iter()
+        .map(|sample| serde_json::to_string(sample).expect("serialize sample"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn run_cli_with_trace(trace: &str) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_obs-preflight"))
+        .args(["replay", "-", "--window-ms", "5000"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start CLI");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(trace.as_bytes())
+        .expect("write trace");
+    child.wait_with_output().expect("wait for CLI")
+}
+
+fn invalid_prefix_after_reset(kind: u8) -> (Vec<StatSample>, AnalysisError) {
+    let mut first = parse_samples(CLEAN)[0].clone();
+    first.timestamp_ms = if kind == 3 { 3000 } else { 0 };
+    first.lagged_frames = 10;
+    first.output_total_bytes = 10;
+    first.output_total_frames = 10;
+    first.output_frames_dropped = 0;
+    first.encoder_total_frames = 10;
+    first.encoder_skipped_frames = 0;
+
+    let mut reset = first.clone();
+    reset.timestamp_ms = 1000;
+    reset.lagged_frames = 0;
+    reset.output_total_bytes = 0;
+    reset.output_total_frames = 0;
+    reset.output_frames_dropped = 0;
+    reset.encoder_total_frames = 0;
+    reset.encoder_skipped_frames = 0;
+
+    let mut after_reset = reset.clone();
+    after_reset.timestamp_ms = 2000;
+    after_reset.output_total_bytes = 625_000;
+    after_reset.output_total_frames = 1000;
+    after_reset.encoder_total_frames = 1000;
+
+    let expected = match kind {
+        0 => {
+            first.frame_interval_ns = 0;
+            AnalysisError::InvalidSample {
+                sample_index: 0,
+                field: "frame_interval_ns",
+            }
+        }
+        1 => {
+            first.output_congestion = 2.0;
+            AnalysisError::InvalidSample {
+                sample_index: 0,
+                field: "output_congestion",
+            }
+        }
+        2 => {
+            first.cpu_percent = f64::NAN;
+            AnalysisError::InvalidSample {
+                sample_index: 0,
+                field: "cpu_percent",
+            }
+        }
+        3 => AnalysisError::NonIncreasingTimestamp { sample_index: 1 },
+        _ => unreachable!("test generates only supported invalid sample kinds"),
+    };
+
+    (vec![first, reset, after_reset], expected)
+}
+
 // Keep the synthetic counter arguments in the same order as the sample model;
 // this makes the threshold boundary cases compact and easy to compare.
 #[allow(clippy::too_many_arguments)]
@@ -291,6 +370,71 @@ fn cli_rejects_invalid_window_and_malformed_json_without_json_output() {
 }
 
 #[test]
+fn cli_rejects_reset_only_and_repeated_reset_traces() {
+    let mut first = parse_samples(CLEAN)[0].clone();
+    first.timestamp_ms = 0;
+    first.lagged_frames = 10;
+    first.output_total_bytes = 0;
+    first.output_total_frames = 0;
+    first.output_frames_dropped = 0;
+    first.encoder_total_frames = 0;
+    first.encoder_skipped_frames = 0;
+    let mut reset_only = first.clone();
+    reset_only.timestamp_ms = 1000;
+    reset_only.lagged_frames = 0;
+
+    let mut repeated = vec![first.clone()];
+    let mut lag_reset = first.clone();
+    lag_reset.timestamp_ms = 1000;
+    lag_reset.lagged_frames = 0;
+    lag_reset.output_total_bytes = 1;
+    repeated.push(lag_reset.clone());
+    let mut byte_reset = lag_reset;
+    byte_reset.timestamp_ms = 2000;
+    byte_reset.lagged_frames = 1;
+    byte_reset.output_total_bytes = 0;
+    repeated.push(byte_reset);
+    let mut another_lag_reset = first.clone();
+    another_lag_reset.timestamp_ms = 3000;
+    another_lag_reset.lagged_frames = 0;
+    another_lag_reset.output_total_bytes = 1;
+    repeated.push(another_lag_reset);
+
+    for samples in [vec![first.clone(), reset_only], repeated] {
+        let output = run_cli_with_trace(&jsonl_for_samples(&samples));
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("no measurable sample interval after counter resets")
+        );
+    }
+}
+
+#[test]
+fn cli_returns_a_stdout_error_when_the_consumer_closes_early() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_obs-preflight"))
+        .args(["replay", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start CLI");
+    drop(child.stdout.take());
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(CLEAN.as_bytes())
+        .expect("write trace");
+    let output = child.wait_with_output().expect("wait for CLI");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("obs-preflight:"), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
 fn render_headroom_threshold_boundaries_are_exact() {
     let interval = 1000;
     let above_margin = two_samples(799, interval, 0, 1000, 0, 0.0, 1000, 0, 50.0);
@@ -441,6 +585,62 @@ fn server_test(name: &str, bitrate_kbps: u32, dropped: u64, connect_time_ms: i32
     }
 }
 
+fn server_test_with_reset(
+    name: &str,
+    bitrate_kbps: u32,
+    dropped: u64,
+    connect_time_ms: i32,
+    reset_after_initial_window: bool,
+) -> ServerTest {
+    let mut test = server_test(name, bitrate_kbps, dropped, connect_time_ms);
+    if reset_after_initial_window {
+        let mut reset = test.samples[1].clone();
+        reset.timestamp_ms = 11_000;
+        reset.lagged_frames = 0;
+        reset.output_total_bytes = 0;
+        reset.output_total_frames = 0;
+        reset.output_frames_dropped = 0;
+        reset.encoder_total_frames = 0;
+        reset.encoder_skipped_frames = 0;
+
+        let mut after_reset = reset.clone();
+        after_reset.timestamp_ms = 21_000;
+        after_reset.output_total_bytes = u64::from(bitrate_kbps) * 1250;
+        after_reset.output_total_frames = 1000;
+        after_reset.output_frames_dropped = dropped;
+        after_reset.encoder_total_frames = 1000;
+        test.samples.extend([reset, after_reset]);
+    }
+    test
+}
+
+fn reference_server_choice(
+    servers: &[(u32, u64, i32)],
+    starting_bitrate_kbps: u32,
+) -> Option<(usize, u32, u32, i32)> {
+    let minimum_target = (u64::from(starting_bitrate_kbps) * 75 / 100) as u32;
+    let mut best = None;
+    for (index, &(measured, dropped, connect_time_ms)) in servers.iter().enumerate() {
+        if connect_time_ms < 0 {
+            continue;
+        }
+        let ideal = if dropped > 0 || measured < minimum_target {
+            (u64::from(measured) * 70 / 100) as u32
+        } else {
+            starting_bitrate_kbps
+        };
+        let candidate = (index, measured, ideal, connect_time_ms);
+        let replace = best.is_none_or(|current: (usize, u32, u32, i32)| {
+            let close = ideal.abs_diff(current.2) < 400;
+            (!close && ideal > current.2) || (close && connect_time_ms < current.3)
+        });
+        if replace {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
 #[test]
 fn wizard_server_capacity_thresholds_are_exact() {
     assert_eq!(SERVER_MINIMUM_TARGET_PERCENT, 75);
@@ -451,6 +651,16 @@ fn wizard_server_capacity_thresholds_are_exact() {
     assert_eq!(exact.ideal_bitrate_kbps, 1000);
     let with_drop = choose_server(&[server_test("drop", 1000, 1, 20)], 1000).expect("server");
     assert_eq!(with_drop.ideal_bitrate_kbps, 700);
+}
+
+#[test]
+fn wizard_server_threshold_uses_integer_truncation_for_non_multiple_targets() {
+    for (target, measured) in [(1001, 750), (1003, 752)] {
+        let choice = choose_server(&[server_test("boundary", measured, 0, 20)], target)
+            .expect("server selected");
+        assert_eq!(choice.measured_bitrate_kbps, measured);
+        assert_eq!(choice.ideal_bitrate_kbps, target);
+    }
 }
 
 #[test]
@@ -485,6 +695,14 @@ fn wizard_server_400_kbps_boundary_is_strict() {
     let three_ninety_nine_lower = server_test("lower", 859, 1, 1);
     let choice = choose_server(&[higher, three_ninety_nine_lower], 1000).expect("server");
     assert_eq!(choice.name, "lower");
+}
+
+#[test]
+fn wizard_server_equal_connection_times_preserve_scan_order() {
+    let first = server_test("first", 1000, 0, 20);
+    let second = server_test("second", 900, 0, 20);
+    let choice = choose_server(&[first, second], 1000).expect("server selected");
+    assert_eq!(choice.name, "first");
 }
 
 fn candidate(encoder: &str, width: u32) -> Candidate {
@@ -646,6 +864,29 @@ fn trace_validation_rejects_bad_time_and_counter_resets_start_new_windows() {
 }
 
 #[test]
+fn latest_window_and_server_validate_invalid_history_before_resets() {
+    for kind in 0..4 {
+        let (samples, expected) = invalid_prefix_after_reset(kind);
+        assert_eq!(
+            roll_up_window(&samples),
+            Err(expected.clone()),
+            "single-window input kind {kind}"
+        );
+
+        let server = ServerTest {
+            name: format!("invalid-{kind}"),
+            address: "rtmp://invalid".into(),
+            samples,
+        };
+        assert_eq!(
+            choose_server(&[server], 5000),
+            Err(expected),
+            "server input kind {kind}"
+        );
+    }
+}
+
+#[test]
 fn every_decreasing_cumulative_counter_starts_a_new_window() {
     for counter in 0..6 {
         let mut baseline = parse_samples(CLEAN)[0].clone();
@@ -742,7 +983,9 @@ proptest! {
         test.samples[1].output_frames_dropped = initial_drops + additional_drops;
         let choice = choose_server(&[test], starting_bitrate).expect("server");
         let dropped = initial_drops > 0 || additional_drops > 0;
-        let low = u64::from(measured_bitrate) * 100 < u64::from(starting_bitrate) * 75;
+        // Match the wizard's integer expression order: target * 75 / 100.
+        let minimum_target = u64::from(starting_bitrate) * 75 / 100;
+        let low = u64::from(measured_bitrate) < minimum_target;
         let expected = if dropped || low {
             (u64::from(measured_bitrate) * 70 / 100) as u32
         } else {
@@ -750,5 +993,108 @@ proptest! {
         };
         prop_assert_eq!(choice.measured_bitrate_kbps, measured_bitrate);
         prop_assert_eq!(choice.ideal_bitrate_kbps, expected);
+    }
+
+    #[test]
+    fn server_capacity_threshold_property_biases_truncated_neighbors(
+        starting_bitrate in any::<u32>(),
+        threshold_side in -1i8..=1,
+    ) {
+        let minimum_target = (u64::from(starting_bitrate) * 75 / 100) as u32;
+        let measured_bitrate = match threshold_side {
+            -1 => minimum_target.saturating_sub(1),
+            0 => minimum_target,
+            _ => minimum_target.saturating_add(1),
+        };
+        let choice = choose_server(
+            &[server_test("boundary-property", measured_bitrate, 0, 20)],
+            starting_bitrate,
+        ).expect("server");
+        let expected = if measured_bitrate < minimum_target {
+            (u64::from(measured_bitrate) * 70 / 100) as u32
+        } else {
+            starting_bitrate
+        };
+        prop_assert_eq!(choice.measured_bitrate_kbps, measured_bitrate);
+        prop_assert_eq!(choice.ideal_bitrate_kbps, expected);
+    }
+
+    #[test]
+    fn verdict_does_not_improve_as_any_pressure_signal_worsens(
+        signal in 0u8..6,
+        severity in 0.0f64..=100.0,
+    ) {
+        let mut baseline = roll_up_window(
+            &two_samples(8_000_000, 16_666_667, 0, 1000, 0, 0.0, 1000, 0, 50.0),
+        ).expect("valid baseline");
+        baseline.encoder_frames_skipped = 11;
+        let mut worse = baseline.clone();
+        match signal {
+            0 => {
+                worse.frame_interval_ns = 1_000_000.0;
+                worse.render_headroom_ns = (1_000_000.0 - severity * 20_000.0).round() as i64;
+            }
+            1 => worse.render_lag_percent = severity,
+            2 => worse.output_drop_percent = severity,
+            3 => worse.encoder_skip_percent = severity,
+            4 => worse.congestion_percent = severity,
+            5 => worse.cpu_percent = severity,
+            _ => unreachable!(),
+        }
+        let rank = |verdict| match verdict {
+            Verdict::Pass => 0,
+            Verdict::Marginal => 1,
+            Verdict::Fail => 2,
+        };
+        let baseline_verdict = judge_window(baseline).verdict;
+        let worse_verdict = judge_window(worse).verdict;
+        prop_assert!(rank(worse_verdict) >= rank(baseline_verdict));
+    }
+
+    #[test]
+    fn invalid_prefix_after_reset_is_rejected_by_window_and_server_analysis(
+        kind in 0u8..4,
+    ) {
+        let (samples, expected) = invalid_prefix_after_reset(kind);
+        prop_assert_eq!(roll_up_window(&samples), Err(expected.clone()));
+        let server = ServerTest {
+            name: "invalid-history".into(),
+            address: "rtmp://invalid".into(),
+            samples,
+        };
+        prop_assert_eq!(choose_server(&[server], 5000), Err(expected));
+    }
+
+    #[test]
+    fn multi_server_scan_matches_ordered_reference_across_counter_resets(
+        starting_bitrate in any::<u32>(),
+        cases in prop::collection::vec(
+            (any::<u32>(), 0u64..2, -1i32..1000, any::<bool>()),
+            2..8,
+        ),
+    ) {
+        let first_connect_time = cases[0].2;
+        let reference_inputs = cases.iter().enumerate().map(|(index, case)| {
+            (case.0, case.1, if index == 1 { first_connect_time } else { case.2 })
+        }).collect::<Vec<_>>();
+        let tests = cases.iter().enumerate().map(|(index, case)| {
+            let connect_time = if index == 1 { first_connect_time } else { case.2 };
+            server_test_with_reset(
+                &format!("server-{index}"), case.0, case.1, connect_time, case.3,
+            )
+        }).collect::<Vec<_>>();
+
+        let expected = reference_server_choice(&reference_inputs, starting_bitrate);
+        let actual = choose_server(&tests, starting_bitrate);
+        match expected {
+            Some((index, measured, ideal, connect_time)) => {
+                let choice = actual.expect("reference scan found a successful server");
+                prop_assert_eq!(choice.name, format!("server-{index}"));
+                prop_assert_eq!(choice.measured_bitrate_kbps, measured);
+                prop_assert_eq!(choice.ideal_bitrate_kbps, ideal);
+                prop_assert_eq!(choice.connect_time_ms, connect_time);
+            }
+            None => prop_assert_eq!(actual, Err(AnalysisError::NoSuccessfulServer)),
+        }
     }
 }

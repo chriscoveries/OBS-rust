@@ -1,9 +1,11 @@
-use obs_preflight::{DEFAULT_WINDOW_DURATION_MS, StatSample, judge_window, roll_up_windows};
+use obs_preflight::{
+    AnalysisError, DEFAULT_WINDOW_DURATION_MS, StatSample, judge_window, roll_up_windows,
+};
 use std::env;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, ErrorKind};
+use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -30,12 +32,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         let source = Path::new(&parsed.trace_path).display().to_string();
         parse_samples(BufReader::new(file), &source)?
     };
-    let windows = roll_up_windows(&samples, parsed.window_duration_ms)?
-        .into_iter()
-        .map(judge_window)
-        .collect::<Vec<_>>();
+    let rollups = roll_up_windows(&samples, parsed.window_duration_ms)?;
+    if rollups.is_empty() {
+        return Err(AnalysisError::NoMeasurableInterval.into());
+    }
+    let windows = rollups.into_iter().map(judge_window).collect::<Vec<_>>();
     let output = serde_json::json!({ "windows": windows });
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "{}", serde_json::to_string_pretty(&output)?)?;
     Ok(())
 }
 

@@ -33,6 +33,8 @@ Choose another window size or read from stdin with:
 
 The CLI prints one JSON document with each window's rollup, `pass`, `marginal`,
 or `fail` verdict, and a plain-words reason.
+Replay fails with a diagnostic if no measurable interval remains after counter
+resets, and reports stdout write failures (for example, when a pipe reader exits).
 
 ## C ABI and OBS sampler
 
@@ -58,12 +60,12 @@ monotonic millisecond timestamp. Destroy the collector before OBS shuts down.
 
 | Signal | Pass | Marginal | Fail | Basis |
 | --- | --- | --- | --- | --- |
-| Render headroom | At least 20% of frame interval | Below 20%, but non-negative | Negative | Provisional owner-approved Preflight M0 policy (2026-10-13): a fifth of an interval leaves room for short render bursts; fail when rendering exceeds the interval. OBS defines no verdict band. |
-| Render lag | 0% | Above 0% and below 1% | At least 1% | Provisional owner-approved Preflight M0 policy (2026-10-13): any missed render frame is visible; a sustained one-in-a-hundred is a clear failure. |
-| Output drops | 0% | Above 0% and below 1% | At least 1% | Provisional owner-approved Preflight M0 policy (2026-10-13): any network drop is marginal; a sustained one-in-a-hundred is a clear failure. The server chooser separately preserves the wizard rule below. |
-| Encoder skips | Below 0.1%, or at most 10 new skips | At least 0.1% and more than 10 new skips, but below 1% | At least 1% | OBS's `frontend/widgets/OBSBasicStatusBar.cpp:474-491` calculates `skipped / total * 100.0`, then warns at `>= 0.1` and `diff > 10`. Therefore `0.1` means 0.1%, not 10%. The 1% fail band is provisional owner-approved Preflight M0 policy (2026-10-13): one percent is sustained failure; OBS sets no fail threshold. |
-| Output congestion | At most 5% | Above 5% and below 20% | At least 20% | Provisional owner-approved Preflight M0 policy (2026-10-13): small variation is normal and 20% is material capacity loss. OBS reports a 0-to-100% display value but defines no verdict bands. |
-| CPU | Below 90% | From 90% to below 98% | At least 98% | Provisional owner-approved Preflight M0 policy (2026-10-13): 90% leaves little room for bursts; 98% leaves almost none. OBS defines no preflight CPU band. |
+| Render headroom | At least 20% of frame interval | Below 20%, but non-negative | Negative | Provisional M0 defaults, pending owner review: a fifth of an interval leaves room for short render bursts; fail when rendering exceeds the interval. OBS defines no verdict band. |
+| Render lag | 0% | Above 0% and below 1% | At least 1% | Provisional M0 defaults, pending owner review: any missed render frame is visible; a sustained one-in-a-hundred is a clear failure. |
+| Output drops | 0% | Above 0% and below 1% | At least 1% | Provisional M0 defaults, pending owner review: any network drop is marginal; a sustained one-in-a-hundred is a clear failure. The server chooser separately preserves the wizard rule below. |
+| Encoder skips | Below 0.1%, or at most 10 new skips | At least 0.1% and more than 10 new skips, but below 1% | At least 1% | OBS's `frontend/widgets/OBSBasicStatusBar.cpp:474-491` calculates `skipped / total * 100.0`, then warns at `>= 0.1` and `diff > 10`. Therefore `0.1` means 0.1%, not 10%. The 1% fail band is a provisional M0 default, pending owner review; OBS sets no fail threshold. |
+| Output congestion | At most 5% | Above 5% and below 20% | At least 20% | Provisional M0 defaults, pending owner review: small variation is normal and 20% is material capacity loss. OBS reports a 0-to-100% display value but defines no verdict bands. |
+| CPU | Below 90% | From 90% to below 98% | At least 98% | Provisional M0 defaults, pending owner review: 90% leaves little room for bursts; 98% leaves almost none. OBS defines no preflight CPU band. |
 | Encoder frames | At least one frame | — | Zero frames | A device that emits no frames is unusable for this candidate; fail closed. |
 
 The server chooser follows `frontend/wizards/AutoConfigTestPage.cpp:393-397`:
