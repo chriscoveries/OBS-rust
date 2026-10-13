@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdlib.h>
 #include <string.h>
 #include <cmocka.h>
 
@@ -55,11 +56,27 @@ static void replace_empty_find_is_noop(void **state)
 	dstr_free(&d);
 }
 
+/* A bounded compare accepts a non-terminated buffer when it has n readable
+ * bytes. This also catches an FFI shim that runs strlen before the compare. */
+static void astrcmp_n_reads_only_n_bytes(void **state)
+{
+	UNUSED_PARAMETER(state);
+
+	char *bom = malloc(3);
+	assert_non_null(bom);
+	memcpy(bom, "\xEF\xBB\xBF", 3);
+
+	assert_int_equal(astrcmp_n(bom, "\xEF\xBB\xBF", 3), 0);
+
+	free(bom);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(insert_ch_stays_in_bounds),
 		cmocka_unit_test(replace_empty_find_is_noop),
+		cmocka_unit_test(astrcmp_n_reads_only_n_bytes),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);

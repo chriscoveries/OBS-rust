@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdlib.h>
 #include <string.h>
 #include <cmocka.h>
 
@@ -33,6 +34,16 @@ static void literal_to_str_test(void **state)
 	assert_non_null(str);
 	assert_string_equal(str, "abc");
 	bfree(str);
+
+	/* A nonzero count bounds the readable input; no trailing NUL is needed. */
+	char *counted_literal = malloc(3);
+	assert_non_null(counted_literal);
+	memcpy(counted_literal, "\"a\"", 3);
+	str = cf_literal_to_str(counted_literal, 3);
+	assert_non_null(str);
+	assert_string_equal(str, "a");
+	bfree(str);
+	free(counted_literal);
 
 	/*
 	 * escapes: the closing quote is never part of the result. It used to
