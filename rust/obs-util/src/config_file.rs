@@ -878,10 +878,12 @@ impl Config {
                 out.push(b'\n');
             }
         }
-        if f.write_all(&out).is_err() || f.flush().is_err() {
+        if f.write_all(&out).is_err()
+            || f.flush().is_err()
+            || crate::platform::close_file(f).is_err()
+        {
             return CONFIG_ERROR;
         }
-        drop(f);
         CONFIG_SUCCESS
     }
 
@@ -900,6 +902,9 @@ impl Config {
         let temp = with_ext(&file, temp_ext);
         let ret = self.write_to(&temp, &inner);
         if ret != CONFIG_SUCCESS {
+            // Log callbacks may re-enter the config API.
+            drop(inner);
+            crate::ffi::config_file::log_save_error(&temp);
             return ret;
         }
         let backup = backup_ext
