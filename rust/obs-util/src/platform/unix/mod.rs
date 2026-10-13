@@ -1,5 +1,6 @@
 //! Unix (Linux, macOS) side of the [platform boundary](super).
 
+pub mod crt;
 pub mod event;
 pub mod nix;
 pub mod pipe;

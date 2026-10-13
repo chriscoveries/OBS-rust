@@ -17,13 +17,34 @@ pub enum EventType {
 cfg_select! {
     unix => {
         pub mod unix;
-        pub use unix::{Event, Pipe, Sem, path_from_bytes};
+        pub use unix::{Event, Pipe, Sem, crt, path_from_bytes};
     }
     windows => {
         #[allow(unsafe_code)] // Win32 handle and string calls; see the module docs
         pub mod windows;
-        pub use windows::{Event, Pipe, Sem, path_from_bytes};
+        pub use windows::{Event, Pipe, Sem, crt, path_from_bytes};
     }
+}
+
+/// `os_strtod` (`libobs/util/platform.c`) on `bytes` up to the first NUL:
+/// C's `to_locale` swaps the first `.` for the first byte of the current
+/// `LC_NUMERIC` decimal point, then the C library's `strtod` converts. So a
+/// `.`-spelled value converts the same in every locale, correctly rounded
+/// by the same CRT as C. Unlike C, the input is not cut to 63 bytes first.
+pub fn os_strtod(bytes: &[u8]) -> f64 {
+    let mut buf: Vec<u8> = bytes.iter().copied().take_while(|&b| b != 0).collect();
+    let point = crt::decimal_point();
+    if point != b'.'
+        && let Some(pos) = buf.iter().position(|&b| b == b'.')
+    {
+        if point == 0 {
+            buf.truncate(pos); // C writes the NUL, ending its string there too
+        } else {
+            buf[pos] = point;
+        }
+    }
+    // `buf` holds no NUL, so this never falls back to the empty string.
+    crt::strtod(&std::ffi::CString::new(buf).unwrap_or_default())
 }
 
 cfg_select! {
