@@ -1115,6 +1115,19 @@ mod host {
         0
     }
 
+    #[cfg(all(
+        feature = "gio-inhibit",
+        any(target_os = "linux", target_os = "freebsd")
+    ))]
+    unsafe extern "C" {
+        fn portal_inhibit_info_create() -> *mut c_void;
+        fn portal_inhibit(info: *mut c_void, reason: *const c_char, active: bool);
+        fn portal_inhibit_info_destroy(info: *mut c_void);
+        fn dbus_sleep_info_create() -> *mut c_void;
+        fn dbus_inhibit_sleep(info: *mut c_void, reason: *const c_char, active: bool);
+        fn dbus_sleep_info_destroy(info: *mut c_void);
+    }
+
     struct InhibitShared {
         stop: crate::platform::unix::Event,
         attr: libc::posix_spawnattr_t,
@@ -1126,20 +1139,68 @@ mod host {
     unsafe impl Send for InhibitShared {}
     unsafe impl Sync for InhibitShared {}
 
-    /// `os_inhibit_sleep_*`. The screensaver thread is a Rust thread. A failed
-    /// spawn still reports success, because C checks `pthread_create < 0`
-    /// and that value is never negative; deactivate then does not join a
-    /// thread that was never started. The `reason` string is unused on this
-    /// path. C only reads it for the GIO portal, which stays in the C files.
+    enum InhibitBackend {
+        Screensaver {
+            shared: Arc<InhibitShared>,
+            thread: Option<std::thread::JoinHandle<()>>,
+        },
+        #[cfg(all(
+            feature = "gio-inhibit",
+            any(target_os = "linux", target_os = "freebsd")
+        ))]
+        Portal(*mut c_void),
+        #[cfg(all(
+            feature = "gio-inhibit",
+            any(target_os = "linux", target_os = "freebsd")
+        ))]
+        Dbus(*mut c_void),
+    }
+
+    /// `os_inhibit_sleep_*`. Selects the portal, then legacy session D-Bus,
+    /// before falling back to the `xdg-screensaver` worker, matching C.
     pub struct Inhibit {
-        shared: Arc<InhibitShared>,
+        backend: InhibitBackend,
+        reason: CString,
         active: bool,
-        thread: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Inhibit {
-        /// `os_inhibit_sleep_create`.
-        pub fn create(_reason: &[u8]) -> Self {
+        /// `os_inhibit_sleep_create`. `None` is C's Flatpak-without-portal
+        /// failure case.
+        pub fn create(reason: &[u8]) -> Option<Self> {
+            let reason = CString::new(reason).unwrap_or_default();
+
+            #[cfg(all(
+                feature = "gio-inhibit",
+                any(target_os = "linux", target_os = "freebsd")
+            ))]
+            {
+                // SAFETY: the C backend helpers return opaque owned handles.
+                let portal = unsafe { portal_inhibit_info_create() };
+                if !portal.is_null() {
+                    return Some(Self {
+                        backend: InhibitBackend::Portal(portal),
+                        reason,
+                        active: false,
+                    });
+                }
+
+                // In a Flatpak, only the desktop portal can inhibit sleep.
+                if file_exists(b"/.flatpak-info") {
+                    return None;
+                }
+
+                // SAFETY: the C backend helper returns an opaque owned handle.
+                let dbus = unsafe { dbus_sleep_info_create() };
+                if !dbus.is_null() {
+                    return Some(Self {
+                        backend: InhibitBackend::Dbus(dbus),
+                        reason,
+                        active: false,
+                    });
+                }
+            }
+
             let stop = crate::platform::unix::Event::new(crate::platform::EventType::Auto);
             let mut attr = MaybeUninit::<libc::posix_spawnattr_t>::zeroed();
             // SAFETY: `attr` is a spawnattr buffer.
@@ -1159,11 +1220,14 @@ mod host {
                     (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as libc::c_short,
                 );
             }
-            Self {
-                shared: Arc::new(InhibitShared { stop, attr }),
+            Some(Self {
+                backend: InhibitBackend::Screensaver {
+                    shared: Arc::new(InhibitShared { stop, attr }),
+                    thread: None,
+                },
+                reason,
                 active: false,
-                thread: None,
-            }
+            })
         }
 
         /// `os_inhibit_sleep_set_active`.
@@ -1171,15 +1235,39 @@ mod host {
             if self.active == active {
                 return false;
             }
-            if active {
-                let shared = Arc::clone(&self.shared);
-                self.thread = std::thread::Builder::new()
-                    .name("xdg-screensaver".to_string())
-                    .spawn(move || screensaver_thread(shared))
-                    .ok();
-            } else if let Some(handle) = self.thread.take() {
-                self.shared.stop.signal();
-                let _ = handle.join();
+
+            let reason = self.reason.as_ptr();
+            match &mut self.backend {
+                InhibitBackend::Screensaver { shared, thread } => {
+                    if active {
+                        let shared = Arc::clone(shared);
+                        *thread = std::thread::Builder::new()
+                            .name("xdg-screensaver".to_string())
+                            .spawn(move || screensaver_thread(shared))
+                            .ok();
+                    } else if let Some(handle) = thread.take() {
+                        shared.stop.signal();
+                        let _ = handle.join();
+                    }
+                }
+                #[cfg(all(
+                    feature = "gio-inhibit",
+                    any(target_os = "linux", target_os = "freebsd")
+                ))]
+                InhibitBackend::Portal(info) => {
+                    // SAFETY: `info` is the live handle created above; reason
+                    // remains owned by this inhibitor for its whole lifetime.
+                    unsafe { portal_inhibit(*info, reason, active) };
+                }
+                #[cfg(all(
+                    feature = "gio-inhibit",
+                    any(target_os = "linux", target_os = "freebsd")
+                ))]
+                InhibitBackend::Dbus(info) => {
+                    // SAFETY: `info` is the live handle created above; reason
+                    // remains owned by this inhibitor for its whole lifetime.
+                    unsafe { dbus_inhibit_sleep(*info, reason, active) };
+                }
             }
             self.active = active;
             true
@@ -1189,10 +1277,30 @@ mod host {
     impl Drop for Inhibit {
         fn drop(&mut self) {
             self.set_active(false);
-            if let Some(shared) = Arc::get_mut(&mut self.shared) {
-                // SAFETY: `attr` came from `posix_spawnattr_init`, and the
-                // worker has been joined so nothing else reads it.
-                unsafe { libc::posix_spawnattr_destroy(&mut shared.attr) };
+            match &mut self.backend {
+                InhibitBackend::Screensaver { shared, .. } => {
+                    if let Some(shared) = Arc::get_mut(shared) {
+                        // SAFETY: `attr` came from `posix_spawnattr_init`, and
+                        // the worker has been joined so nothing reads it.
+                        unsafe { libc::posix_spawnattr_destroy(&mut shared.attr) };
+                    }
+                }
+                #[cfg(all(
+                    feature = "gio-inhibit",
+                    any(target_os = "linux", target_os = "freebsd")
+                ))]
+                InhibitBackend::Portal(info) => {
+                    // SAFETY: this is the handle returned by portal create.
+                    unsafe { portal_inhibit_info_destroy(*info) };
+                }
+                #[cfg(all(
+                    feature = "gio-inhibit",
+                    any(target_os = "linux", target_os = "freebsd")
+                ))]
+                InhibitBackend::Dbus(info) => {
+                    // SAFETY: this is the handle returned by D-Bus create.
+                    unsafe { dbus_sleep_info_destroy(*info) };
+                }
             }
         }
     }

@@ -579,7 +579,10 @@ mod shims {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn os_inhibit_sleep_create(reason: *const c_char) -> *mut c_void {
             let reason = cstr(reason).unwrap_or(b"");
-            Box::into_raw(Box::new(nix::Inhibit::create(reason))).cast()
+            match nix::Inhibit::create(reason) {
+                Some(info) => Box::into_raw(Box::new(info)).cast(),
+                None => ptr::null_mut(),
+            }
         }
 
         /// # Safety

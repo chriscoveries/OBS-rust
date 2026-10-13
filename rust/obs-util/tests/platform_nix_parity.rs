@@ -8,7 +8,8 @@
 //!   results are freed with `os_globfree`.
 //! - `os_generate_uuid` is random on both sides and is not compared.
 //! - `os_breakpoint` and `os_oom` raise `SIGTRAP` and are not called.
-//! - Sleep inhibit is not compared. The worker is a Rust thread.
+//! - Sleep inhibit uses the GIO portal when available; Tier 2 cmocka tests
+//!   compare both shims against an interposed GIO portal.
 //! - CPU percent and process memory change between the two calls.
 //! - A missing `$HOME` still crashes in the shim. These tests keep `HOME`.
 //!

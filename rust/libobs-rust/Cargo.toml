@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+gio-inhibit = ["obs-util/gio-inhibit"]
+
 [lib]
 crate-type = ["staticlib"]
 test = false
