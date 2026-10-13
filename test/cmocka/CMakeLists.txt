@@ -468,6 +468,20 @@ if(TARGET OBS::outputs)
   add_test(test_flv_mux ${CMAKE_CURRENT_BINARY_DIR}/test_flv_mux)
 endif()
 
+# Build the mp4 muxer's Dolby Vision dvvC box writer from mp4-mux.c and check
+# its ISOBMFF framing (size field, "dvvC" type, verbatim payload).
+if(TARGET OBS::outputs)
+  add_executable(
+    test_mp4_mux_dvvc
+    test_mp4_mux_dvvc.c
+    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/mp4-mux.c"
+  )
+  target_include_directories(test_mp4_mux_dvvc PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/obs-outputs")
+  target_link_libraries(test_mp4_mux_dvvc PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+  add_dependencies(cmocka-tests test_mp4_mux_dvvc)
+  add_test(test_mp4_mux_dvvc ${CMAKE_CURRENT_BINARY_DIR}/test_mp4_mux_dvvc)
+endif()
+
 # Load .cube LUTs through the Color Grade filter's loader.
 if(TARGET OBS::filters)
   add_executable(test_cube_lut test_cube_lut.c "${CMAKE_SOURCE_DIR}/plugins/obs-filters/cube-lut.c")
