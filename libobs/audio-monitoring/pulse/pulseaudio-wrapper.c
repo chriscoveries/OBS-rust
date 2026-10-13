@@ -134,6 +134,16 @@ static void pulseaudio_init_context()
 {
 	pulseaudio_lock();
 
+	if (pulseaudio_context) {
+		if (PA_CONTEXT_IS_GOOD(pa_context_get_state(pulseaudio_context))) {
+			pulseaudio_unlock();
+			return;
+		}
+		/* Retire the terminal context even while monitors own stream objects. */
+		pa_context_disconnect(pulseaudio_context);
+		pa_context_unref(pulseaudio_context);
+	}
+
 	pa_proplist *p = pulseaudio_properties();
 	pulseaudio_context =
 		pa_context_new_with_proplist(pa_threaded_mainloop_get_api(pulseaudio_mainloop), "OBS-Monitor", p);
@@ -172,10 +182,9 @@ int_fast32_t pulseaudio_init()
 	if (pulseaudio_refs == 0) {
 		pulseaudio_mainloop = pa_threaded_mainloop_new();
 		pa_threaded_mainloop_start(pulseaudio_mainloop);
-
-		pulseaudio_init_context();
 	}
 
+	pulseaudio_init_context();
 	pulseaudio_refs++;
 
 	pthread_mutex_unlock(&pulseaudio_mutex);
