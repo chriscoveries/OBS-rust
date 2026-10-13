@@ -183,6 +183,122 @@ fn verdict_for(samples: &[StatSample]) -> Verdict {
     judge_window(roll_up_window(samples).expect("valid rollup")).verdict
 }
 
+const PRESSURE_BAND_EXPECTATIONS: [[Verdict; 3]; 6] = [
+    [Verdict::Pass, Verdict::Marginal, Verdict::Fail],
+    [Verdict::Pass, Verdict::Marginal, Verdict::Fail],
+    [Verdict::Pass, Verdict::Marginal, Verdict::Fail],
+    [Verdict::Pass, Verdict::Marginal, Verdict::Fail],
+    [Verdict::Pass, Verdict::Marginal, Verdict::Fail],
+    [Verdict::Pass, Verdict::Marginal, Verdict::Fail],
+];
+
+// Build raw cumulative OBS samples at the edge of each expected verdict band.
+// Output, lag, and encoder percentages are derived from matching frame counts;
+// only the selected pressure signal changes from the passing defaults.
+fn coherent_samples_at_pressure(signal: u8, level: u8) -> Vec<StatSample> {
+    let mut frame_time_ns = 50_000;
+    let mut frame_interval_ns = 100_000;
+    let mut lagged_frames = 0;
+    let output_frames = 10_000;
+    let mut dropped_frames = 0;
+    let mut congestion = 0.0;
+    let mut encoder_frames = 10_000;
+    let mut encoder_skipped_frames = 0;
+    let mut cpu_percent = 50.0;
+
+    match (signal, level) {
+        (0, 0..=2) => {
+            frame_interval_ns = 1_000;
+            let passing_headroom =
+                (MARGINAL_RENDER_HEADROOM_RATIO * frame_interval_ns as f64).round() as i64;
+            let headroom_ns = match level {
+                0 => passing_headroom,
+                1 => passing_headroom - 1,
+                2 => FAIL_RENDER_HEADROOM_NS - 1,
+                _ => unreachable!(),
+            };
+            frame_time_ns = (frame_interval_ns as i64 - headroom_ns) as u64;
+        }
+        (1, 0..=2) => {
+            let expected_frames = 10_000.0;
+            lagged_frames = match level {
+                0 => 0,
+                1 => 1,
+                2 => (FAIL_RENDER_LAG_PERCENT * expected_frames / 100.0).round() as u32,
+                _ => unreachable!(),
+            };
+        }
+        (2, 0..=2) => {
+            dropped_frames = match level {
+                0 => 0,
+                1 => 1,
+                2 => (FAIL_OUTPUT_DROP_PERCENT * output_frames as f64 / 100.0).round() as u64,
+                _ => unreachable!(),
+            };
+        }
+        (3, 0..=2) => {
+            let (total_frames, skipped_frames) = match level {
+                0 => (10_000, MIN_ENCODER_SKIPS_FOR_UI_WARNING),
+                1 => {
+                    let total = 11_000;
+                    let at_percent_threshold =
+                        (MARGINAL_ENCODER_SKIP_PERCENT * total as f64 / 100.0).ceil() as u64;
+                    (
+                        total,
+                        at_percent_threshold.max(MIN_ENCODER_SKIPS_FOR_UI_WARNING + 1),
+                    )
+                }
+                2 => {
+                    let total = 10_000;
+                    let at_fail_threshold =
+                        (FAIL_ENCODER_SKIP_PERCENT * total as f64 / 100.0).round() as u64;
+                    (total, at_fail_threshold)
+                }
+                _ => unreachable!(),
+            };
+            encoder_frames = total_frames;
+            encoder_skipped_frames = skipped_frames;
+        }
+        (4, 0..=2) => {
+            congestion = match level {
+                0 => MARGINAL_CONGESTION_PERCENT / 100.0,
+                1 => (MARGINAL_CONGESTION_PERCENT + 0.01) / 100.0,
+                2 => FAIL_CONGESTION_PERCENT / 100.0,
+                _ => unreachable!(),
+            };
+        }
+        (5, 0..=2) => {
+            cpu_percent = match level {
+                0 => MARGINAL_CPU_PERCENT - 0.01,
+                1 => MARGINAL_CPU_PERCENT,
+                2 => FAIL_CPU_PERCENT,
+                _ => unreachable!(),
+            };
+        }
+        _ => unreachable!("generated signal and pressure level are in range"),
+    }
+
+    two_samples(
+        frame_time_ns,
+        frame_interval_ns,
+        lagged_frames,
+        output_frames,
+        dropped_frames,
+        congestion,
+        encoder_frames,
+        encoder_skipped_frames,
+        cpu_percent,
+    )
+}
+
+fn verdict_rank(verdict: Verdict) -> u8 {
+    match verdict {
+        Verdict::Pass => 0,
+        Verdict::Marginal => 1,
+        Verdict::Fail => 2,
+    }
+}
+
 #[test]
 fn golden_clean_run_passes_with_exact_rollup() {
     let samples = parse_samples(CLEAN);
@@ -1020,35 +1136,39 @@ proptest! {
     }
 
     #[test]
-    fn verdict_does_not_improve_as_any_pressure_signal_worsens(
+    fn verdict_pressure_pairs_match_reference_bands_and_are_monotone(
         signal in 0u8..6,
-        severity in 0.0f64..=100.0,
+        pair in 0u8..3,
     ) {
-        let mut baseline = roll_up_window(
-            &two_samples(8_000_000, 16_666_667, 0, 1000, 0, 0.0, 1000, 0, 50.0),
-        ).expect("valid baseline");
-        baseline.encoder_frames_skipped = 11;
-        let mut worse = baseline.clone();
-        match signal {
-            0 => {
-                worse.frame_interval_ns = 1_000_000.0;
-                worse.render_headroom_ns = (1_000_000.0 - severity * 20_000.0).round() as i64;
-            }
-            1 => worse.render_lag_percent = severity,
-            2 => worse.output_drop_percent = severity,
-            3 => worse.encoder_skip_percent = severity,
-            4 => worse.congestion_percent = severity,
-            5 => worse.cpu_percent = severity,
+        // Ordered pairs cover Pass->Marginal, Marginal->Fail, and Pass->Fail.
+        let (better_level, worse_level) = match pair {
+            0 => (0, 1),
+            1 => (1, 2),
+            2 => (0, 2),
             _ => unreachable!(),
-        }
-        let rank = |verdict| match verdict {
-            Verdict::Pass => 0,
-            Verdict::Marginal => 1,
-            Verdict::Fail => 2,
         };
-        let baseline_verdict = judge_window(baseline).verdict;
-        let worse_verdict = judge_window(worse).verdict;
-        prop_assert!(rank(worse_verdict) >= rank(baseline_verdict));
+        let expected = PRESSURE_BAND_EXPECTATIONS[signal as usize];
+        let better = verdict_for(&coherent_samples_at_pressure(signal, better_level));
+        let worse = verdict_for(&coherent_samples_at_pressure(signal, worse_level));
+
+        prop_assert_eq!(
+            better,
+            expected[better_level as usize],
+            "signal={}, level={}",
+            signal,
+            better_level
+        );
+        prop_assert_eq!(
+            worse,
+            expected[worse_level as usize],
+            "signal={}, level={}",
+            signal,
+            worse_level
+        );
+        prop_assert!(
+            verdict_rank(worse) >= verdict_rank(better),
+            "pressure worsened for signal={signal}: {better:?} -> {worse:?}"
+        );
     }
 
     #[test]

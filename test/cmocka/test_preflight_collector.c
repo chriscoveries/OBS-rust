@@ -191,11 +191,13 @@ static int setup(void **state)
 {
 	UNUSED_PARAMETER(state);
 	if (!getenv("DISPLAY")) {
-		fprintf(stderr, "no display: preflight collector test skips\n");
-		return 0;
+		fprintf(stderr, "preflight collector test requires xvfb-run to provide DISPLAY\n");
+		return -1;
 	}
-	if (!obs_startup("en-US", NULL, NULL))
-		return 0;
+	if (!obs_startup("en-US", NULL, NULL)) {
+		fprintf(stderr, "preflight collector test: obs_startup failed\n");
+		return -1;
+	}
 
 	struct obs_video_info ovi = {
 		.graphics_module = GRAPHICS_MODULE_PATH,
@@ -211,8 +213,9 @@ static int setup(void **state)
 		.scale_type = OBS_SCALE_BICUBIC,
 	};
 	if (obs_reset_video(&ovi) != OBS_VIDEO_SUCCESS) {
+		fprintf(stderr, "preflight collector test: obs_reset_video failed\n");
 		obs_shutdown();
-		return 0;
+		return -1;
 	}
 	obs_register_encoder(&test_encoder_info);
 	obs_register_output(&test_output_info);
@@ -231,8 +234,7 @@ static int teardown(void **state)
 static void collector_samples_a_running_headless_output(void **state)
 {
 	UNUSED_PARAMETER(state);
-	if (!core_ready)
-		skip();
+	assert_true(core_ready);
 
 	obs_preflight_engine_t *engine = obs_preflight_engine_create_with_window(WINDOW_MS);
 	obs_preflight_collector_t *collector = obs_preflight_collector_create();

@@ -1,6 +1,9 @@
 # Exercise the OBS stats sampler together with the real Rust decision engine.
 # Core video needs a graphics module, so this test runs under xvfb-run on Linux.
 if(OS_LINUX AND TARGET OBS::libobs-opengl)
+  # obs_startup needs an X display. Follow the Xvfb launcher used by
+  # test_audio_io.cmake, but require it here so collector coverage cannot skip.
+  find_program(XVFB_RUN_EXECUTABLE xvfb-run REQUIRED)
   find_program(SOLDR_EXECUTABLE soldr REQUIRED)
 
   set(_preflight_manifest "${CMAKE_SOURCE_DIR}/rust/obs-preflight-ffi/Cargo.toml")
@@ -53,7 +56,7 @@ if(OS_LINUX AND TARGET OBS::libobs-opengl)
   add_dependencies(cmocka-tests test_preflight_collector)
   add_test(
     NAME test_preflight_collector
-    COMMAND test_preflight_collector
+    COMMAND "${XVFB_RUN_EXECUTABLE}" -a "$<TARGET_FILE:test_preflight_collector>"
     WORKING_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>"
   )
   set_tests_properties(test_preflight_collector PROPERTIES TIMEOUT 60)
