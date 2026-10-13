@@ -46,7 +46,7 @@ jobs:
       - name: Merge current upstream master (what upstream PR CI tests)
         if: ${{ inputs.merge_upstream != false }}
         run: |
-          git fetch --no-tags https://github.com/obs-rust/obs-studio.git master
+          git -c fetch.recurseSubmodules=no fetch --no-tags https://github.com/obs-rust/obs-studio.git master
           echo "upstream master: $(git rev-parse FETCH_HEAD)"
           git -c user.name=ci -c user.email=ci@localhost merge --no-edit FETCH_HEAD \
             || { echo "::error::ref does not merge cleanly with current upstream master"; exit 1; }
@@ -93,7 +93,7 @@ jobs:
       - name: Merge current upstream master (what upstream PR CI tests)
         if: ${{ inputs.merge_upstream != false }}
         run: |
-          git fetch --no-tags https://github.com/obs-rust/obs-studio.git master
+          git -c fetch.recurseSubmodules=no fetch --no-tags https://github.com/obs-rust/obs-studio.git master
           echo "upstream master: $(git rev-parse FETCH_HEAD)"
           git -c user.name=ci -c user.email=ci@localhost merge --no-edit FETCH_HEAD \
             || { echo "::error::ref does not merge cleanly with current upstream master"; exit 1; }
@@ -147,7 +147,7 @@ jobs:
       - name: Merge current upstream master (what upstream PR CI tests)
         if: ${{ inputs.merge_upstream != false }}
         run: |
-          git fetch --no-tags https://github.com/obs-rust/obs-studio.git master
+          git -c fetch.recurseSubmodules=no fetch --no-tags https://github.com/obs-rust/obs-studio.git master
           echo "upstream master: $(git rev-parse FETCH_HEAD)"
           git -c user.name=ci -c user.email=ci@localhost merge --no-edit FETCH_HEAD \
             || { echo "::error::ref does not merge cleanly with current upstream master"; exit 1; }
