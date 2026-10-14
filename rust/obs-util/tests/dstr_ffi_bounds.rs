@@ -4,6 +4,10 @@
 
 use core::ffi::c_char;
 
+// Links the C oracle, which supplies blog/bcrash and the other C symbols
+// obs-util calls (as cf_tokenizer_ffi_bounds.rs does).
+use obs_c_oracle as _;
+
 use obs_util::ffi::dstr::{astrcmp_n, astrcmpi_n};
 
 #[cfg(unix)]
