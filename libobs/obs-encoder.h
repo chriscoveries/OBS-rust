@@ -368,7 +368,7 @@ struct obs_encoder_info {
 	/**
 	 * Returns codec configuration metadata for the container muxer, if any.
 	 *
-	 * For Dolby Vision (HEVC profile 8.4) this is the native dvvC
+	 * For HLG-compatible HDR (HEVC profile 8.4) this is the native dvvC
 	 * configuration record produced by the platform encoder. The muxer
 	 * writes it verbatim; the payload is opaque to libobs and must not be
 	 * confused with the Annex-B parameter sets returned by get_extra_data.

@@ -1,6 +1,6 @@
 /*
- * Dolby Vision 8.4 recording: the mp4 muxer must carry the encoder's native
- * dvvC (DOVI configuration) record into the HEVC sample description, beside
+ * HLG-compatible HDR (HEVC 8.4) recording: the mp4 muxer must carry the encoder's native
+ * dvvC configuration record into the HEVC sample description, beside
  * hvcC. mp4_write_dvvC_box writes that record verbatim as a plain ISOBMFF box
  * (8-byte header + opaque payload); it must not reinterpret the bytes.
  *
@@ -20,7 +20,7 @@
 
 #include "mp4-mux.h"
 
-/* A representative 24-byte DOVI configuration record (the size VideoToolbox
+/* A representative 24-byte dvvC configuration record (the size VideoToolbox
  * emits for profile 8.4). The muxer treats it as opaque; the exact values are
  * irrelevant to the box framing under test. */
 static const uint8_t dvvC_payload[24] = {

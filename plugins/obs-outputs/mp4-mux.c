@@ -489,7 +489,7 @@ static size_t mp4_write_hvcC(struct mp4_mux *mux, obs_encoder_t *enc)
 	return box_size;
 }
 
-/// Dolby Vision bitstreams within the ISO base media file format, DOVI
+/// HLG-compatible HDR signaling in the ISO base media file format: the
 /// configuration box ('dvvC'). A plain Box (no FullBox version/flags): the
 /// payload is the opaque native configuration record supplied by the encoder
 /// and is written verbatim. box header (8) + payload.
@@ -502,9 +502,9 @@ size_t mp4_write_dvvC_box(struct serializer *s, const uint8_t *metadata, size_t 
 	return box_size;
 }
 
-/// Writes the Dolby Vision dvvC box beside hvcC. Returns 0 (and writes
+/// Writes the dvvC configuration box beside hvcC. Returns 0 (and writes
 /// nothing) when the encoder supplied no DV configuration record, so a
-/// non-Dolby-Vision HEVC recording is unaffected.
+/// plain HEVC recording is unaffected.
 static size_t mp4_write_dvvC(struct mp4_mux *mux, obs_encoder_t *enc)
 {
 	struct serializer *s = mux->serializer;
@@ -725,9 +725,9 @@ static size_t mp4_write_hvc1(struct mp4_mux *mux, obs_encoder_t *enc)
 	// avcC
 	mp4_write_hvcC(mux, enc);
 
-	// dvvC (Dolby Vision, experimental). Only written when the muxer was
+	// dvvC (HLG-compatible HDR signaling, experimental). Only written when the muxer was
 	// asked to and the encoder supplied a native configuration record.
-	if (mux->flags & MP4_WRITE_DOLBY_VISION)
+	if (mux->flags & MP4_WRITE_HLG_COMPATIBLE_HDR_CONFIG)
 		mp4_write_dvvC(mux, enc);
 
 	// colr

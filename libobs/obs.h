@@ -2459,7 +2459,7 @@ EXPORT bool obs_encoder_get_extra_data(const obs_encoder_t *encoder, uint8_t **e
 
 /**
  * Gets codec configuration metadata for the container muxer, if any (for
- * example the native Dolby Vision dvvC record for HEVC 8.4 recordings).
+ * example the native dvvC record for HLG-compatible HEVC 8.4 recordings).
  * The returned buffer is owned by the encoder and must not be freed by the
  * caller.
  */

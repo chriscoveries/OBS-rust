@@ -1,4 +1,4 @@
-# Build the MP4 muxer's Dolby Vision dvvC box writer from mp4-mux.c and check
+# Build the MP4 muxer's dvvC box writer from mp4-mux.c and check
 # its ISOBMFF framing (size field, "dvvC" type, verbatim payload).
 if(TARGET OBS::outputs)
   add_executable(
