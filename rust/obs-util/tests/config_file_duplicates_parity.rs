@@ -14,8 +14,6 @@
 
 use core::ffi::{CStr, c_char};
 use std::ffi::CString;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use obs_c_oracle::config_file::{
     OracleConfig, oracle_config_close, oracle_config_get_string, oracle_config_has_user_value,
@@ -26,6 +24,9 @@ use obs_util::ffi::config_file::{
     config_remove_value, config_save, config_set_string,
 };
 use proptest::prelude::*;
+
+mod common;
+use common::ScratchDir;
 
 const SECTIONS: [&str; 3] = ["s", "t", "u"];
 const KEYS: [&str; 3] = ["k", "j", "m"];
@@ -92,16 +93,8 @@ fn arb_op() -> impl Strategy<Value = Op> {
     ]
 }
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "obs-config-dup-{tag}-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(tag: &str) -> ScratchDir {
+    ScratchDir::new(&format!("obs-config-dup-{tag}"))
 }
 
 fn bytes(p: *const c_char) -> Option<Vec<u8>> {
@@ -225,8 +218,6 @@ fn run(blocks: &[Block], ops: &[Op]) {
         "saved bytes (shows which duplicate each set/remove touched)"
     );
     drop(pair);
-    let _ = std::fs::remove_dir_all(c_dir);
-    let _ = std::fs::remove_dir_all(r_dir);
 }
 
 proptest! {
@@ -323,7 +314,5 @@ fn many_distinct_and_repeated_keys() {
             assert_eq!(r, o, "[sec{i}] k");
         }
         drop(pair);
-        let _ = std::fs::remove_dir_all(c_dir);
-        let _ = std::fs::remove_dir_all(r_dir);
     }
 }

@@ -21,6 +21,9 @@ use obs_c_oracle::platform_windows as c;
 use obs_util::ffi::bmem::bfree;
 use obs_util::ffi::platform_windows as r;
 
+mod common;
+use common::ScratchDir;
+
 static PARITY: Mutex<()> = Mutex::new(());
 
 fn cstring(bytes: &[u8]) -> CString {
@@ -52,14 +55,8 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn scratch() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "obs-platform-windows-parity-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch() -> ScratchDir {
+    ScratchDir::new("obs-platform-windows-parity")
 }
 
 fn forward_slash(path: &Path) -> Vec<u8> {
@@ -222,8 +219,6 @@ fn filesystem_matches_the_c_file() {
         assert_eq!(abs_r.get(1).copied(), Some(b':'));
         assert_eq!(r::os_glob(slash.as_ptr(), 0, std::ptr::null_mut()), -1);
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 fn glob_entries(pattern: *const c_char, rust: bool) -> Vec<(Vec<u8>, bool)> {
@@ -395,8 +390,10 @@ fn load_uuid_and_inhibit_match_where_they_are_stable() {
         assert!(!c::oracle_os_sleepto_ns_fast(0));
     }
 
-    let text = cstring(&path_bytes(&std::env::temp_dir().join("not-a-plugin.txt")));
-    fs::write(std::env::temp_dir().join("not-a-plugin.txt"), b"nope").unwrap();
+    let plugin_dir = scratch();
+    let plugin_path = plugin_dir.join("not-a-plugin.txt");
+    let text = cstring(&path_bytes(&plugin_path));
+    fs::write(&plugin_path, b"nope").unwrap();
     // SAFETY: the path is a C string. The bool out-pointer is writable.
     unsafe {
         assert!(!r::os_is_obs_plugin(text.as_ptr()));
@@ -488,5 +485,4 @@ fn chdir_matches_the_c_file() {
         );
         assert_eq!(c::oracle_os_chdir(saved.as_ptr().cast()), 0);
     }
-    let _ = fs::remove_dir_all(&dir);
 }

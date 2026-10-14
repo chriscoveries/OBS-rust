@@ -32,7 +32,6 @@
 use core::ffi::{CStr, c_char, c_int};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use obs_c_oracle::config_file::{
     OracleConfig, oracle_config_close, oracle_config_get_bool, oracle_config_get_default_bool,
@@ -58,6 +57,9 @@ use obs_util::ffi::config_file::{
     config_set_string, config_set_uint,
 };
 use proptest::prelude::*;
+
+mod common;
+use common::ScratchDir;
 
 /// C callers hand us C strings; anything at/after a NUL is invisible to
 /// both sides, so inputs are truncated there.
@@ -239,17 +241,8 @@ fn arb_op() -> BoxedStrategy<Op> {
     .boxed()
 }
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "obs-config-parity-{}-{}-{}",
-        tag,
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(tag: &str) -> ScratchDir {
+    ScratchDir::new(&format!("obs-config-parity-{tag}"))
 }
 
 fn read(path: &Path) -> Option<Vec<u8>> {

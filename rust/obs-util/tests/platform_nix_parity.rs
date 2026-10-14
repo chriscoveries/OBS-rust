@@ -32,23 +32,15 @@ use obs_c_oracle::platform_nix as c;
 use obs_util::ffi::bmem::bfree;
 use obs_util::ffi::platform_nix as rs;
 
+mod common;
+use common::ScratchDir;
+
 fn c_path(path: &Path) -> CString {
     CString::new(path.as_os_str().as_bytes()).unwrap()
 }
 
-fn scratch(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "obs-platform-nix-par-{}-{}-{}",
-        std::process::id(),
-        label,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(label: &str) -> ScratchDir {
+    ScratchDir::new(&format!("obs-platform-nix-par-{label}"))
 }
 
 fn cstr_bytes(p: *const core::ffi::c_char) -> Option<Vec<u8>> {
@@ -143,8 +135,6 @@ fn file_ops_match_the_c_file() {
             c::oracle_os_rmdir(c_mk.as_ptr())
         );
     }
-
-    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -196,7 +186,6 @@ fn copy_and_replace_match() {
     }
     assert_eq!(fs::read(&rs_dst).unwrap(), b"new");
     assert_eq!(fs::read(&rs_bak).unwrap(), fs::read(&c_bak).unwrap());
-    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -239,7 +228,6 @@ fn directory_listing_matches() {
     rs_names.sort();
     c_names.sort();
     assert_eq!(rs_names, c_names);
-    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -302,7 +290,6 @@ fn abs_path_and_glob_match() {
         rs::os_globfree(std::ptr::null_mut());
         c::oracle_os_globfree(std::ptr::null_mut());
     }
-    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -354,7 +341,6 @@ fn getcwd_matches_and_chdir_roundtrips() {
         fs::canonicalize(&dir).unwrap()
     );
     std::env::set_current_dir(&saved).unwrap();
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
