@@ -29,6 +29,8 @@ static THREAD_LOCAL bool is_ui_thread = false;
 
 extern char *find_libobs_data_file(const char *file);
 
+static void obs_free_render_textures(struct obs_core_video_mix *video);
+
 static inline void make_video_info(struct video_output_info *vi, struct obs_video_info *ovi)
 {
 	vi->name = "video";
@@ -606,6 +608,7 @@ static int obs_init_video_mix(struct obs_video_info *ovi, struct obs_core_video_
 	struct video_output_info vi;
 
 	pthread_mutex_init_value(&video->gpu_encoder_mutex);
+	pthread_mutex_init_value(&video->gpu_encoder_lifecycle_mutex);
 
 	make_video_info(&vi, ovi);
 	video->ovi = *ovi;
@@ -639,23 +642,51 @@ static int obs_init_video_mix(struct obs_video_info *ovi, struct obs_core_video_
 		return OBS_VIDEO_FAIL;
 	}
 
-	if (pthread_mutex_init(&video->gpu_encoder_mutex, NULL) < 0)
-		return OBS_VIDEO_FAIL;
+	if (pthread_mutex_init(&video->gpu_encoder_mutex, NULL) != 0) {
+		blog(LOG_ERROR, "Could not initialize GPU encoder mutex");
+		goto fail_video_output;
+	}
+	if (pthread_mutex_init(&video->gpu_encoder_lifecycle_mutex, NULL) != 0) {
+		blog(LOG_ERROR, "Could not initialize GPU encoder lifecycle mutex");
+		goto fail_gpu_encoder_mutex;
+	}
+	if (pthread_cond_init(&video->gpu_encoder_teardown_cond, NULL) != 0) {
+		blog(LOG_ERROR, "Could not initialize GPU encoder teardown condition variable");
+		goto fail_gpu_encoder_lifecycle_mutex;
+	}
+	video->gpu_encoder_tearing_down = false;
 
 	gs_enter_context(obs->video.graphics);
 
 	if (video->gpu_conversion && !obs_init_gpu_conversion(video)) {
 		gs_leave_context();
-		return OBS_VIDEO_FAIL;
+		obs_free_render_textures(video);
+		blog(LOG_ERROR, "Could not initialize GPU video conversion textures");
+		goto fail_gpu_encoder_teardown_cond;
 	}
 	if (!obs_init_textures(video)) {
 		gs_leave_context();
-		return OBS_VIDEO_FAIL;
+		obs_free_render_textures(video);
+		blog(LOG_ERROR, "Could not initialize video mix textures");
+		goto fail_gpu_encoder_teardown_cond;
 	}
 
 	gs_leave_context();
 
 	return OBS_VIDEO_SUCCESS;
+
+fail_gpu_encoder_teardown_cond:
+	pthread_cond_destroy(&video->gpu_encoder_teardown_cond);
+fail_gpu_encoder_lifecycle_mutex:
+	pthread_mutex_destroy(&video->gpu_encoder_lifecycle_mutex);
+	pthread_mutex_init_value(&video->gpu_encoder_lifecycle_mutex);
+fail_gpu_encoder_mutex:
+	pthread_mutex_destroy(&video->gpu_encoder_mutex);
+	pthread_mutex_init_value(&video->gpu_encoder_mutex);
+fail_video_output:
+	video_output_close(video->video);
+	video->video = NULL;
+	return OBS_VIDEO_FAIL;
 }
 
 struct obs_core_video_mix *obs_create_video_mix(struct obs_video_info *ovi)
@@ -815,6 +846,9 @@ void obs_free_video_mix(struct obs_core_video_mix *video)
 
 		pthread_mutex_destroy(&video->gpu_encoder_mutex);
 		pthread_mutex_init_value(&video->gpu_encoder_mutex);
+		pthread_cond_destroy(&video->gpu_encoder_teardown_cond);
+		pthread_mutex_destroy(&video->gpu_encoder_lifecycle_mutex);
+		pthread_mutex_init_value(&video->gpu_encoder_lifecycle_mutex);
 		da_free(video->gpu_encoders);
 
 		video->gpu_encoder_active = 0;
@@ -1119,6 +1153,7 @@ static const char *obs_signals[] = {
 	"void canvas_video_reset(ptr canvas)",
 	"void canvas_rename(ptr canvas, string new_name, string prev_name)",
 
+	"void core_video_release()",
 	"void video_reset()",
 
 	NULL,
@@ -1167,8 +1202,19 @@ static inline bool obs_init_hotkeys(void)
 
 	if (os_event_init(&hotkeys->stop_event, OS_EVENT_TYPE_MANUAL) != 0)
 		goto fail;
-	if (pthread_create(&hotkeys->hotkey_thread, NULL, obs_hotkey_thread, NULL))
+	if (os_event_init(&hotkeys->ready_event, OS_EVENT_TYPE_MANUAL) != 0)
 		goto fail;
+	if (pthread_create(&hotkeys->hotkey_thread, NULL, obs_hotkey_thread, hotkeys->ready_event)) {
+		os_event_destroy(hotkeys->ready_event);
+		hotkeys->ready_event = NULL;
+		goto fail;
+	}
+	/* Let the thread finish its one-time allocations first. The event must
+	 * outlive the thread: the signalling thread may still be inside
+	 * pthread_mutex_unlock() on it when this wait returns, so destroying it
+	 * here is a use-after-free on macOS (obs-rust/obs-studio#684). It is
+	 * destroyed in stop_hotkeys() after the thread is joined. */
+	os_event_wait(hotkeys->ready_event);
 
 	hotkeys->strict_modifiers = true;
 	hotkeys->hotkey_thread_initialized = true;
@@ -1191,6 +1237,8 @@ static inline void stop_hotkeys(void)
 	}
 
 	os_event_destroy(hotkeys->stop_event);
+	os_event_destroy(hotkeys->ready_event);
+	hotkeys->ready_event = NULL;
 	obs_hotkeys_free();
 }
 
@@ -1237,6 +1285,12 @@ extern void log_system_info(void);
 static bool obs_init(const char *locale, const char *module_config_path, profiler_name_store_t *store)
 {
 	obs = bzalloc(sizeof(struct obs_core));
+	if (obs_video_stats_init(&obs->video.stats) != 0) {
+		blog(LOG_ERROR, "Failed to initialize video statistics mutex");
+		bfree(obs);
+		obs = NULL;
+		return false;
+	}
 
 	pthread_mutex_init_value(&obs->audio.monitoring_mutex);
 	pthread_mutex_init_value(&obs->audio.task_mutex);
@@ -1349,8 +1403,16 @@ bool obs_startup(const char *locale, const char *module_config_path, profiler_na
 
 	success = obs_init(locale, module_config_path, store);
 	profile_end(obs_startup_name);
-	if (!success)
-		obs_shutdown();
+	if (!success) {
+		if (obs)
+			obs_shutdown();
+#ifdef _WIN32
+		else if (com_initialized) {
+			uninitialize_com();
+			com_initialized = false;
+		}
+#endif
+	}
 
 	return success;
 }
@@ -1395,14 +1457,19 @@ void obs_shutdown(void)
 {
 	struct obs_module *module;
 
-	obs_wait_for_destroy_queue();
+	/* Destroying a scene queues the destruction of its items' sources
+	 * behind the wait marker, so a single wait returns while nested scenes,
+	 * groups and sources are still being destroyed. Wait until a pass
+	 * processes nothing (the frontend does the same). */
+	while (obs_wait_for_destroy_queue())
+		;
 
 	for (size_t i = 0; i < obs->source_types.num; i++) {
 		struct obs_source_info *item = &obs->source_types.array[i];
 		if (item->type_data && item->free_type_data)
 			item->free_type_data(item->type_data);
 		if (item->id)
-			bfree((void *)item->id);
+			bfree((void *)(uintptr_t)item->id);
 	}
 	da_free(obs->source_types);
 
@@ -1449,6 +1516,7 @@ void obs_shutdown(void)
 	obs_free_data();
 	obs_free_audio();
 	obs_free_video();
+	obs_video_stats_destroy(&obs->video.stats);
 	os_task_queue_destroy(obs->destruction_task_thread);
 	obs_free_hotkeys();
 	obs_free_graphics();
@@ -1532,6 +1600,84 @@ static inline bool size_valid(uint32_t width, uint32_t height)
 	return (width >= OBS_SIZE_MIN && height >= OBS_SIZE_MIN && width <= OBS_SIZE_MAX && height <= OBS_SIZE_MAX);
 }
 
+/* A video mix freed by obs_reset_video(), and the canvas that owned it. */
+struct freed_video {
+	video_t *video;
+	obs_canvas_t *canvas;
+};
+
+/* Remembers every mix's video_t (and its canvas) before obs_reset_video()
+ * frees them, so outputs holding one can be moved to the new mixes. */
+static void collect_mix_videos(struct freed_video **out, size_t *out_num)
+{
+	DARRAY(struct freed_video) freed;
+	da_init(freed);
+
+	pthread_mutex_lock(&obs->video.mixes_mutex);
+	for (size_t i = 0; i < obs->video.mixes.num; i++) {
+		struct obs_core_video_mix *mix = obs->video.mixes.array[i];
+		if (mix && mix->video) {
+			struct freed_video entry = {mix->video, NULL};
+			da_push_back(freed, &entry);
+		}
+	}
+	pthread_mutex_unlock(&obs->video.mixes_mutex);
+
+	/* Walk the canvases the way obs_free_canvas_mixes() and
+	 * restore_canvases() do: those are the canvases that get a new mix. */
+	pthread_mutex_lock(&obs->data.canvases_mutex);
+	struct obs_context_data *ctx, *tmp;
+	HASH_ITER (hh, (struct obs_context_data *)obs->data.canvases, ctx, tmp) {
+		obs_canvas_t *canvas = (obs_canvas_t *)ctx;
+		if (!canvas->mix)
+			continue;
+		for (size_t i = 0; i < freed.num; i++) {
+			if (freed.array[i].video == canvas->mix->video) {
+				freed.array[i].canvas = obs_canvas_get_ref(canvas);
+				break;
+			}
+		}
+	}
+	pthread_mutex_unlock(&obs->data.canvases_mutex);
+
+	*out = freed.array;
+	*out_num = freed.num;
+}
+
+/* Raw outputs store obs_get_video() (or a canvas's video) when they are
+ * created or set up. Point every output that held a freed video_t at the new
+ * mix of the same canvas, or at nothing when that mix is gone (a view), so
+ * they never use the freed one. Active outputs block the reset, so only
+ * inactive outputs are affected. */
+static void repoint_outputs(struct freed_video *freed, size_t num)
+{
+	if (!num)
+		return;
+
+	pthread_mutex_lock(&obs->data.outputs_mutex);
+	for (struct obs_output *output = obs->data.first_output; output;
+	     output = (struct obs_output *)output->context.next) {
+		if (!output->video)
+			continue;
+		for (size_t i = 0; i < num; i++) {
+			if (output->video == freed[i].video) {
+				output->video = freed[i].canvas ? obs_canvas_get_video(freed[i].canvas) : NULL;
+				break;
+			}
+		}
+	}
+	pthread_mutex_unlock(&obs->data.outputs_mutex);
+}
+
+static void release_freed_videos(struct freed_video *freed, size_t num)
+{
+	for (size_t i = 0; i < num; i++)
+		obs_canvas_release(freed[i].canvas);
+	bfree(freed);
+}
+
+static int obs_reset_video_internal(struct obs_video_info *ovi);
+
 int obs_reset_video(struct obs_video_info *ovi)
 {
 	if (!obs)
@@ -1544,10 +1690,28 @@ int obs_reset_video(struct obs_video_info *ovi)
 	if (!size_valid(ovi->output_width, ovi->output_height) || !size_valid(ovi->base_width, ovi->base_height))
 		return OBS_VIDEO_INVALID_PARAM;
 
+	struct freed_video *freed;
+	size_t num_freed;
+	collect_mix_videos(&freed, &num_freed);
+
+	/* Lets plugins drop video_t pointers they hold (obs_get_video(),
+	 * obs_view_add()) before the mixes are freed. */
+	calldata_t release_params = {0};
+	signal_handler_signal(obs->signals, "core_video_release", &release_params);
+
 	stop_video();
 	obs_free_canvas_mixes();
 	obs_free_video();
 
+	int ret = obs_reset_video_internal(ovi);
+
+	repoint_outputs(freed, num_freed);
+	release_freed_videos(freed, num_freed);
+	return ret;
+}
+
+static int obs_reset_video_internal(struct obs_video_info *ovi)
+{
 	/* align to multiple-of-two and SSE alignment sizes */
 	ovi->output_width &= 0xFFFFFFFC;
 	ovi->output_height &= 0xFFFFFFFE;
@@ -1902,26 +2066,84 @@ void obs_enum_scenes(bool (*enum_proc)(void *, obs_source_t *), void *param)
 	obs_canvas_enum_scenes(obs->data.main_canvas, enum_proc, param);
 }
 
-static inline void obs_enum(void *pstart, pthread_mutex_t *mutex, void *proc, void *param)
+typedef struct obs_context_data *(*obs_enum_get_ref_t)(struct obs_context_data *);
+typedef void (*obs_enum_release_t)(struct obs_context_data *);
+
+static struct obs_context_data *obs_output_enum_get_ref(struct obs_context_data *context)
+{
+	return (struct obs_context_data *)obs_output_get_ref((obs_output_t *)context);
+}
+
+static void obs_output_enum_release(struct obs_context_data *context)
+{
+	obs_output_release((obs_output_t *)context);
+}
+
+static struct obs_context_data *obs_encoder_enum_get_ref(struct obs_context_data *context)
+{
+	return (struct obs_context_data *)obs_encoder_get_ref((obs_encoder_t *)context);
+}
+
+static void obs_encoder_enum_release(struct obs_context_data *context)
+{
+	obs_encoder_release((obs_encoder_t *)context);
+}
+
+static struct obs_context_data *obs_service_enum_get_ref(struct obs_context_data *context)
+{
+	return (struct obs_context_data *)obs_service_get_ref((obs_service_t *)context);
+}
+
+static void obs_service_enum_release(struct obs_context_data *context)
+{
+	obs_service_release((obs_service_t *)context);
+}
+
+/* Walks a snapshot of the list taken under the list mutex, holding a reference
+ * on every entry. The callback may therefore release the reference it owns for
+ * the current entry: an entry released during the walk is destroyed when the
+ * snapshot reference is dropped after the walk, on the enumerating thread. */
+static inline void obs_enum(void *pstart, pthread_mutex_t *mutex, void *proc, void *param, obs_enum_get_ref_t get_ref,
+			    obs_enum_release_t release)
 {
 	struct obs_context_data **start = pstart, *context;
 	bool (*enum_proc)(void *, void *) = proc;
+	DARRAY(struct obs_context_data *) snapshot;
 
 	assert(start);
 	assert(mutex);
 	assert(enum_proc);
+	assert(get_ref);
+	assert(release);
+
+	da_init(snapshot);
 
 	pthread_mutex_lock(mutex);
 
 	context = *start;
 	while (context) {
-		if (!enum_proc(param, context))
-			break;
-
+		struct obs_context_data *ref = get_ref(context);
+		if (ref)
+			da_push_back(snapshot, &ref);
 		context = context->next;
 	}
 
 	pthread_mutex_unlock(mutex);
+
+	for (size_t i = 0; i < snapshot.num; i++) {
+		context = snapshot.array[i];
+
+		pthread_mutex_lock(mutex);
+		bool keep_going = enum_proc(param, context);
+		pthread_mutex_unlock(mutex);
+
+		if (!keep_going)
+			break;
+	}
+
+	for (size_t i = 0; i < snapshot.num; i++)
+		release(snapshot.array[i]);
+	da_free(snapshot);
 }
 
 static inline void obs_enum_uuid(void *pstart, pthread_mutex_t *mutex, void *proc, void *param)
@@ -1950,17 +2172,20 @@ void obs_enum_all_sources(bool (*enum_proc)(void *, obs_source_t *), void *param
 
 void obs_enum_outputs(bool (*enum_proc)(void *, obs_output_t *), void *param)
 {
-	obs_enum(&obs->data.first_output, &obs->data.outputs_mutex, enum_proc, param);
+	obs_enum(&obs->data.first_output, &obs->data.outputs_mutex, enum_proc, param, obs_output_enum_get_ref,
+		 obs_output_enum_release);
 }
 
 void obs_enum_encoders(bool (*enum_proc)(void *, obs_encoder_t *), void *param)
 {
-	obs_enum(&obs->data.first_encoder, &obs->data.encoders_mutex, enum_proc, param);
+	obs_enum(&obs->data.first_encoder, &obs->data.encoders_mutex, enum_proc, param, obs_encoder_enum_get_ref,
+		 obs_encoder_enum_release);
 }
 
 void obs_enum_services(bool (*enum_proc)(void *, obs_service_t *), void *param)
 {
-	obs_enum(&obs->data.first_service, &obs->data.services_mutex, enum_proc, param);
+	obs_enum(&obs->data.first_service, &obs->data.services_mutex, enum_proc, param, obs_service_enum_get_ref,
+		 obs_service_enum_release);
 }
 
 void obs_enum_canvases(bool (*enum_proc)(void *, obs_canvas_t *), void *param)
@@ -2302,7 +2527,7 @@ static obs_source_t *obs_load_source_type(obs_data_t *source_data, bool is_priva
 	source = obs_source_create_set_last_ver(canvas, v_id, name, uuid, settings, hotkeys, prev_ver, is_private);
 
 	if (source->owns_info_id) {
-		bfree((void *)source->info.unversioned_id);
+		bfree((void *)(uintptr_t)source->info.unversioned_id);
 		source->info.unversioned_id = bstrdup(id);
 	}
 
@@ -2594,7 +2819,7 @@ obs_data_array_t *obs_save_sources(void)
 	return obs_save_sources_filtered(save_source_filter, NULL);
 }
 
-void obs_reset_source_uuids()
+void obs_reset_source_uuids(void)
 {
 	pthread_mutex_lock(&obs->data.sources_mutex);
 
@@ -2606,7 +2831,7 @@ void obs_reset_source_uuids()
 	HASH_ITER (hh_uuid, ht, ctx, tmp) {
 		HASH_DELETE(hh_uuid, ht, ctx);
 
-		bfree((void *)ctx->uuid);
+		bfree((void *)(uintptr_t)ctx->uuid);
 		ctx->uuid = os_generate_uuid();
 
 		HASH_ADD_UUID(new_ht, uuid, ctx);
@@ -2688,7 +2913,7 @@ void obs_context_data_free(struct obs_context_data *context)
 	obs_context_data_remove(context);
 	pthread_mutex_destroy(&context->rename_cache_mutex);
 	bfree(context->name);
-	bfree((void *)context->uuid);
+	bfree((void *)(uintptr_t)context->uuid);
 
 	for (size_t i = 0; i < context->rename_cache.num; i++)
 		bfree(context->rename_cache.array[i]);
@@ -2796,7 +3021,7 @@ void obs_context_data_insert_uuid(struct obs_context_data *context, pthread_mute
 		blog(LOG_WARNING, "Attempted to insert context with duplicate UUID \"%s\"!", context->uuid);
 		/* It is practically impossible for the new UUID to be a
 		 * duplicate, so don't bother checking again. */
-		bfree((void *)context->uuid);
+		bfree((void *)(uintptr_t)context->uuid);
 		context->uuid = os_generate_uuid();
 	}
 
@@ -2903,12 +3128,12 @@ uint64_t obs_get_video_frame_time(void)
 
 double obs_get_active_fps(void)
 {
-	return obs->video.video_fps;
+	return obs_video_stats_fps(&obs->video.stats);
 }
 
 uint64_t obs_get_average_frame_time_ns(void)
 {
-	return obs->video.video_avg_frame_time_ns;
+	return obs_video_stats_avg_frame_time_ns(&obs->video.stats);
 }
 
 uint64_t obs_get_frame_interval_ns(void)
@@ -3091,12 +3316,12 @@ void obs_remove_main_rendered_callback(void (*rendered)(void *param), void *para
 
 uint32_t obs_get_total_frames(void)
 {
-	return obs->video.total_frames;
+	return obs_video_stats_total_frames(&obs->video.stats);
 }
 
 uint32_t obs_get_lagged_frames(void)
 {
-	return obs->video.lagged_frames;
+	return obs_video_stats_lagged_frames(&obs->video.stats);
 }
 
 /* An encoder that rescales on the GPU encodes from an encoder-only mix of
@@ -3233,7 +3458,23 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 {
 	struct obs_core_video_mix *video = get_mix_for_video(encoder->media);
 	bool success = true;
+	if (!video)
+		return false;
 
+	/* Pin the mix through pool initialization and any teardown-condition wait. */
+	os_atomic_inc_long(&video->gpu_encoder_active);
+
+	pthread_mutex_lock(&video->gpu_encoder_lifecycle_mutex);
+	while (video->gpu_encoder_tearing_down) {
+		if (pthread_cond_wait(&video->gpu_encoder_teardown_cond, &video->gpu_encoder_lifecycle_mutex) != 0) {
+			blog(LOG_ERROR, "Could not wait for GPU encoder teardown");
+			pthread_mutex_unlock(&video->gpu_encoder_lifecycle_mutex);
+			os_atomic_dec_long(&video->gpu_encoder_active);
+			return false;
+		}
+	}
+
+	/* Pool creation lock order: lifecycle -> graphics -> gpu_encoder_mutex. */
 	obs_enter_graphics();
 	pthread_mutex_lock(&video->gpu_encoder_mutex);
 
@@ -3248,9 +3489,11 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 	obs_leave_graphics();
 
 	if (success) {
-		os_atomic_inc_long(&video->gpu_encoder_active);
 		video_output_inc_texture_encoders(video->video);
 	}
+	pthread_mutex_unlock(&video->gpu_encoder_lifecycle_mutex);
+	if (!success)
+		os_atomic_dec_long(&video->gpu_encoder_active);
 
 	return success;
 }
@@ -3260,14 +3503,25 @@ void stop_gpu_encode(obs_encoder_t *encoder)
 	struct obs_core_video_mix *video = get_mix_for_video(encoder->media);
 	bool call_free = false;
 
-	os_atomic_dec_long(&video->gpu_encoder_active);
-	video_output_dec_texture_encoders(video->video);
+	pthread_mutex_lock(&video->gpu_encoder_lifecycle_mutex);
+	if (video->gpu_encoder_tearing_down) {
+		/* A concurrent stop already removed the last encoder and owns teardown. */
+		pthread_mutex_unlock(&video->gpu_encoder_lifecycle_mutex);
+		return;
+	}
 
 	pthread_mutex_lock(&video->gpu_encoder_mutex);
 	da_erase_item(video->gpu_encoders, &encoder);
-	if (!video->gpu_encoders.num)
+	if (!video->gpu_encoders.num) {
 		call_free = true;
+		video->gpu_encoder_tearing_down = true;
+	} else {
+		os_atomic_dec_long(&video->gpu_encoder_active);
+	}
+	video_output_dec_texture_encoders(video->video);
 	pthread_mutex_unlock(&video->gpu_encoder_mutex);
+	/* Keep starts out while draining, but never hold lifecycle across the worker wait. */
+	pthread_mutex_unlock(&video->gpu_encoder_lifecycle_mutex);
 
 	os_event_wait(video->gpu_encode_inactive);
 
@@ -3279,6 +3533,15 @@ void stop_gpu_encode(obs_encoder_t *encoder)
 		free_gpu_encoding(video);
 		pthread_mutex_unlock(&video->gpu_encoder_mutex);
 		obs_leave_graphics();
+
+		pthread_mutex_lock(&video->gpu_encoder_lifecycle_mutex);
+		video->gpu_encoder_tearing_down = false;
+		int broadcast_ret = pthread_cond_broadcast(&video->gpu_encoder_teardown_cond);
+		if (broadcast_ret != 0)
+			blog(LOG_ERROR, "Could not wake GPU encoder starts after teardown");
+		pthread_mutex_unlock(&video->gpu_encoder_lifecycle_mutex);
+		/* Keep obs_reset_video() out through the final lifecycle-mutex access. */
+		os_atomic_dec_long(&video->gpu_encoder_active);
 	}
 }
 
@@ -3405,16 +3668,17 @@ bool obs_wait_for_destroy_queue(void)
 {
 	struct task_wait_info info = {0};
 
-	if (!obs->video.thread_initialized || !obs->audio.audio)
-		return false;
-
-	/* allow video and audio threads time to release objects */
-	os_event_init(&info.event, OS_EVENT_TYPE_AUTO);
-	obs_queue_task(OBS_TASK_GRAPHICS, task_wait_callback, &info, false);
-	os_event_wait(info.event);
-	obs_queue_task(OBS_TASK_AUDIO, task_wait_callback, &info, false);
-	os_event_wait(info.event);
-	os_event_destroy(info.event);
+	/* allow video and audio threads time to release objects. Without them
+	 * (no video reset) sources are still destroyed by the destruction
+	 * thread, so that queue is waited for regardless. */
+	if (obs->video.thread_initialized && obs->audio.audio) {
+		os_event_init(&info.event, OS_EVENT_TYPE_AUTO);
+		obs_queue_task(OBS_TASK_GRAPHICS, task_wait_callback, &info, false);
+		os_event_wait(info.event);
+		obs_queue_task(OBS_TASK_AUDIO, task_wait_callback, &info, false);
+		os_event_wait(info.event);
+		os_event_destroy(info.event);
+	}
 
 	/* wait for destroy task queue */
 	return os_task_queue_wait(obs->destruction_task_thread);

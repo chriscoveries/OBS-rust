@@ -31,6 +31,10 @@ static inline void align_uint32(uint32_t *size, size_t alignment)
 }
 
 /* assumes already-zeroed array */
+/* Not in video-frame.h: the Rust port and the C oracle link these two. */
+void video_frame_get_linesizes(uint32_t linesize[MAX_AV_PLANES], enum video_format format, uint32_t width);
+void video_frame_get_plane_heights(uint32_t heights[MAX_AV_PLANES], enum video_format format, uint32_t height);
+
 void video_frame_get_linesizes(uint32_t linesize[MAX_AV_PLANES], enum video_format format, uint32_t width)
 {
 	switch (format) {
@@ -214,7 +218,7 @@ void video_frame_init(struct video_frame *frame, enum video_format format, uint3
 		if (!linesizes[i] || !heights[i])
 			continue;
 		size_t plane_size = (size_t)linesizes[i] * (size_t)heights[i];
-		align_size(&plane_size, alignment);
+		align_size(&plane_size, (size_t)alignment);
 		size += plane_size;
 		offsets[i] = size;
 	}

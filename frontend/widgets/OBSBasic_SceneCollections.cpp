@@ -15,12 +15,15 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ******************************************************************************/
 
+#include <utility/AppIdentity.hpp>
 #include "OBSBasic.hpp"
 
 #include <dialogs/OBSMissingFiles.hpp>
 #include <importer/OBSImporter.hpp>
 #include <models/SceneCollection.hpp>
 #include <utility/item-widget-helpers.hpp>
+#include <utility/menu-text.h>
+#include <utility/missing-files-list.h>
 
 #include <qt-wrappers.hpp>
 
@@ -42,7 +45,7 @@ using SceneCollection = OBS::SceneCollection;
 
 // MARK: Constant Expressions
 
-static constexpr std::string_view SceneCollectionPath = "/obs-studio/basic/scenes/";
+static constexpr std::string_view SceneCollectionPath = "/" OBS_CONFIG_DIRECTORY "/basic/scenes/";
 
 namespace DataKeys {
 static constexpr std::string_view AbsoluteCoordinates = "AbsoluteCoordinates";
@@ -398,7 +401,8 @@ void OBSBasic::RefreshSceneCollections(bool refreshCache)
 			const SceneCollection &collection = collections.at(collectionName);
 			const QString qCollectionName = QString().fromStdString(collectionName);
 
-			QAction *action = new QAction(qCollectionName, this);
+			const QString menuText = QString::fromStdString(menu_text_from_name(collectionName));
+			QAction *action = new QAction(menuText, this);
 			action->setProperty("collection_name", qCollectionName);
 			action->setProperty("file_name", QString().fromStdString(collection.getFileName()));
 			connect(action, &QAction::triggered, this, &OBSBasic::ChangeSceneCollection);
@@ -907,6 +911,7 @@ void OBSBasic::Save(SceneCollection &collection)
 	OBSDataArrayAutoRelease quickTransitionData = SaveQuickTransitions();
 
 	obs_data_set_string(saveData, "current_transition", obs_source_get_name(transition));
+	obs_data_set_string(saveData, "current_transition_id", obs_source_get_id(transition));
 	obs_data_set_int(saveData, "transition_duration", transitionDuration);
 	obs_data_set_array(saveData, "transitions", transitionsData);
 	obs_data_set_array(saveData, "quick_transitions", quickTransitionData);
@@ -1166,28 +1171,6 @@ void OBSBasic::Load(SceneCollection &collection)
 	LoadData(data, collection);
 }
 
-namespace {
-void addMissingFilterFiles(obs_source_t *, obs_source_t *filter, void *data)
-{
-	obs_missing_files_t *missing_files = static_cast<obs_missing_files_t *>(data);
-	obs_missing_files_t *filter_missing_files = obs_source_get_missing_files(filter);
-
-	obs_missing_files_append(missing_files, filter_missing_files);
-	obs_missing_files_destroy(filter_missing_files);
-}
-
-void addMissingFiles(void *data, obs_source_t *source)
-{
-	obs_missing_files_t *missing_files = static_cast<obs_missing_files_t *>(data);
-	obs_missing_files_t *source_missing_files = obs_source_get_missing_files(source);
-
-	obs_missing_files_append(missing_files, source_missing_files);
-	obs_missing_files_destroy(source_missing_files);
-
-	obs_source_enum_filters(source, addMissingFilterFiles, data);
-}
-} // namespace
-
 void OBSBasic::LoadData(obs_data_t *data, SceneCollection &collection)
 {
 	ClearSceneData();
@@ -1344,23 +1327,20 @@ void OBSBasic::LoadData(obs_data_t *data, SceneCollection &collection)
 
 	updateRemigrationMenuItem(collection.getCoordinateMode(), ui->actionRemigrateSceneCollection);
 
-	obs_missing_files_t *files = obs_missing_files_create();
-	obs_load_sources(sources, addMissingFiles, files);
+	obs_missing_files_t *files = missing_files_list_create(App()->IsMissingFilesCheckDisabled());
+	obs_load_sources(sources, missing_files_list_add_source, files);
 
 	if (resetVideo) {
 		ResetVideo();
 	}
 	if (transitionsData) {
-		LoadTransitions(transitionsData, addMissingFiles, files);
+		LoadTransitions(transitionsData, missing_files_list_add_source, files);
 	}
 	if (sceneOrder) {
 		LoadSceneListOrder(sceneOrder);
 	}
 
-	curTransition = FindTransition(transitionName);
-	if (!curTransition) {
-		curTransition = fadeTransition;
-	}
+	curTransition = FindSavedTransition(transitionName, obs_data_get_string(data, "current_transition_id"));
 
 	SetTransitionDuration(newDuration);
 	SetTransition(curTransition);
@@ -1501,7 +1481,7 @@ retryScene:
 
 	LogScenes();
 
-	if (!App()->IsMissingFilesCheckDisabled()) {
+	if (files) {
 		ShowMissingFilesDialog(files);
 	}
 
@@ -1590,6 +1570,7 @@ void OBSBasic::ClearSceneData()
 	collectionModuleData = nullptr;
 	lastScene = nullptr;
 	swapScene = nullptr;
+	swapPreviewScene = nullptr;
 	programScene = nullptr;
 	prevFTBSource = nullptr;
 
@@ -1696,7 +1677,7 @@ void OBSBasic::on_actionShowMissingFiles_triggered()
 	obs_missing_files_t *files = obs_missing_files_create();
 
 	auto cb_sources = [](void *data, obs_source_t *source) {
-		addMissingFiles(data, source);
+		missing_files_list_add_source(data, source);
 		return true;
 	};
 

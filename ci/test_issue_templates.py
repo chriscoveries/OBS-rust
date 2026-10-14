@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Feature ideas go to Discussions, not the issue tracker (#332).
 
-    python3 -m unittest ci/test_issue_templates.py
+    uv run python -m unittest ci/test_issue_templates.py
 """
 
 from __future__ import annotations

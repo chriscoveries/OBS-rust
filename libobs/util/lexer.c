@@ -272,7 +272,7 @@ bool lexer_getbasetoken(struct lexer *lex, struct base_token *token, enum ignore
 	lex->offset = offset;
 
 	if (token_start && offset > token_start) {
-		strref_set(&token->text, token_start, offset - token_start);
+		strref_set(&token->text, token_start, (size_t)(offset - token_start));
 		token->type = type;
 		return true;
 	}

@@ -26,10 +26,10 @@ static DARRAY(struct dacast_ingest_info) cur_ingests;
 
 static void free_ingest(struct dacast_ingest ingest)
 {
-	bfree((void *)ingest.url);
-	bfree((void *)ingest.username);
-	bfree((void *)ingest.password);
-	bfree((void *)ingest.streamkey);
+	bfree((void *)(uintptr_t)ingest.url);
+	bfree((void *)(uintptr_t)ingest.username);
+	bfree((void *)(uintptr_t)ingest.password);
+	bfree((void *)(uintptr_t)ingest.streamkey);
 }
 
 static void free_ingests(void)
@@ -152,7 +152,7 @@ void dacast_ingests_load_data(const char *server, const char *key)
 	}
 
 	dacast_update_info = update_info_create_single("[dacast ingest load data] ", get_module_name(), uri.array,
-						       dacast_ingest_update, (void *)key);
+						       dacast_ingest_update, (void *)(uintptr_t)key);
 
 	if (!os_atomic_load_bool(&ingests_loaded)) {
 		for (int i = 0; i < TIMEOUT_SEC * 100; i++) {

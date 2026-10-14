@@ -76,6 +76,20 @@ fn exported_symbols() -> BTreeSet<String> {
         .collect()
 }
 
+/// Whether `name` is a dependency of `libobs-rust`, the one staticlib libobs
+/// links. A crate linked elsewhere (obs-nvenc goes into plugins/obs-nvenc,
+/// obs-rust/obs-studio#524) exports its shims from that module, not libobs.
+fn linked_into_libobs(name: &str) -> bool {
+    let manifest = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../libobs-rust/Cargo.toml"
+    ))
+    .expect("read libobs-rust/Cargo.toml");
+    manifest
+        .lines()
+        .any(|l| l.trim_start().starts_with(&format!("{name} = ")))
+}
+
 /// (crate, ffi module) -> its `#[no_mangle]` shims, for every rust/*/src/ffi/*.rs.
 fn ffi_modules() -> Vec<((String, String), Vec<String>)> {
     let mut out = Vec::new();
@@ -86,6 +100,9 @@ fn ffi_modules() -> Vec<((String, String), Vec<String>)> {
             continue;
         }
         let name = krate.file_name().unwrap().to_string_lossy().into_owned();
+        if !linked_into_libobs(&name) {
+            continue;
+        }
         for entry in fs::read_dir(&ffi_dir).expect("read src/ffi") {
             let path = entry.expect("dir entry").path();
             if path.extension().is_some_and(|e| e == "rs") {
@@ -146,8 +163,9 @@ fn rust_exports_list_matches_no_mangle_shims() {
     let mut found = BTreeSet::new();
     let mut visited = Vec::new();
     for krate in fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).expect("read rust/") {
-        let ffi_dir = krate.expect("dir entry").path().join("src/ffi");
-        if !ffi_dir.is_dir() {
+        let krate = krate.expect("dir entry").path();
+        let ffi_dir = krate.join("src/ffi");
+        if !ffi_dir.is_dir() || !linked_into_libobs(&krate.file_name().unwrap().to_string_lossy()) {
             continue;
         }
         for entry in fs::read_dir(&ffi_dir).expect("read src/ffi") {

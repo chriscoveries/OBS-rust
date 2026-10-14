@@ -544,19 +544,19 @@ int happy_eyeballs_connect(struct happy_eyeballs_ctx *context, const char *hostn
 	 *      happy eyeballs and let the previous attempt go it alone. */
 	for (int i = 0; i < HAPPY_EYEBALLS_MAX_ATTEMPTS && next && next->ai_family != prev_family; i++) {
 		/* Launch a worker thread for this address */
-		int result = launch_worker(context, next);
-		if (result != STATUS_SUCCESS)
-			return result;
+		int wait_result = launch_worker(context, next);
+		if (wait_result != STATUS_SUCCESS)
+			return wait_result;
 
 		/* Wait until the delay between attempts times out or we get
 		 * signalled... */
-		result = os_event_timedwait(context->race_completed_event, HAPPY_EYEBALLS_DELAY_MS);
-		if (result == 0) {
+		wait_result = os_event_timedwait(context->race_completed_event, HAPPY_EYEBALLS_DELAY_MS);
+		if (wait_result == 0) {
 			/* signalled. Break out of the loop. */
 			break;
-		} else if (result == EINVAL) {
+		} else if (wait_result == EINVAL) {
 			/* we ran into an error. */
-			context->error = result;
+			context->error = wait_result;
 			context->error_message = "happy-eyeballs: Encountered "
 						 "error waiting for "
 						 "race_completed_event";

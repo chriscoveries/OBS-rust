@@ -313,7 +313,7 @@ bool audio_resampler_resample(audio_resampler_t *rs, uint8_t *output[], uint32_t
 		rs->output_size = estimated;
 	}
 
-	ret = swr_convert(context, rs->output_buffer, rs->output_size, (const uint8_t **)input, in_frames);
+	ret = swr_convert(context, rs->output_buffer, rs->output_size, (const uint8_t **)(uintptr_t)input, in_frames);
 
 	if (ret < 0) {
 		blog(LOG_ERROR, "swr_convert failed: %d", ret);

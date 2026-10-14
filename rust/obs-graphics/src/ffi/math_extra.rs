@@ -2,17 +2,15 @@
 //!
 //! The shims only convert to the safe core in [`crate::math_extra`].
 //! `polar_to_norm` writes `x`, `y`, and `z` and leaves `w` alone, as C does.
-//! `calc_torque` re-reads `v1` after storing the scaled step so an aliased
-//! `dst` matches C.
+//! `calc_torque` reads `v1` and `v2` before it writes `dst`.
 
 use core::ffi::c_int;
 use core::ptr;
 
 use super::vec2::vec2;
 use super::vec3::vec3;
-use crate::math_extra::{self, TorqueWrite};
+use crate::math_extra;
 use crate::vec2::Vec2;
-use crate::vec3::Vec3;
 
 /// Writes the cartesian form of polar `*v` to `*dst`. `w` is 0.
 ///
@@ -81,8 +79,7 @@ pub extern "C" fn calc_torquef(val1: f32, val2: f32, torque: f32, min_adjust: f3
 ///
 /// # Safety
 ///
-/// `v1` and `v2` must be readable and `dst` writable. They may overlap. On the
-/// move path the scaled direction is stored before `v1` is read again.
+/// `v1` and `v2` must be readable and `dst` writable. They may overlap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn calc_torque(
     dst: *mut vec3,
@@ -92,22 +89,12 @@ pub unsafe extern "C" fn calc_torque(
     min_adjust: f32,
     t: f32,
 ) {
-    // SAFETY: the caller guarantees both inputs are readable.
+    // SAFETY: the caller guarantees both inputs are readable. Read them
+    // before writing `dst`, including when `dst` is `v1`.
     let (a, b) = unsafe { (ptr::read(v1), ptr::read(v2)) };
-    match math_extra::calc_torque_step(Vec3::from(a), b.into(), torque, min_adjust, t) {
-        TorqueWrite::Copy(v) => {
-            // SAFETY: the caller guarantees `dst` is writable.
-            unsafe { ptr::write(dst, v.into()) };
-        }
-        TorqueWrite::Move(scaled) => {
-            // SAFETY: store the scaled direction first, then re-read `v1`,
-            // which may be `dst`.
-            unsafe { ptr::write(dst, scaled.into()) };
-            let v1_now = unsafe { ptr::read(v1) };
-            let sum = scaled.add_xyz(v1_now.into());
-            unsafe { ptr::write(dst, sum.into()) };
-        }
-    }
+    let out = math_extra::calc_torque(a.into(), b.into(), torque, min_adjust, t);
+    // SAFETY: the caller guarantees `dst` is writable.
+    unsafe { ptr::write(dst, out.into()) };
 }
 
 /// One `rand()` draw, mapped like `math-extra.c`.

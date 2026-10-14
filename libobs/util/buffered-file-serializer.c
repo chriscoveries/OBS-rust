@@ -80,7 +80,8 @@ static void *io_thread(void *opaque)
 	// flush the chunk. next_seek_position is the actual offset we should
 	// seek to when we write the chunk.
 	uint64_t current_seek_position = 0;
-	uint64_t next_seek_position;
+	/* Set together with want_seek; initialized for MSVC C4701. */
+	uint64_t next_seek_position = 0;
 
 	for (;;) {
 		// Wait for data to be written to the buffer
@@ -160,7 +161,7 @@ static void *io_thread(void *opaque)
 
 			// Seek if we need to
 			if (want_seek) {
-				os_fseeki64(out->io.output_file, next_seek_position, SEEK_SET);
+				os_fseeki64(out->io.output_file, (int64_t)next_seek_position, SEEK_SET);
 
 				// Update the next virtual position, making sure to take
 				// into account the size of the chunk we're about to write.
@@ -219,13 +220,13 @@ static int64_t file_output_seek(void *opaque, int64_t offset, enum serialize_see
 
 	switch (seek_type) {
 	case SERIALIZE_SEEK_START:
-		out->io.next_pos = offset;
+		out->io.next_pos = (uint64_t)offset;
 		break;
 	case SERIALIZE_SEEK_CURRENT:
-		out->io.next_pos += offset;
+		out->io.next_pos += (uint64_t)offset;
 		break;
 	case SERIALIZE_SEEK_END:
-		out->io.next_pos -= offset;
+		out->io.next_pos -= (uint64_t)offset;
 		break;
 	}
 
@@ -234,7 +235,9 @@ static int64_t file_output_seek(void *opaque, int64_t offset, enum serialize_see
 	return (int64_t)out->io.next_pos;
 }
 
-#ifndef _WIN32
+/* MSVC's <stdlib.h> defines min/max macros; other toolchains, MinGW on
+ * Windows included, need these. */
+#if !defined(min) && !defined(max)
 static inline size_t max(size_t a, size_t b)
 {
 	return a > b ? a : b;

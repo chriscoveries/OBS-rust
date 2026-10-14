@@ -195,13 +195,13 @@ void decompress_420(const uint8_t *const input[], const uint32_t in_linesize[], 
 
 		for (x = 0; x < width_d2; x++) {
 			uint32_t out;
-			out = (*(chroma0++) << 8) | *(chroma1++);
+			out = (uint32_t)((*(chroma0++) << 8) | *(chroma1++));
 
-			*(output0++) = (*(lum0++) << 16) | out;
-			*(output0++) = (*(lum0++) << 16) | out;
+			*(output0++) = (uint32_t)(*(lum0++) << 16) | out;
+			*(output0++) = (uint32_t)(*(lum0++) << 16) | out;
 
-			*(output1++) = (*(lum1++) << 16) | out;
-			*(output1++) = (*(lum1++) << 16) | out;
+			*(output1++) = (uint32_t)(*(lum1++) << 16) | out;
+			*(output1++) = (uint32_t)(*(lum1++) << 16) | out;
 		}
 	}
 }
@@ -227,7 +227,7 @@ void decompress_nv12(const uint8_t *const input[], const uint32_t in_linesize[],
 		output1 = (uint32_t *)((uint8_t *)output0 + out_linesize);
 
 		for (x = 0; x < width_d2; x++) {
-			uint32_t out = *(chroma++) << 8;
+			uint32_t out = (uint32_t)(*(chroma++) << 8);
 
 			*(output0++) = *(lum0++) | out;
 			*(output0++) = *(lum0++) | out;

@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """.gitignore must only ignore generated and local files, never source.
 
-    python3 -m unittest ci/test_gitignore.py
+    uv run python -m unittest ci/test_gitignore.py
 
 The upstream file started with `/*` and re-included a list of known
 top-level paths, so any new top-level file or directory was silently

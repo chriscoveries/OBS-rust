@@ -36,6 +36,7 @@ if(OBS_PARENT_ARCHITECTURE STREQUAL CMAKE_VS_PLATFORM_NAME)
       COMMAND "${CMAKE_COMMAND}" --build ${CMAKE_SOURCE_DIR}/build_x86 --config $<CONFIG> -t get-graphics-offsets
       COMMENT "Build x86 get-graphics-offsets"
     )
+    obs_serialize_x86_build(get-graphics-offsets)
   endif()
 
   add_dependencies(win-capture get-graphics-offsets)

@@ -4,7 +4,7 @@
 use core::ffi::{c_char, c_int};
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 use crate::pipe::{Args, truncated};
 
@@ -24,19 +24,20 @@ fn c_string(bytes: &[u8]) -> Option<CString> {
     CString::new(truncated(bytes)).ok()
 }
 
-fn spawn(argv0: &CString, rest: &[&CString], read_mode: bool) -> Option<Pipe> {
+fn spawn(program: &CString, argv0: &CString, rest: &[&CString], read_mode: bool) -> Option<Pipe> {
     use std::process::{Command, Stdio};
 
-    let mut cmd = Command::new(std::ffi::OsStr::from_bytes(argv0.as_bytes()));
+    let mut cmd = Command::new(std::ffi::OsStr::from_bytes(program.as_bytes()));
+    cmd.arg0(std::ffi::OsStr::from_bytes(argv0.as_bytes()));
     for arg in rest {
         cmd.arg(std::ffi::OsStr::from_bytes(arg.as_bytes()));
     }
     // Rust sets CLOEXEC on every new fd and closes non-stdio fds in the
     // child, matching the C `fcntl` + `posix_spawn` file actions.
     if read_mode {
-        cmd.stdin(Stdio::null()).stdout(Stdio::piped());
+        cmd.stdout(Stdio::piped());
     } else {
-        cmd.stdin(Stdio::piped()).stdout(Stdio::null());
+        cmd.stdin(Stdio::piped());
     }
     // The C always captures stderr, in both modes.
     cmd.stderr(Stdio::piped());
@@ -66,9 +67,10 @@ impl Pipe {
     /// A null command is `None`.
     pub fn create(cmd_line: Option<&[u8]>, type_: &[u8]) -> Option<Self> {
         let cmd = c_string(cmd_line?)?;
-        let sh = c_string(b"/bin/sh")?;
+        let shell = c_string(b"/bin/sh")?;
+        let sh_argv0 = c_string(b"sh")?;
         let dash_c = c_string(b"-c")?;
-        spawn(&sh, &[&dash_c, &cmd], Self::read_mode(type_))
+        spawn(&shell, &sh_argv0, &[&dash_c, &cmd], Self::read_mode(type_))
     }
 
     /// Mirrors `os_process_pipe_create2`: spawns `args` directly, with
@@ -80,6 +82,7 @@ impl Pipe {
             return None;
         }
         spawn(
+            &args.args[0],
             &args.args[0],
             &args.args[1..].iter().collect::<Vec<_>>(),
             Self::read_mode(type_),

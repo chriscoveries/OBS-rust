@@ -5,10 +5,14 @@
 # and also applies to the dependencies of what it loads.) An exported
 # LD_LIBRARY_PATH leaks into every process OBS spawns (/bin/sh, xdg-open, ...),
 # and host programs crash when they pick up the bundled, newer glibc.
-# Usage: set-runpaths.sh <AppDir>
+# An optional second argument is an absolute directory appended to every RPATH
+# (where AppRun puts the bundled glibc, libstdc++ and libgcc_s; it stays empty
+# when the host's newer ones are used).
+# Usage: set-runpaths.sh <AppDir> [extra-absolute-dir]
 set -euo pipefail
 APPDIR="$(realpath "$1")"
 LIBDIR="$APPDIR/usr/lib"
+EXTRA="${2:+:$2}"
 n=0
 while IFS= read -r -d '' f; do
     [ "$(head -c4 "$f" | od -An -c | tr -d ' ')" = '177ELF' ] || continue
@@ -16,7 +20,7 @@ while IFS= read -r -d '' f; do
     case "$(basename "$f")" in ld-linux*) continue ;; esac
     rel="$(realpath --relative-to="$(dirname "$f")" "$LIBDIR")"
     if [ "$rel" = . ]; then rpath='$ORIGIN'; else rpath="\$ORIGIN/$rel"; fi
-    patchelf --force-rpath --set-rpath "$rpath" "$f" 2>/dev/null || { echo "patchelf failed: $f" >&2; continue; }
+    patchelf --force-rpath --set-rpath "$rpath$EXTRA" "$f" 2>/dev/null || { echo "patchelf failed: $f" >&2; continue; }
     n=$((n + 1))
 done < <(find "$APPDIR/usr" -type f \( -name '*.so' -o -name '*.so.*' -o -perm -u+x \) -print0)
 echo "RPATH set on $n ELF files"

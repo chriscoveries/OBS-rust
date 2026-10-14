@@ -69,7 +69,7 @@ OBSProjector::OBSProjector(QWidget *widget, obs_source_t *source_, int monitor, 
 	//disable application quit when last window closed
 	setAttribute(Qt::WA_QuitOnClose, false);
 
-	installEventFilter(CreateShortcutFilter());
+	installEventFilter(CreateShortcutFilter(this));
 
 	auto addDrawCallback = [this]() {
 		bool isMultiview = type == ProjectorType::Multiview;

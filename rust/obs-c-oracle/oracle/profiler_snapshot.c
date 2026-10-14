@@ -23,6 +23,28 @@
 
 #include "util/profiler-snapshot.c"
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_profiler_snapshot_size(void);
+size_t oracle_profiler_snapshot_align(void);
+size_t oracle_profiler_snapshot_offset_roots(void);
+size_t oracle_profiler_snapshot_entry_size(void);
+size_t oracle_profiler_snapshot_entry_align(void);
+size_t oracle_profiler_snapshot_entry_offset_name(void);
+size_t oracle_profiler_snapshot_entry_offset_times(void);
+size_t oracle_profiler_snapshot_entry_offset_min_time(void);
+size_t oracle_profiler_snapshot_entry_offset_max_time(void);
+size_t oracle_profiler_snapshot_entry_offset_overall_count(void);
+size_t oracle_profiler_snapshot_entry_offset_times_between_calls(void);
+size_t oracle_profiler_snapshot_entry_offset_expected_time_between_calls(void);
+size_t oracle_profiler_snapshot_entry_offset_min_time_between_calls(void);
+size_t oracle_profiler_snapshot_entry_offset_max_time_between_calls(void);
+size_t oracle_profiler_snapshot_entry_offset_overall_between_calls_count(void);
+size_t oracle_profiler_snapshot_entry_offset_children(void);
+size_t oracle_profiler_time_entry_size(void);
+size_t oracle_profiler_time_entry_align(void);
+size_t oracle_profiler_time_entry_offset_time_delta(void);
+size_t oracle_profiler_time_entry_offset_count(void);
+
 size_t oracle_profiler_snapshot_size(void)
 {
 	return sizeof(struct profiler_snapshot);

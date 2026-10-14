@@ -369,7 +369,8 @@ void cache_glyphs(struct ft2_source *srcdata, wchar_t *cache_glyphs)
 			gs_texture_destroy(tmp_texture);
 		}
 
-		srcdata->tex = gs_texture_create(texbuf_w, texbuf_h, GS_A8, 1, (const uint8_t **)&srcdata->texbuf, 0);
+		srcdata->tex = gs_texture_create(texbuf_w, texbuf_h, GS_A8, 1,
+						 (const uint8_t **)(uintptr_t)&srcdata->texbuf, 0);
 
 		obs_leave_graphics();
 	}

@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Tests for rust/tools/linux-validate/run.sh (obs-rust/obs-studio#135).
 
-    python3 -m unittest ci/test_tier2_run.py
+    uv run python -m unittest ci/test_tier2_run.py
 
 run.sh is executed from two throwaway checkouts with stub `docker` and `git`
 commands on PATH that record their arguments, so no container is started.

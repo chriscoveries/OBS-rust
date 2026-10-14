@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Screenshot DIR/index.html to DIR/leaderboard.jpg with headless Chromium.
 Usage: render.py DIR   (needs `pip install playwright` + `playwright install chromium`)"""
 import sys, pathlib, http.server, threading, functools

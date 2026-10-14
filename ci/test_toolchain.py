@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """The Rust toolchain is pinned and every crate declares the MSRV
 (obs-rust/obs-studio#136).
 
-    python3 -m unittest ci/test_toolchain.py
+    uv run python -m unittest ci/test_toolchain.py
 """
 
 from __future__ import annotations

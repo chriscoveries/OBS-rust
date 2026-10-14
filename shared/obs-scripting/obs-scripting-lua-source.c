@@ -622,7 +622,7 @@ static inline struct obs_lua_source *find_existing(const char *id)
 
 static int obs_lua_register_source(lua_State *script)
 {
-	struct obs_lua_source ls = {0};
+	struct obs_lua_source new_def = {0};
 	struct obs_lua_source *existing = NULL;
 	struct obs_lua_source *v = NULL;
 	struct obs_source_info info = {0};
@@ -646,7 +646,7 @@ static int obs_lua_register_source(lua_State *script)
 		pthread_mutex_lock(&existing->definition_mutex);
 	}
 
-	v = existing ? existing : &ls;
+	v = existing ? existing : &new_def;
 
 	v->script = script;
 	v->id = id;
@@ -691,11 +691,11 @@ static int obs_lua_register_source(lua_State *script)
 	get_callback_from_table(script, -1, "get_defaults", &v->func_get_defaults);
 
 	if (!existing) {
-		ls.data = current_lua_script;
+		new_def.data = current_lua_script;
 
-		pthread_mutex_init_recursive(&ls.definition_mutex);
+		pthread_mutex_init_recursive(&new_def.definition_mutex);
 
-		info.type_data = bmemdup(&ls, sizeof(ls));
+		info.type_data = bmemdup(&new_def, sizeof(new_def));
 		info.free_type_data = obs_lua_source_free_type_data;
 		info.get_name = obs_lua_source_get_name;
 		info.get_defaults2 = obs_lua_source_get_defaults;

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Generate leaderboard.json for obs-rust/obs-studio.
 
 Usage: generate.py [--repo OWNER/REPO] [--out leaderboard.json]
@@ -35,9 +35,14 @@ Completeness: all merged PRs are fetched with full pagination and checked
 against GitHub's merged-PR total; any PR that cannot be attributed to a human
 is logged, and any human who authored/co-authored commits in merged PRs but
 ends with 0 credit is flagged in the log.
+
+Daily delta: each contributor also gets `today_prs`, the merged PRs credited to
+them since the most recent 00:00 America/Los_Angeles (zoneinfo, PST/PDT aware),
+and `today_badge`, the HTML for the green up-arrow marker.
 """
-import argparse, json, re, subprocess, sys
+import argparse, html, json, re, subprocess, sys
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 RELAYS = {"zackees"}  # repo owner; also anything treated as a bot
 W_PR = 1
@@ -89,21 +94,53 @@ def pr_commits(repo, n):
             out.append({"messageHeadline": head, "messageBody": body, "authors": authors})
     return out
 
+def merged_list_complete(fetched, total):
+    """True unless the fetched list is shorter than GitHub's merged-PR count.
+
+    A PR can merge between the two API calls, so a longer list is just fresher.
+    """
+    return fetched >= total
+
+PACIFIC = ZoneInfo("America/Los_Angeles")
+SINCE_CAPTION = "new since 12:00 AM Pacific (America/Los_Angeles)"
+
+def pacific_midnight(now):
+    """Most recent 00:00 America/Los_Angeles at or before `now`, as aware UTC."""
+    local = now.astimezone(PACIFIC)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+def count_since(dates, cutoff):
+    """How many ISO-8601 UTC timestamps in `dates` are at or after `cutoff`."""
+    return sum(1 for d in dates if datetime.fromisoformat(d.replace("Z", "+00:00")) >= cutoff)
+
+def delta_badge(n):
+    """HTML for the "new today" marker beside a count.
+
+    The arrow is an inline SVG triangle, so it does not depend on any font
+    having the U+25B2 glyph."""
+    if n <= 0:
+        return '<span class="delta delta-none" title="none since midnight Pacific">&ndash;</span>'
+    return ('<span class="delta delta-up" title="+%d %s">'
+            '<svg viewBox="0 0 10 9" width="14" height="12" aria-label="up"><polygon points="5,0 10,9 0,9"/></svg>'
+            '+%d</span>' % (n, html.escape(SINCE_CAPTION), n))
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="obs-rust/obs-studio")
     ap.add_argument("--out", default="leaderboard.json")
     o = ap.parse_args()
     repo = o.repo
+    # Read the merged count BEFORE listing: a PR merging mid-run then only makes
+    # the list longer than the count, which is fine.
+    total = json.loads(gh("api", "-X", "GET", "search/issues", "-f",
+                          f"q=repo:{repo} is:pr is:merged", "-f", "per_page=1"))["total_count"]
     # gh pr/issue list paginates internally; the limit is far above any real count.
     prs = json.loads(gh("pr", "list", "-R", repo, "--state", "all", "-L", "1000000", "--json",
                         "number,state,author,body,mergedAt,createdAt"))
     issues = json.loads(gh("issue", "list", "-R", repo, "--state", "all", "-L", "1000000", "--json",
                            "number,author,createdAt"))
     merged = [p for p in prs if p["state"] == "MERGED"]
-    total = json.loads(gh("api", "-X", "GET", "search/issues", "-f",
-                          f"q=repo:{repo} is:pr is:merged", "-f", "per_page=1"))["total_count"]
-    if total != len(merged):
+    if not merged_list_complete(len(merged), total):
         raise SystemExit(f"INCOMPLETE: fetched {len(merged)} merged PRs, GitHub reports {total}")
     by_num = {p["number"]: p for p in prs}
     people = {}
@@ -168,8 +205,13 @@ def main():
             people[l]["issues_filed"] += 1
             people[l]["issues"].append(i["number"])
     rows = []
+    now = datetime.now(timezone.utc)
+    cutoff = pacific_midnight(now)
+    dates_all = {q["login"]: list(q["dates"]) for q in people.values()}
     for q in people.values():
         d = sorted(q.pop("dates"))
+        q["today_prs"] = count_since(dates_all[q["login"]], cutoff)
+        q["today_badge"] = delta_badge(q["today_prs"])
         q["score"] = W_PR * q["merged_prs"]
         q["first_contribution"], q["last_contribution"] = d[0], d[-1]
         q["pr_numbers"] = q.pop("prs"); q["issue_numbers"] = q.pop("issues")
@@ -180,7 +222,10 @@ def main():
     # Completeness assertions
     assert len(assigned) + len(unattributed) == len(merged)
     assert sum(q["merged_prs"] for q in rows) == len(assigned)
-    out = {"repo": repo, "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    out = {"repo": repo, "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "generated_pacific": now.astimezone(PACIFIC).strftime("%b %d, %Y %I:%M %p %Z"),
+           "since": cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"), "since_caption": SINCE_CAPTION,
+           "today_total": sum(q["today_prs"] for q in rows),
            "ranked_by": "merged_prs", "merged_pr_total": len(merged), "unattributed_prs": unattributed,
            "contributors": rows}
     with open(o.out, "w") as f:

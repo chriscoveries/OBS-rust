@@ -23,7 +23,7 @@ OBSBasicAdvAudio::OBSBasicAdvAudio(QWidget *parent) : QDialog(parent), ui(new Ui
 		ui->usePercent->setChecked(true);
 	}
 
-	installEventFilter(CreateShortcutFilter());
+	installEventFilter(CreateShortcutFilter(this));
 
 	/* enum user scene/sources */
 	obs_enum_sources(EnumSources, this);

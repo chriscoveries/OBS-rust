@@ -22,6 +22,7 @@
 
 #include "formats.h"
 #include "frame-layout.h"
+#include "frame-pacing.h"
 #include "reconnect-policy.h"
 
 #include <util/darray.h>
@@ -97,6 +98,7 @@ struct _obs_pipewire {
 	obs_pipewire_disconnected_cb disconnected_cb;
 	void *disconnected_data;
 	bool disconnected;
+	bool reconnecting;
 
 	/* Watches for the removal of the node the last stream was connected
 	 * to, for owners that set a disconnected callback. */
@@ -107,11 +109,41 @@ struct _obs_pipewire {
 	GPtrArray *streams;
 };
 
+struct obs_pw_crop {
+	bool valid;
+	int x, y;
+	uint32_t width, height;
+};
+
+/* A captured screen frame waiting to be drawn, or being drawn. The texture
+ * belongs to OBS: frames in shared memory are uploaded into it, DMA-BUF
+ * frames are copied into the texrender's texture as they arrive, so the
+ * PipeWire buffer goes back to the compositor at once. */
+struct obs_pw_frame {
+	gs_texture_t *texture; /* NULL: the slot is free */
+	bool owns_texture;     /* else the texture is the texrender's */
+	gs_texrender_t *texrender;
+	enum gs_color_format texrender_format;
+	enum spa_meta_videotransform_value transform;
+	struct obs_pw_crop crop;
+};
+
+/* Every frame the pacer can hold, plus the one being pushed. */
+#define OBS_PW_FRAME_SLOTS (OBS_PW_FRAME_PACER_MAX_FRAMES + 1)
+
 struct _obs_pipewire_stream {
 	obs_pipewire *obs_pw;
 	obs_source_t *source;
 
+	/* The frame drawn on this video tick (one of frames[]) */
 	gs_texture_t *texture;
+
+	/* Frames advance at most one per video tick (obsproject/obs-studio#13292).
+	 * Pushed on the PipeWire thread and advanced in video_render, both
+	 * inside the graphics context, which serialises them. */
+	struct obs_pw_frame_pacer pacer;
+	struct obs_pw_frame frames[OBS_PW_FRAME_SLOTS];
+	uint64_t paced_video_time;
 
 	struct pw_stream *stream;
 	struct spa_hook stream_listener;
@@ -121,11 +153,7 @@ struct _obs_pipewire_stream {
 
 	enum spa_meta_videotransform_value transform;
 
-	struct {
-		bool valid;
-		int x, y;
-		uint32_t width, height;
-	} crop;
+	struct obs_pw_crop crop;
 
 	struct {
 		bool visible;
@@ -152,15 +180,6 @@ struct _obs_pipewire_stream {
 		struct spa_fraction fraction;
 		bool set;
 	} framerate;
-
-	struct {
-		int acquire_syncobj_fd;
-		int release_syncobj_fd;
-		uint64_t acquire_point;
-		uint64_t release_point;
-		bool release_point_will_signal;
-		bool set;
-	} sync;
 };
 
 /* auxiliary methods */
@@ -282,7 +301,7 @@ static bool push_rotation(obs_pipewire_stream *obs_pw_stream)
 
 	if (rotation != 0) {
 		gs_matrix_push();
-		gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, RAD(rotation));
+		gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, RAD((float)rotation));
 		gs_matrix_translate3f(-offset_x, -offset_y, 0.0f);
 	}
 
@@ -727,6 +746,74 @@ done:
 	pw_stream_queue_buffer(obs_pw_stream->stream, b);
 }
 
+static struct obs_pw_frame *get_free_frame(obs_pipewire_stream *obs_pw_stream)
+{
+	for (size_t i = 0; i < OBS_PW_FRAME_SLOTS; i++) {
+		if (!obs_pw_stream->frames[i].texture)
+			return &obs_pw_stream->frames[i];
+	}
+	return NULL;
+}
+
+static void release_frame(obs_pipewire_stream *obs_pw_stream, uint64_t id)
+{
+	struct obs_pw_frame *frame;
+
+	if (id == OBS_PW_FRAME_NONE)
+		return;
+
+	frame = &obs_pw_stream->frames[id];
+	if (frame->owns_texture)
+		gs_texture_destroy(frame->texture);
+	frame->texture = NULL;
+	frame->owns_texture = false;
+}
+
+static void queue_frame(obs_pipewire_stream *obs_pw_stream, struct obs_pw_frame *frame)
+{
+	uint64_t id = (uint64_t)(frame - obs_pw_stream->frames);
+
+	release_frame(obs_pw_stream, obs_pw_frame_pacer_push(&obs_pw_stream->pacer, id));
+}
+
+/* Draws an imported DMA-BUF frame into a texture of our own, so that the
+ * frame can wait for its video tick after its buffer went back to the
+ * compositor. */
+static gs_texture_t *copy_dmabuf_frame(struct obs_pw_frame *frame, gs_texture_t *imported, enum gs_color_format format)
+{
+	uint32_t width = gs_texture_get_width(imported);
+	uint32_t height = gs_texture_get_height(imported);
+	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	bool previous_srgb;
+
+	if (frame->texrender && frame->texrender_format != format)
+		g_clear_pointer(&frame->texrender, gs_texrender_destroy);
+	if (!frame->texrender) {
+		frame->texrender = gs_texrender_create(format, GS_ZS_NONE);
+		frame->texrender_format = format;
+	}
+
+	gs_texrender_reset(frame->texrender);
+	if (!gs_texrender_begin(frame->texrender, width, height))
+		return NULL;
+
+	previous_srgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(false);
+	gs_blend_state_push();
+	gs_enable_blending(false);
+	gs_ortho(0.0f, (float)width, 0.0f, (float)height, -100.0f, 100.0f);
+
+	gs_effect_set_texture(gs_effect_get_param_by_name(effect, "image"), imported);
+	while (gs_effect_loop(effect, "Draw"))
+		gs_draw_sprite(imported, 0, width, height);
+
+	gs_blend_state_pop();
+	gs_enable_framebuffer_srgb(previous_srgb);
+	gs_texrender_end(frame->texrender);
+
+	return gs_texrender_get_texture(frame->texrender);
+}
+
 static void process_video_sync(obs_pipewire_stream *obs_pw_stream)
 {
 	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
@@ -735,9 +822,11 @@ static void process_video_sync(obs_pipewire_stream *obs_pw_stream)
 	struct spa_meta_region *region;
 	struct spa_meta_videotransform *video_transform;
 	struct obs_pw_video_format obs_pw_video_format;
+	struct obs_pw_frame *frame;
 	struct spa_buffer *buffer;
 	struct pw_buffer *b;
 	bool has_buffer = true;
+	bool release_point_exported = false;
 
 	b = find_latest_buffer(obs_pw_stream->stream);
 	if (!b) {
@@ -755,6 +844,11 @@ static void process_video_sync(obs_pipewire_stream *obs_pw_stream)
 
 	obs_enter_graphics();
 
+	/* The pacer holds at most OBS_PW_FRAME_PACER_MAX_FRAMES, so one is free */
+	frame = get_free_frame(obs_pw_stream);
+	if (!frame)
+		goto read_metadata;
+
 	// Workaround for kwin behaviour pre 5.27.5
 	// Workaround for mutter behaviour pre GNOME 43
 	// Only check this if !SPA_META_Header, once supported platforms update.
@@ -768,6 +862,7 @@ static void process_video_sync(obs_pipewire_stream *obs_pw_stream)
 		uint32_t *strides = alloca(sizeof(uint32_t) * planes);
 		uint64_t *modifiers = alloca(sizeof(uint64_t) * planes);
 		int *fds = alloca(sizeof(int) * planes);
+		gs_texture_t *imported;
 		bool use_modifiers;
 		bool corrupt = false;
 #if PW_CHECK_VERSION(1, 2, 0)
@@ -796,56 +891,62 @@ static void process_video_sync(obs_pipewire_stream *obs_pw_stream)
 			corrupt |= (buffer->datas[plane].chunk->flags & SPA_CHUNK_FLAG_CORRUPTED) > 0;
 		}
 
-#if PW_CHECK_VERSION(1, 2, 0)
-		if (obs_pw_stream->sync.release_syncobj_fd != -1) {
-			if (!obs_pw_stream->sync.release_point_will_signal) {
-				gs_sync_signal_syncobj_timeline_point(obs_pw_stream->sync.release_syncobj_fd,
-								      obs_pw_stream->sync.release_point);
-				obs_pw_stream->sync.release_point_will_signal = true;
-			}
-		}
-
-		g_clear_fd(&obs_pw_stream->sync.acquire_syncobj_fd, NULL);
-		g_clear_fd(&obs_pw_stream->sync.release_syncobj_fd, NULL);
-
-		if (synctimeline && (buffer->n_datas == (planes + 2))) {
-			assert(buffer->datas[planes].type == SPA_DATA_SyncObj);
-			assert(buffer->datas[planes + 1].type == SPA_DATA_SyncObj);
-
-			obs_pw_stream->sync.acquire_syncobj_fd = fcntl(buffer->datas[planes].fd, F_DUPFD_CLOEXEC, 5);
-			obs_pw_stream->sync.acquire_point = synctimeline->acquire_point;
-
-			obs_pw_stream->sync.release_syncobj_fd =
-				fcntl(buffer->datas[planes + 1].fd, F_DUPFD_CLOEXEC, 5);
-			obs_pw_stream->sync.release_point = synctimeline->release_point;
-			obs_pw_stream->sync.release_point_will_signal = false;
-
-			obs_pw_stream->sync.set = true;
-		} else {
-			obs_pw_stream->sync.set = false;
-		}
-#else
-		obs_pw_stream->sync.set = false;
-#endif
-
 		if (corrupt) {
 			blog(LOG_DEBUG, "[pipewire] buffer contains corrupted data");
 			goto read_metadata;
 		}
 
-		g_clear_pointer(&obs_pw_stream->texture, gs_texture_destroy);
-
 		use_modifiers = obs_pw_stream->format.info.raw.modifier != DRM_FORMAT_MOD_INVALID;
-		obs_pw_stream->texture = gs_texture_create_from_dmabuf(obs_pw_stream->format.info.raw.size.width,
-								       obs_pw_stream->format.info.raw.size.height,
-								       obs_pw_video_format.drm_format, GS_BGRX, planes,
-								       fds, strides, offsets,
-								       use_modifiers ? modifiers : NULL);
+		imported = gs_texture_create_from_dmabuf(obs_pw_stream->format.info.raw.size.width,
+							 obs_pw_stream->format.info.raw.size.height,
+							 obs_pw_video_format.drm_format, GS_BGRX, planes, fds, strides,
+							 offsets, use_modifiers ? modifiers : NULL);
 
-		if (obs_pw_stream->texture == NULL) {
+		if (imported == NULL) {
 			remove_modifier_from_format(obs_pw_stream, obs_pw_stream->format.info.raw.format,
 						    obs_pw_stream->format.info.raw.modifier);
 			pw_loop_signal_event(pw_thread_loop_get_loop(obs_pw->thread_loop), obs_pw_stream->reneg);
+			goto read_metadata;
+		}
+
+		if (obs_pw_video_format.swap_red_blue)
+			swap_texture_red_blue(imported);
+
+#if PW_CHECK_VERSION(1, 2, 0)
+		if (synctimeline && (buffer->n_datas == (planes + 2))) {
+			assert(buffer->datas[planes].type == SPA_DATA_SyncObj);
+			assert(buffer->datas[planes + 1].type == SPA_DATA_SyncObj);
+
+			/* Copy only once the compositor has finished drawing it */
+			gs_sync_t *acquire_sync = gs_sync_create_from_syncobj_timeline_point(
+				buffer->datas[planes].fd, synctimeline->acquire_point);
+			gs_sync_wait(acquire_sync);
+			gs_sync_destroy(acquire_sync);
+		} else {
+			synctimeline = NULL;
+		}
+#endif
+
+		frame->texture = copy_dmabuf_frame(
+			frame, imported, obs_pw_video_format.gs_format == GS_R10G10B10A2 ? GS_R10G10B10A2 : GS_BGRA);
+		frame->owns_texture = false;
+
+#if PW_CHECK_VERSION(1, 2, 0)
+		if (synctimeline) {
+			/* The compositor may reuse the buffer once the copy is done */
+			gs_sync_t *release_sync = gs_sync_create();
+			gs_sync_export_syncobj_timeline_point(release_sync, buffer->datas[planes + 1].fd,
+							      synctimeline->release_point);
+			gs_sync_destroy(release_sync);
+			release_point_exported = true;
+		}
+#endif
+		/* Submit the copy before the buffer goes back (implicit sync) */
+		gs_flush();
+		gs_texture_destroy(imported);
+
+		if (!frame->texture) {
+			blog(LOG_DEBUG, "[pipewire] Couldn't copy the DMA-BUF frame");
 			goto read_metadata;
 		}
 	} else {
@@ -868,15 +969,41 @@ static void process_video_sync(obs_pipewire_stream *obs_pw_stream)
 			goto read_metadata;
 		}
 
-		g_clear_pointer(&obs_pw_stream->texture, gs_texture_destroy);
-		obs_pw_stream->texture = gs_texture_create(obs_pw_stream->format.info.raw.size.width,
-							   obs_pw_stream->format.info.raw.size.height,
-							   obs_pw_video_format.gs_format, 1,
-							   (const uint8_t **)&buffer->datas[0].data, GS_DYNAMIC);
-	}
+		/* Where the frame is in the buffer and its row pitch, from the
+		 * producer's chunk, checked against the mapped buffer. */
+		struct obs_source_frame layout = {
+			.width = obs_pw_stream->format.info.raw.size.width,
+			.height = obs_pw_stream->format.info.raw.size.height,
+			.format = obs_pw_video_format.video_format,
+		};
 
-	if (obs_pw_video_format.swap_red_blue)
-		swap_texture_red_blue(obs_pw_stream->texture);
+		if (!obs_pw_frame_layout(&layout, buffer, &obs_pw_video_format)) {
+			if (!obs_pw_stream->bad_frame_layout_logged) {
+				blog(LOG_WARNING, "[pipewire] Dropping frames: a buffer does not hold a %ux%u %s frame",
+				     layout.width, layout.height, obs_pw_video_format.pretty_name);
+				obs_pw_stream->bad_frame_layout_logged = true;
+			}
+			goto read_metadata;
+		}
+
+		if (layout.linesize[0] == layout.width * obs_pw_video_format.bpp) {
+			frame->texture = gs_texture_create(layout.width, layout.height, obs_pw_video_format.gs_format,
+							   1, (const uint8_t **)(uintptr_t)&layout.data[0], GS_DYNAMIC);
+		} else {
+			/* Padded rows: copied one by one. */
+			frame->texture = gs_texture_create(layout.width, layout.height, obs_pw_video_format.gs_format,
+							   1, NULL, GS_DYNAMIC);
+			if (frame->texture)
+				gs_texture_set_image(frame->texture, layout.data[0], layout.linesize[0], false);
+		}
+		frame->owns_texture = true;
+
+		if (!frame->texture)
+			goto read_metadata;
+
+		if (obs_pw_video_format.swap_red_blue)
+			swap_texture_red_blue(frame->texture);
+	}
 
 	/* Video Crop */
 	region = spa_buffer_find_meta_data(buffer, SPA_META_VideoCrop, sizeof(*region));
@@ -886,21 +1013,24 @@ static void process_video_sync(obs_pipewire_stream *obs_pw_stream)
 		     region->region.position.y, region->region.size.width, region->region.size.height);
 #endif
 
-		obs_pw_stream->crop.x = region->region.position.x;
-		obs_pw_stream->crop.y = region->region.position.y;
-		obs_pw_stream->crop.width = region->region.size.width;
-		obs_pw_stream->crop.height = region->region.size.height;
-		obs_pw_stream->crop.valid = true;
+		frame->crop.x = region->region.position.x;
+		frame->crop.y = region->region.position.y;
+		frame->crop.width = region->region.size.width;
+		frame->crop.height = region->region.size.height;
+		frame->crop.valid = true;
 	} else {
-		obs_pw_stream->crop.valid = false;
+		frame->crop.valid = false;
 	}
 
 	/* Video Transform */
 	video_transform = spa_buffer_find_meta_data(buffer, SPA_META_VideoTransform, sizeof(*video_transform));
 	if (video_transform)
-		obs_pw_stream->transform = video_transform->transform;
+		frame->transform = video_transform->transform;
 	else
-		obs_pw_stream->transform = SPA_META_TRANSFORMATION_None;
+		frame->transform = SPA_META_TRANSFORMATION_None;
+
+	/* Drawn on a later video tick, see obs_pipewire_stream_video_render() */
+	queue_frame(obs_pw_stream, frame);
 
 read_metadata:
 
@@ -940,7 +1070,10 @@ read_metadata:
 		obs_pw_stream->cursor.y = cursor->position.y;
 	}
 
-	pw_stream_queue_buffer(obs_pw_stream->stream, b);
+	if (release_point_exported)
+		pw_stream_queue_buffer(obs_pw_stream->stream, b);
+	else
+		return_unused_pw_buffer(obs_pw_stream->stream, b);
 
 	obs_leave_graphics();
 }
@@ -1092,7 +1225,8 @@ static void on_state_changed_cb(void *user_data, enum pw_stream_state old, enum 
 	blog(LOG_INFO, "[pipewire] Stream %p state: \"%s\" (error: %s)", obs_pw_stream->stream,
 	     pw_stream_state_as_string(state), error ? error : "none");
 
-	if (obs_pipewire_stream_state_is_lost(&obs_pw->disconnected, &obs_pw_stream->streamed, state) &&
+	if (obs_pipewire_stream_state_is_lost(&obs_pw->disconnected, &obs_pw_stream->streamed, obs_pw->reconnecting,
+					      state) &&
 	    obs_pw->disconnected_cb)
 		obs_pw->disconnected_cb(obs_pw->disconnected_data);
 }
@@ -1156,8 +1290,7 @@ static const struct pw_core_events core_events = {
 
 /* obs_source_info methods */
 
-obs_pipewire *obs_pipewire_connect_fd(int pipewire_fd, const struct pw_registry_events *registry_events,
-				      void *user_data)
+obs_pipewire *obs_pipewire_connect_fd(int pipewire_fd)
 {
 	obs_pipewire *obs_pw;
 
@@ -1165,12 +1298,24 @@ obs_pipewire *obs_pipewire_connect_fd(int pipewire_fd, const struct pw_registry_
 	obs_pw->pipewire_fd = pipewire_fd;
 	obs_pw->watched_node = PW_ID_ANY;
 	obs_pw->thread_loop = pw_thread_loop_new("PipeWire thread loop", NULL);
+	if (!obs_pw->thread_loop) {
+		blog(LOG_WARNING, "[pipewire] Error creating PipeWire thread loop: %m");
+		goto fail;
+	}
+
+	/* Fails when PipeWire cannot load its client configuration
+	 * (client.conf), for example when PIPEWIRE_CONFIG_DIR points at a
+	 * directory without it. */
 	obs_pw->context = pw_context_new(pw_thread_loop_get_loop(obs_pw->thread_loop), NULL, 0);
+	if (!obs_pw->context) {
+		blog(LOG_WARNING,
+		     "[pipewire] Error creating PipeWire context: %m (is the PipeWire client configuration missing?)");
+		goto fail;
+	}
 
 	if (pw_thread_loop_start(obs_pw->thread_loop) < 0) {
-		blog(LOG_WARNING, "Error starting threaded mainloop");
-		bfree(obs_pw);
-		return NULL;
+		blog(LOG_WARNING, "[pipewire] Error starting threaded mainloop");
+		goto fail;
 	}
 
 	pw_thread_loop_lock(obs_pw->thread_loop);
@@ -1178,10 +1323,9 @@ obs_pipewire *obs_pipewire_connect_fd(int pipewire_fd, const struct pw_registry_
 	/* Core */
 	obs_pw->core = pw_context_connect_fd(obs_pw->context, fcntl(obs_pw->pipewire_fd, F_DUPFD_CLOEXEC, 5), NULL, 0);
 	if (!obs_pw->core) {
-		blog(LOG_WARNING, "Error creating PipeWire core: %m");
+		blog(LOG_WARNING, "[pipewire] Error creating PipeWire core: %m");
 		pw_thread_loop_unlock(obs_pw->thread_loop);
-		bfree(obs_pw);
-		return NULL;
+		goto fail;
 	}
 
 	pw_core_add_listener(obs_pw->core, &obs_pw->core_listener, &core_events, obs_pw);
@@ -1190,18 +1334,32 @@ obs_pipewire *obs_pipewire_connect_fd(int pipewire_fd, const struct pw_registry_
 	obs_pw->sync_id = pw_core_sync(obs_pw->core, PW_ID_CORE, obs_pw->sync_id);
 	pw_thread_loop_wait(obs_pw->thread_loop);
 
-	/* Registry */
-	if (registry_events) {
-		obs_pw->registry = pw_core_get_registry(obs_pw->core, PW_VERSION_REGISTRY, 0);
-		pw_registry_add_listener(obs_pw->registry, &obs_pw->registry_listener, registry_events, user_data);
-		blog(LOG_INFO, "[pipewire] Created registry %p", obs_pw->registry);
-	}
-
 	pw_thread_loop_unlock(obs_pw->thread_loop);
 
 	obs_pw->streams = g_ptr_array_new();
 
 	return obs_pw;
+
+fail:
+	/* Stopping a loop that never started is a no-op. */
+	if (obs_pw->thread_loop)
+		pw_thread_loop_stop(obs_pw->thread_loop);
+	g_clear_pointer(&obs_pw->context, pw_context_destroy);
+	g_clear_pointer(&obs_pw->thread_loop, pw_thread_loop_destroy);
+	/* The fd is ours from here on; callers do not close it on failure. */
+	close(pipewire_fd);
+	bfree(obs_pw);
+	return NULL;
+}
+
+void obs_pipewire_add_registry_listener(obs_pipewire *obs_pw, const struct pw_registry_events *registry_events,
+					void *user_data)
+{
+	pw_thread_loop_lock(obs_pw->thread_loop);
+	obs_pw->registry = pw_core_get_registry(obs_pw->core, PW_VERSION_REGISTRY, 0);
+	pw_registry_add_listener(obs_pw->registry, &obs_pw->registry_listener, registry_events, user_data);
+	blog(LOG_INFO, "[pipewire] Created registry %p", obs_pw->registry);
+	pw_thread_loop_unlock(obs_pw->thread_loop);
 }
 
 void obs_pipewire_set_disconnected_callback(obs_pipewire *obs_pw, obs_pipewire_disconnected_cb callback,
@@ -1236,6 +1394,13 @@ bool obs_pipewire_is_disconnected(obs_pipewire *obs_pw)
 	return disconnected;
 }
 
+void obs_pipewire_set_reconnecting(obs_pipewire *obs_pw, bool reconnecting)
+{
+	pw_thread_loop_lock(obs_pw->thread_loop);
+	obs_pw->reconnecting = reconnecting;
+	pw_thread_loop_unlock(obs_pw->thread_loop);
+}
+
 struct pw_registry *obs_pipewire_get_registry(obs_pipewire *obs_pw)
 {
 	return obs_pw->registry;
@@ -1249,6 +1414,18 @@ void obs_pipewire_roundtrip(obs_pipewire *obs_pw)
 	pw_thread_loop_wait(obs_pw->thread_loop);
 
 	pw_thread_loop_unlock(obs_pw->thread_loop);
+}
+
+void obs_pipewire_lock(obs_pipewire *obs_pw)
+{
+	if (obs_pw->thread_loop)
+		pw_thread_loop_lock(obs_pw->thread_loop);
+}
+
+void obs_pipewire_unlock(obs_pipewire *obs_pw)
+{
+	if (obs_pw->thread_loop)
+		pw_thread_loop_unlock(obs_pw->thread_loop);
 }
 
 void obs_pipewire_destroy(obs_pipewire *obs_pw)
@@ -1282,8 +1459,7 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 	obs_pw_stream->cursor.visible = connect_info->screencast.cursor_visible;
 	obs_pw_stream->framerate.set = connect_info->video.framerate != NULL;
 	obs_pw_stream->resolution.set = connect_info->video.resolution != NULL;
-	obs_pw_stream->sync.acquire_syncobj_fd = -1;
-	obs_pw_stream->sync.release_syncobj_fd = -1;
+	obs_pw_frame_pacer_init(&obs_pw_stream->pacer);
 
 	if (obs_pw_stream->framerate.set)
 		obs_pw_stream->framerate.fraction = *connect_info->video.framerate;
@@ -1332,7 +1508,22 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 
 bool obs_pipewire_stream_has_frame(obs_pipewire_stream *obs_pw_stream)
 {
-	return obs_pw_stream && obs_pw_stream->texture;
+	return obs_pw_stream && (obs_pw_stream->texture || obs_pw_stream->pacer.queued > 0);
+}
+
+bool obs_pipewire_stream_has_streamed(obs_pipewire_stream *obs_pw_stream)
+{
+	bool streamed;
+
+	if (!obs_pw_stream)
+		return false;
+
+	/* Set on the PipeWire thread, under the thread loop lock. */
+	pw_thread_loop_lock(obs_pw_stream->obs_pw->thread_loop);
+	streamed = obs_pw_stream->streamed;
+	pw_thread_loop_unlock(obs_pw_stream->obs_pw->thread_loop);
+
+	return streamed;
 }
 
 void obs_pipewire_stream_show(obs_pipewire_stream *obs_pw_stream)
@@ -1403,6 +1594,29 @@ uint32_t obs_pipewire_stream_get_height(obs_pipewire_stream *obs_pw_stream)
 	}
 }
 
+/* Moves on to the next captured frame, once per video tick however often
+ * the source is drawn (preview, projectors, ...). */
+static void advance_frame(obs_pipewire_stream *obs_pw_stream)
+{
+	uint64_t video_time = obs_get_video_frame_time();
+	struct obs_pw_frame *frame;
+	uint64_t released;
+	uint64_t shown;
+
+	if (video_time == obs_pw_stream->paced_video_time)
+		return;
+	obs_pw_stream->paced_video_time = video_time;
+
+	shown = obs_pw_frame_pacer_tick(&obs_pw_stream->pacer, &released);
+	if (shown != OBS_PW_FRAME_NONE) {
+		frame = &obs_pw_stream->frames[shown];
+		obs_pw_stream->texture = frame->texture;
+		obs_pw_stream->crop = frame->crop;
+		obs_pw_stream->transform = frame->transform;
+	}
+	release_frame(obs_pw_stream, released);
+}
+
 void obs_pipewire_stream_video_render(obs_pipewire_stream *obs_pw_stream, gs_effect_t *effect)
 {
 	bool rotated;
@@ -1410,15 +1624,10 @@ void obs_pipewire_stream_video_render(obs_pipewire_stream *obs_pw_stream, gs_eff
 
 	gs_eparam_t *image;
 
+	advance_frame(obs_pw_stream);
+
 	if (!obs_pw_stream->texture)
 		return;
-
-	if (obs_pw_stream->sync.set) {
-		gs_sync_t *acquire_sync = gs_sync_create_from_syncobj_timeline_point(
-			obs_pw_stream->sync.acquire_syncobj_fd, obs_pw_stream->sync.acquire_point);
-		gs_sync_wait(acquire_sync);
-		gs_sync_destroy(acquire_sync);
-	}
 
 	/* FIXME: Use obs_pw_stream->format.info.raw colorimetry info to handle
 	 * textures in their corresponding color space */
@@ -1470,14 +1679,6 @@ void obs_pipewire_stream_video_render(obs_pipewire_stream *obs_pw_stream, gs_eff
 	}
 
 	gs_blend_state_pop();
-
-	if (obs_pw_stream->sync.set) {
-		gs_sync_t *release_sync = gs_sync_create();
-		gs_sync_export_syncobj_timeline_point(release_sync, obs_pw_stream->sync.release_syncobj_fd,
-						      obs_pw_stream->sync.release_point);
-		gs_sync_destroy(release_sync);
-		obs_pw_stream->sync.release_point_will_signal = true;
-	}
 }
 
 void obs_pipewire_stream_set_cursor_visible(obs_pipewire_stream *obs_pw_stream, bool cursor_visible)
@@ -1500,7 +1701,6 @@ void obs_pipewire_stream_destroy(obs_pipewire_stream *obs_pw_stream)
 
 	obs_enter_graphics();
 	g_clear_pointer(&obs_pw_stream->cursor.texture, gs_texture_destroy);
-	g_clear_pointer(&obs_pw_stream->texture, gs_texture_destroy);
 	obs_leave_graphics();
 
 	pw_thread_loop_lock(obs_pw_stream->obs_pw->thread_loop);
@@ -1509,8 +1709,17 @@ void obs_pipewire_stream_destroy(obs_pipewire_stream *obs_pw_stream)
 	g_clear_pointer(&obs_pw_stream->stream, pw_stream_destroy);
 	pw_thread_loop_unlock(obs_pw_stream->obs_pw->thread_loop);
 
-	g_clear_fd(&obs_pw_stream->sync.acquire_syncobj_fd, NULL);
-	g_clear_fd(&obs_pw_stream->sync.release_syncobj_fd, NULL);
+	/* No frame arrives any more */
+	uint64_t released[OBS_PW_FRAME_PACER_MAX_FRAMES + 1];
+	size_t count = obs_pw_frame_pacer_flush(&obs_pw_stream->pacer, released);
+
+	obs_enter_graphics();
+	for (size_t i = 0; i < count; i++)
+		release_frame(obs_pw_stream, released[i]);
+	for (size_t i = 0; i < OBS_PW_FRAME_SLOTS; i++)
+		g_clear_pointer(&obs_pw_stream->frames[i].texrender, gs_texrender_destroy);
+	obs_pw_stream->texture = NULL;
+	obs_leave_graphics();
 
 	clear_format_info(obs_pw_stream);
 	bfree(obs_pw_stream);

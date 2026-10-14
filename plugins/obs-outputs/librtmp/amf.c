@@ -635,7 +635,7 @@ AMF3Prop_DecodeDepth(AMFObjectProperty *prop, const char *pBuffer, int nSize,
     case AMF3_OBJECT:
     {
         int nRes = AMF3_DecodeDepth(&prop->p_vu.p_object, pBuffer, nSize,
-                                    TRUE, depth + 1);
+                                    FALSE, depth + 1);
         if (nRes == -1)
             return -1;
         nSize -= nRes;
@@ -1146,7 +1146,8 @@ AMF3_DecodeDepth(AMFObject *obj, const char *pBuffer, int nSize, int bAMFData,
         /* object reference, 0xxx */
         uint32_t objectIndex = (ref >> 1);
 
-        RTMP_Log(RTMP_LOGDEBUG, "Object reference, index: %d", objectIndex);
+        RTMP_Log(RTMP_LOGDEBUG, "Object reference, index: %d, not supported!", objectIndex);
+        return -1;
     }
     else				/* object instance */
     {

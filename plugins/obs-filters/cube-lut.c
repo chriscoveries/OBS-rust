@@ -116,8 +116,9 @@ void *load_cube_file(const char *const path, uint32_t *const width, struct vec3 
 
 		if (domain_min->x >= domain_max->x || domain_min->y >= domain_max->y ||
 		    domain_min->z >= domain_max->z) {
-			blog(LOG_WARNING, "Invalid CUBE LUT domain: [%f, %f], [%f, %f], [%f, %f]", domain_min->x,
-			     domain_max->x, domain_min->y, domain_max->y, domain_min->z, domain_max->z);
+			blog(LOG_WARNING, "Invalid CUBE LUT domain: [%f, %f], [%f, %f], [%f, %f]",
+			     (double)domain_min->x, (double)domain_max->x, (double)domain_min->y, (double)domain_max->y,
+			     (double)domain_min->z, (double)domain_max->z);
 		} else if (width_1d > LUT_1D_SIZE_MAX || width_3d > LUT_3D_SIZE_MAX) {
 			blog(LOG_WARNING, "CUBE LUT too large: LUT_1D_SIZE %u, LUT_3D_SIZE %u", width_1d, width_3d);
 		} else if (data_found) {

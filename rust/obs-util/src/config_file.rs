@@ -20,9 +20,13 @@
 //! - `set_double` uses `%.17g` and appends `.0` when no `.` or `e` appears;
 //!   `set_default_double` uses `%g` (6 significant digits).
 
+mod uthash_model;
+
 use std::ffi::CString;
 use std::io::Write;
 use std::sync::{Mutex, MutexGuard};
+
+use uthash_model::{Keyed, UtList};
 
 /// `CONFIG_SUCCESS` from `util/config-file.h`.
 pub const CONFIG_SUCCESS: i32 = 0;
@@ -56,14 +60,26 @@ struct Item {
 #[derive(Debug)]
 struct Section {
     name: CString,
-    items: Vec<Item>,
+    items: UtList<Item>,
+}
+
+impl Keyed for Item {
+    fn key(&self) -> &[u8] {
+        self.name.as_bytes()
+    }
+}
+
+impl Keyed for Section {
+    fn key(&self) -> &[u8] {
+        self.name.as_bytes()
+    }
 }
 
 #[derive(Debug, Default)]
 struct Inner {
     file: Option<Vec<u8>>,
-    sections: Vec<Section>,
-    defaults: Vec<Section>,
+    sections: UtList<Section>,
+    defaults: UtList<Section>,
 }
 
 /// `config_t` (`struct config_data`).
@@ -87,37 +103,23 @@ fn ckey(bytes: &[u8]) -> &[u8] {
     &bytes[..end]
 }
 
-/// `HASH_FIND_STR` on uthash returns the most recently added entry when a
-/// key was added twice (`HASH_ADD_STR` prepends within a bucket).
-fn find_item<'a>(sections: &'a [Section], section: &[u8], name: &[u8]) -> Option<&'a Item> {
-    let sec = sections
-        .iter()
-        .rev()
-        .find(|s| s.name.as_bytes() == section)?;
-    sec.items.iter().rev().find(|i| i.name.as_bytes() == name)
+/// `HASH_FIND_STR` on the section table, then on that section's item table.
+/// Which duplicate each lookup returns follows uthash (see `uthash_model`).
+fn find_item<'a>(sections: &'a UtList<Section>, section: &[u8], name: &[u8]) -> Option<&'a Item> {
+    sections.find(section)?.items.find(name)
 }
 
-fn set_item(sections: &mut Vec<Section>, section: &[u8], name: &[u8], value: Vec<u8>) {
-    let sec = match sections
-        .iter_mut()
-        .rev()
-        .find(|s| s.name.as_bytes() == section)
-    {
-        Some(sec) => sec,
-        None => {
-            sections.push(Section {
-                name: to_cstring(section),
-                items: Vec::new(),
-            });
-            sections.last_mut().expect("just pushed")
-        }
-    };
-    match sec
-        .items
-        .iter_mut()
-        .rev()
-        .find(|i| i.name.as_bytes() == name)
-    {
+fn set_item(sections: &mut UtList<Section>, section: &[u8], name: &[u8], value: Vec<u8>) {
+    if sections.find(section).is_none() {
+        sections.push(Section {
+            name: to_cstring(section),
+            items: UtList::default(),
+        });
+    }
+    let sec = sections
+        .find_mut(section)
+        .expect("section exists after the add");
+    match sec.items.find_mut(name) {
         Some(item) => item.value = to_cstring(&value),
         None => sec.items.push(Item {
             name: to_cstring(name),
@@ -126,7 +128,7 @@ fn set_item(sections: &mut Vec<Section>, section: &[u8], name: &[u8], value: Vec
     }
 }
 
-/* --------------------------------------------------------------------- */
+/* ---------------------------------------------------------------- */
 /* basetoken lexer (util/lexer.c `lexer_getbasetoken`, PARSE_WHITESPACE)   */
 
 fn is_ws(c: u8) -> bool {
@@ -235,7 +237,7 @@ fn escape(v: &[u8]) -> Vec<u8> {
 }
 
 /// `config_parse_section`: items of one section until `[` or EOF.
-fn parse_section(buf: &[u8], pos: &mut usize, items: &mut Vec<Item>) {
+fn parse_section(buf: &[u8], pos: &mut usize, items: &mut UtList<Item>) {
     while let Some(tok) = next_token(buf, pos) {
         if tok.kind == Tok::Ws {
             continue;
@@ -293,7 +295,7 @@ fn parse_section(buf: &[u8], pos: &mut usize, items: &mut Vec<Item>) {
 
 /// `parse_config_data`. The C lexer walks a `char *`, so parsing stops at
 /// the first NUL byte.
-fn parse_config_data(buf: &[u8], sections: &mut Vec<Section>) {
+fn parse_config_data(buf: &[u8], sections: &mut UtList<Section>) {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     let buf = &buf[..end];
     let mut pos = 0;
@@ -324,12 +326,13 @@ fn parse_config_data(buf: &[u8], sections: &mut Vec<Section>) {
         if name.is_empty() {
             return;
         }
+        // C parses the items first and adds the section afterwards.
+        let mut items = UtList::default();
+        parse_section(buf, &mut pos, &mut items);
         sections.push(Section {
             name: to_cstring(&name),
-            items: Vec::new(),
+            items,
         });
-        let sec = sections.last_mut().expect("just pushed");
-        parse_section(buf, &mut pos, &mut sec.items);
     }
 }
 
@@ -562,6 +565,19 @@ fn parse_double(b: &[u8]) -> f64 {
         .map_or(0.0, |v| if neg { -v } else { v })
 }
 
+/// Size of the local buffer in C's `os_strtod` (`libobs/util/platform.c`,
+/// `char buf[64]`). It copies at most `sizeof(buf) - 1` bytes of the string.
+const OS_STRTOD_BUF: usize = 64;
+
+/// `os_strtod`: C copies at most `OS_STRTOD_BUF - 1` (63) bytes into its
+/// buffer before calling `strtod`, so everything past byte 63 is ignored.
+/// The cut comes first, on the whole stored string: leading whitespace and
+/// the sign count against the window, and it applies to hex floats as well
+/// as decimals, so it must stay ahead of `parse_double`'s own dispatch.
+fn os_strtod(b: &[u8]) -> f64 {
+    parse_double(&b[..b.len().min(OS_STRTOD_BUF - 1)])
+}
+
 /// Value of a `0x` hex float body (digits past `0x`): hex digits with an
 /// optional `.` and an optional `p`/`P` signed binary exponent.
 fn parse_hex_float(b: &[u8]) -> f64 {
@@ -775,7 +791,7 @@ fn read_file(path: &std::path::Path) -> Option<Vec<u8>> {
 
 /// `config_parse_file` for one table: reads `file` (creating it on
 /// `always_open`), strips the BOM, parses.
-fn parse_file_into(sections: &mut Vec<Section>, file: &[u8], always_open: bool) -> i32 {
+fn parse_file_into(sections: &mut UtList<Section>, file: &[u8], always_open: bool) -> i32 {
     let path = path_from_bytes(file);
     let data = match read_file(&path) {
         Some(data) => Some(data),
@@ -801,20 +817,20 @@ impl Config {
 
     /// `config_open_string`. `file` is NULL; `config_save` will fail.
     pub fn open_string(text: &[u8]) -> Self {
-        let mut sections = Vec::new();
+        let mut sections = UtList::default();
         parse_config_data(text, &mut sections);
         Self {
             inner: Mutex::new(Inner {
                 file: None,
                 sections,
-                defaults: Vec::new(),
+                defaults: UtList::default(),
             }),
         }
     }
 
     /// `config_open`. The stored file name is kept verbatim.
     pub fn open(file: &[u8], open_type: OpenType) -> Result<Self, i32> {
-        let mut sections = Vec::new();
+        let mut sections = UtList::default();
         let code = parse_file_into(&mut sections, file, open_type == OpenType::Always);
         if code != CONFIG_SUCCESS {
             return Err(code);
@@ -823,7 +839,7 @@ impl Config {
             inner: Mutex::new(Inner {
                 file: Some(file.to_vec()),
                 sections,
-                defaults: Vec::new(),
+                defaults: UtList::default(),
             }),
         })
     }
@@ -834,8 +850,8 @@ impl Config {
         Some(Self {
             inner: Mutex::new(Inner {
                 file: Some(file.to_vec()),
-                sections: Vec::new(),
-                defaults: Vec::new(),
+                sections: UtList::default(),
+                defaults: UtList::default(),
             }),
         })
     }
@@ -871,7 +887,7 @@ impl Config {
             out.push(b'[');
             out.extend_from_slice(sec.name.as_bytes());
             out.extend_from_slice(b"]\n");
-            for item in &sec.items {
+            for item in sec.items.iter() {
                 out.extend_from_slice(item.name.as_bytes());
                 out.push(b'=');
                 out.extend_from_slice(&escape(item.value.as_bytes()));
@@ -881,7 +897,10 @@ impl Config {
         if f.write_all(&out).is_err() || f.flush().is_err() {
             return CONFIG_ERROR;
         }
-        drop(f);
+        // `fclose` result: a failed close must not look like success.
+        if crate::platform::close_file(f).is_err() {
+            return CONFIG_ERROR;
+        }
         CONFIG_SUCCESS
     }
 
@@ -900,6 +919,9 @@ impl Config {
         let temp = with_ext(&file, temp_ext);
         let ret = self.write_to(&temp, &inner);
         if ret != CONFIG_SUCCESS {
+            // Log callbacks may re-enter the config API.
+            drop(inner);
+            crate::ffi::config_file::log_save_error(&temp);
             return ret;
         }
         let backup = backup_ext
@@ -974,7 +996,7 @@ impl Config {
     /// `config_get_double` (`os_strtod` semantics).
     pub fn get_double(&self, section: &[u8], name: &[u8]) -> f64 {
         self.get_string(section, name)
-            .map_or(0.0, |v| parse_double(&v))
+            .map_or(0.0, |v| os_strtod(&v))
     }
 
     /// `config_set_string`; a None value is stored as "" like C.
@@ -1008,21 +1030,10 @@ impl Config {
     pub fn remove_value(&self, section: &[u8], name: &[u8]) -> bool {
         let (section, name) = (ckey(section), ckey(name));
         let mut inner = self.lock();
-        let Some(sec) = inner
-            .sections
-            .iter_mut()
-            .rev()
-            .find(|s| s.name.as_bytes() == section)
-        else {
+        let Some(sec) = inner.sections.find_mut(section) else {
             return false;
         };
-        match sec.items.iter().rposition(|i| i.name.as_bytes() == name) {
-            Some(idx) => {
-                sec.items.remove(idx);
-                true
-            }
-            None => false,
-        }
+        sec.items.remove(name)
     }
 
     fn set_default(&self, section: &[u8], name: &[u8], value: Vec<u8>) {
@@ -1095,7 +1106,7 @@ impl Config {
     /// `config_get_default_double`.
     pub fn get_default_double(&self, section: &[u8], name: &[u8]) -> f64 {
         self.get_default_string(section, name)
-            .map_or(0.0, |v| parse_double(&v))
+            .map_or(0.0, |v| os_strtod(&v))
     }
 
     /// `config_has_user_value`.

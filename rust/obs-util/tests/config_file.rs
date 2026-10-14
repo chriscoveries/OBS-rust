@@ -962,3 +962,83 @@ fn config_save_empty_succeeds() {
     assert_eq!(c.save(), CONFIG_SUCCESS);
     assert_eq!(c.save_safe(Some(b"tmp"), None), CONFIG_SUCCESS);
 }
+
+/// Text with `n` `[s]` headers; `k=v` only in the last one.
+fn ten_style_sections(n: usize) -> Vec<u8> {
+    let mut t = String::new();
+    for i in 0..n {
+        t.push_str("[s]\n");
+        if i == n - 1 {
+            t.push_str("k=v\n");
+        } else {
+            t.push_str(&format!("x=v{i}\n"));
+        }
+    }
+    t.into_bytes()
+}
+
+/// One `[s]` header with `n` lines `k=v0`, `k=v1`, ...
+fn repeated_keys(n: usize) -> Vec<u8> {
+    let mut t = String::from("[s]\n");
+    for i in 0..n {
+        t.push_str(&format!("k=v{i}\n"));
+    }
+    t.into_bytes()
+}
+
+/// obs-rust/obs-studio#681: uthash expands its bucket array when one bucket
+/// holds ten entries and relinks the chains, reversing same-key order. With
+/// ten `[s]` headers C finds an older duplicate section, the one without
+/// `k`, so `config_get_string` returns NULL; with 2, 9, 11, 12 or 20 it finds
+/// the newest. Expected values were measured on the C oracle.
+#[test]
+fn duplicate_sections_follow_uthash_expansion() {
+    for (n, want) in [
+        (2, Some(&b"v"[..])),
+        (9, Some(b"v")),
+        (10, None),
+        (11, Some(b"v")),
+        (12, Some(b"v")),
+        (20, Some(b"v")),
+    ] {
+        let c = Config::open_string(&ten_style_sections(n));
+        assert_eq!(c.get_string(b"s", b"k").as_deref(), want, "{n} sections");
+        assert_eq!(c.has_user_value(b"s", b"k"), want.is_some(), "{n} sections");
+    }
+}
+
+/// #681: the same for one key repeated within a section. Ten lines make C
+/// return the oldest (`v0`); 2, 9, 11, 12, 19, 20, 21 and 40 return the newest.
+#[test]
+fn duplicate_keys_follow_uthash_expansion() {
+    for (n, want) in [
+        (2, "v1"),
+        (9, "v8"),
+        (10, "v0"),
+        (11, "v10"),
+        (12, "v11"),
+        (19, "v18"),
+        (20, "v19"),
+        (21, "v20"),
+        (40, "v39"),
+    ] {
+        let c = Config::open_string(&repeated_keys(n));
+        assert_eq!(
+            c.get_string(b"s", b"k").as_deref(),
+            Some(want.as_bytes()),
+            "{n} keys"
+        );
+    }
+}
+
+/// #681: `config_set_string` and `config_remove_value` act on the duplicate
+/// that the lookup finds, not on the newest.
+#[test]
+fn duplicate_keys_set_and_remove_touch_the_found_entry() {
+    let c = Config::open_string(&repeated_keys(10));
+    c.set_string(b"s", b"k", b"new");
+    assert_eq!(c.get_string(b"s", b"k").as_deref(), Some(&b"new"[..]));
+    assert!(c.remove_value(b"s", b"k"));
+    // The oldest entry (v0) was replaced and removed; C then finds v1.
+    assert_eq!(c.get_string(b"s", b"k").as_deref(), Some(&b"v1"[..]));
+}

@@ -22,6 +22,7 @@
 #include "obs-nix-x11.h"
 
 #include "util/config-file.h"
+#include "obs-nix-os-release.h"
 
 #ifdef ENABLE_WAYLAND
 #include "obs-nix-wayland.h"
@@ -246,8 +247,6 @@ static void log_kernel_version(void)
 static void log_distribution_info(void)
 {
 	FILE *fp;
-	char *line = NULL;
-	size_t linecap = 0;
 	struct dstr distro;
 	struct dstr version;
 
@@ -257,33 +256,13 @@ static void log_distribution_info(void)
 		return;
 	}
 
-	dstr_init_copy(&distro, "Unknown");
-	dstr_init_copy(&version, "Unknown");
-
-	while (getline(&line, &linecap, fp) != -1) {
-		if (!strncmp(line, "NAME", 4)) {
-			char *start = strchr(line, '=');
-			if (!start || *(++start) == '\0')
-				continue;
-			dstr_copy(&distro, start);
-			dstr_resize(&distro, distro.len - 1);
-		}
-
-		if (!strncmp(line, "VERSION_ID", 10)) {
-			char *start = strchr(line, '=');
-			if (!start || *(++start) == '\0')
-				continue;
-			dstr_copy(&version, start);
-			dstr_resize(&version, version.len - 1);
-		}
-	}
+	read_distribution_info(fp, &distro, &version);
 
 	blog(LOG_INFO, "Distribution: %s %s", distro.array, version.array);
 
 	fclose(fp);
 	dstr_free(&version);
 	dstr_free(&distro);
-	free(line);
 }
 
 static void log_flatpak_extensions(const char *extensions)

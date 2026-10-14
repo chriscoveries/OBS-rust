@@ -80,6 +80,11 @@ static int mp_open_codec(struct mp_decode *d, bool hw)
 	if (ret < 0)
 		goto fail;
 
+	/* Without it the decoder cannot move the time stamp of a frame it
+	 * trims (the decoder delay at the start of an .mp3), so that frame
+	 * keeps the time stamp of the untrimmed one. */
+	c->pkt_timebase = d->stream->time_base;
+
 	d->hw = false;
 
 	if (hw)

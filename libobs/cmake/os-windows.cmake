@@ -47,7 +47,7 @@ target_sources(
     obs-win-crash-handler.c
     obs-windows.c
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/pipe-windows.c>
-    util/platform-windows.c
+    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/platform-windows.c>
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/threading-windows.c>
     util/threading-windows.h
     util/windows/CoTaskMemPtr.hpp

@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Plugins that load a default locale ship it, under their own name (#157).
 
-    python3 -m unittest ci/test_plugin_locale.py
+    uv run python -m unittest ci/test_plugin_locale.py
 
 A plugin calling OBS_MODULE_USE_DEFAULT_LOCALE("<name>", "en-US") must pass
 its own module name and have data/locale/en-US.ini defining every key it

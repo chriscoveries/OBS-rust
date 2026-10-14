@@ -2,6 +2,8 @@
 
 include_guard(GLOBAL)
 
+include(x86-build-serial)
+
 include(helpers_common)
 
 # set_target_properties_obs: Set target properties for use in obs-studio

@@ -6,6 +6,24 @@
 
 #include <stddef.h>
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_vec3_size(void);
+size_t oracle_vec3_align(void);
+size_t oracle_vec4_size(void);
+size_t oracle_vec4_align(void);
+size_t oracle_vec4_offset_x(void);
+size_t oracle_vec4_offset_y(void);
+size_t oracle_vec4_offset_z(void);
+size_t oracle_vec4_offset_w(void);
+size_t oracle_vec4_offset_ptr(void);
+size_t oracle_vec4_offset_m(void);
+size_t oracle_matrix4_size(void);
+size_t oracle_matrix4_align(void);
+size_t oracle_matrix4_offset_x(void);
+size_t oracle_matrix4_offset_y(void);
+size_t oracle_matrix4_offset_z(void);
+size_t oracle_matrix4_offset_t(void);
+
 /* Layout of struct vec3, struct vec4 and struct matrix4. */
 size_t oracle_vec3_size(void)
 {

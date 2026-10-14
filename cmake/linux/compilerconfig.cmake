@@ -26,7 +26,6 @@ set(
   -Wno-implicit-fallthrough
   -Wno-missing-braces
   -Wno-missing-field-initializers
-  -Wno-shadow
   -Wno-sign-conversion
   -Wno-trigraphs
   -Wno-unknown-pragmas
@@ -45,9 +44,9 @@ set(
 add_compile_options(
   -fopenmp-simd
   "$<$<COMPILE_LANG_AND_ID:C,GNU>:${_obs_gcc_c_options}>"
-  "$<$<COMPILE_LANG_AND_ID:C,GNU>:-Wint-conversion;-Wno-missing-prototypes;-Wno-strict-prototypes;-Wpointer-sign>"
+  "$<$<COMPILE_LANG_AND_ID:C,GNU>:-Wint-conversion;-Wundef;-Wdouble-promotion;-Wcast-qual;-Wformat=2;-Wshadow;-Wno-missing-prototypes;-Wno-strict-prototypes;-Wpointer-sign>"
   "$<$<COMPILE_LANG_AND_ID:CXX,GNU>:${_obs_gcc_c_options}>"
-  "$<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Winvalid-offsetof;-Wno-overloaded-virtual>"
+  "$<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wno-shadow;-Winvalid-offsetof;-Wno-overloaded-virtual>"
   "$<$<COMPILE_LANG_AND_ID:C,Clang>:${_obs_clang_c_options}>"
   "$<$<COMPILE_LANG_AND_ID:CXX,Clang>:${_obs_clang_cxx_options}>"
 )

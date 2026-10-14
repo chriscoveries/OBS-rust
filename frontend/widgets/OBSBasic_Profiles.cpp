@@ -15,11 +15,15 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ******************************************************************************/
 
+#include <utility/AppIdentity.hpp>
 #include "OBSBasic.hpp"
 
 #ifdef YOUTUBE_ENABLED
 #include <docks/YouTubeAppDock.hpp>
 #endif
+#include <utility/menu-text.h>
+#include <utility/profile-activate.h>
+#include <utility/profile-remove.h>
 #include <wizards/AutoConfig.hpp>
 
 #include <qt-wrappers.hpp>
@@ -32,7 +36,7 @@
 
 // MARK: Constant Expressions
 
-constexpr std::string_view OBSProfilePath = "/obs-studio/basic/profiles/";
+constexpr std::string_view OBSProfilePath = "/" OBS_CONFIG_DIRECTORY "/basic/profiles/";
 constexpr std::string_view OBSProfileSettingsFile = "basic.ini";
 
 // MARK: Forward Declarations
@@ -195,6 +199,75 @@ void OBSBasic::RemoveProfile(OBSProfile profile)
 	blog(LOG_INFO, "------------------------------------------------");
 }
 
+void OBSBasic::InitProfileRemoveOps(struct profile_remove_ops &ops, ProfileRemoval &removal)
+{
+	ops.param = &removal;
+
+	ops.confirm = [](void *param) {
+		ProfileRemoval *removal = static_cast<ProfileRemoval *>(param);
+
+		const QString confirmationText =
+			QTStr("ConfirmRemove.Text").arg(QString::fromStdString(removal->profile.name));
+
+		const QMessageBox::StandardButton button =
+			OBSMessageBox::question(removal->main, QTStr("ConfirmRemove.Title"), confirmationText);
+
+		return button != QMessageBox::No;
+	};
+
+	ops.profile_changing = [](void *param) {
+		static_cast<ProfileRemoval *>(param)->main->OnEvent(OBS_FRONTEND_EVENT_PROFILE_CHANGING);
+	};
+
+	ops.switch_and_remove_current = [](void *param) {
+		ProfileRemoval *removal = static_cast<ProfileRemoval *>(param);
+		OBSBasic *main = removal->main;
+
+		main->profiles.erase(removal->profile.name);
+
+		const OBSProfile &newProfile = main->profiles.begin()->second;
+
+		main->ActivateProfile(newProfile, true);
+
+		try {
+			main->RemoveProfile(removal->profile);
+		} catch (const std::logic_error &error) {
+			blog(LOG_ERROR, "%s", error.what());
+		}
+
+#ifdef YOUTUBE_ENABLED
+		if (YouTubeAppDock::IsYTServiceSelected() && !main->youtubeAppDock) {
+			main->NewYouTubeAppDock();
+		}
+#endif
+
+		blog(LOG_INFO, "Switched to profile '%s' (%s)", newProfile.name.c_str(),
+		     newProfile.directoryName.c_str());
+		blog(LOG_INFO, "------------------------------------------------");
+	};
+
+	ops.remove_other = [](void *param) {
+		ProfileRemoval *removal = static_cast<ProfileRemoval *>(param);
+		OBSBasic *main = removal->main;
+
+		try {
+			main->RemoveProfile(removal->profile);
+		} catch (const std::logic_error &error) {
+			blog(LOG_ERROR, "%s", error.what());
+		}
+
+		main->profiles.erase(removal->profile.name);
+
+		main->RefreshProfiles();
+
+		config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
+	};
+
+	ops.profile_list_changed = [](void *param) {
+		static_cast<ProfileRemoval *>(param)->main->OnEvent(OBS_FRONTEND_EVENT_PROFILE_LIST_CHANGED);
+	};
+}
+
 // MARK: - Profile UI Handling Functions
 
 bool OBSBasic::CreateNewProfile(const QString &name)
@@ -228,9 +301,9 @@ bool OBSBasic::CreateDuplicateProfile(const QString &name)
 void OBSBasic::DeleteProfile(const QString &name)
 {
 	const std::string_view currentProfileName{config_get_string(App()->GetUserConfig(), "Basic", "Profile")};
+	const bool isCurrent = currentProfileName == name.toStdString();
 
-	if (currentProfileName == name.toStdString()) {
-		on_actionRemoveProfile_triggered();
+	if (isCurrent && profiles.size() < 2) {
 		return;
 	}
 
@@ -241,14 +314,11 @@ void OBSBasic::DeleteProfile(const QString &name)
 		return;
 	}
 
-	RemoveProfile(foundProfile.value());
-	profiles.erase(name.toStdString());
+	ProfileRemoval removal{this, foundProfile.value()};
+	struct profile_remove_ops ops = {};
+	InitProfileRemoveOps(ops, removal);
 
-	RefreshProfiles();
-
-	config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
-
-	OnEvent(OBS_FRONTEND_EVENT_PROFILE_LIST_CHANGED);
+	profile_remove_by_api(&ops, isCurrent);
 }
 
 void OBSBasic::ChangeProfile()
@@ -313,7 +383,8 @@ void OBSBasic::RefreshProfiles(bool refreshCache)
 			const OBSProfile &profile = profiles.at(profileName);
 			const QString qProfileName = QString().fromStdString(profileName);
 
-			QAction *action = new QAction(qProfileName, this);
+			const QString menuText = QString::fromStdString(menu_text_from_name(profileName));
+			QAction *action = new QAction(menuText, this);
 			action->setProperty("profile_name", qProfileName);
 			action->setProperty("file_name", QString().fromStdString(profile.directoryName));
 			connect(action, &QAction::triggered, this, &OBSBasic::ChangeProfile);
@@ -510,45 +581,19 @@ void OBSBasic::on_actionRemoveProfile_triggered(bool skipConfirmation)
 		return;
 	}
 
-	OBSProfile currentProfile;
+	ProfileRemoval removal{this, {}};
 
 	try {
-		currentProfile = GetCurrentProfile();
-
-		if (!skipConfirmation) {
-			const QString confirmationText =
-				QTStr("ConfirmRemove.Text").arg(QString::fromStdString(currentProfile.name));
-
-			const QMessageBox::StandardButton button =
-				OBSMessageBox::question(this, QTStr("ConfirmRemove.Title"), confirmationText);
-
-			if (button == QMessageBox::No) {
-				return;
-			}
-		}
-
-		OnEvent(OBS_FRONTEND_EVENT_PROFILE_CHANGING);
-
-		profiles.erase(currentProfile.name);
+		removal.profile = GetCurrentProfile();
 	} catch (const std::invalid_argument &error) {
 		blog(LOG_ERROR, "%s", error.what());
-	} catch (const std::logic_error &error) {
-		blog(LOG_ERROR, "%s", error.what());
+		return;
 	}
 
-	const OBSProfile &newProfile = profiles.begin()->second;
+	struct profile_remove_ops ops = {};
+	InitProfileRemoveOps(ops, removal);
 
-	ActivateProfile(newProfile, true);
-	RemoveProfile(currentProfile);
-
-#ifdef YOUTUBE_ENABLED
-	if (YouTubeAppDock::IsYTServiceSelected() && !youtubeAppDock) {
-		NewYouTubeAppDock();
-	}
-#endif
-
-	blog(LOG_INFO, "Switched to profile '%s' (%s)", newProfile.name.c_str(), newProfile.directoryName.c_str());
-	blog(LOG_INFO, "------------------------------------------------");
+	profile_remove_current(&ops, !skipConfirmation);
 }
 
 void OBSBasic::on_actionImportProfile_triggered()
@@ -701,12 +746,24 @@ void OBSBasic::ActivateProfile(const OBSProfile &profile, bool reset)
 
 	config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
 
-	InitBasicConfigDefaults();
+	struct profile_activate_ops ops = {};
+	ops.param = this;
+	ops.init_defaults = [](void *param) {
+		static_cast<OBSBasic *>(param)->InitBasicConfigDefaults();
+	};
+	ops.init_encoder_defaults = [](void *param) {
+		static_cast<OBSBasic *>(param)->InitBasicConfigDefaults2();
+	};
+	ops.check_encoders = [](void *param) {
+		OBSBasic *main = static_cast<OBSBasic *>(param);
+		main->CheckForMissingEncoders();
+		main->CheckForSimpleModeX264Fallback();
+	};
+	ops.reset_data = [](void *param) {
+		static_cast<OBSBasic *>(param)->ResetProfileData();
+	};
 
-	if (reset) {
-		UpdateProfileEncoders();
-		ResetProfileData();
-	}
+	profile_activate_config(&ops, reset);
 
 	// Ensure defaults and updates are saved to disk
 	activeConfiguration.SaveSafe("tmp");

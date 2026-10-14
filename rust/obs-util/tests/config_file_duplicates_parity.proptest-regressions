@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1566f22d3993b26aad5a0a80f1e79f47e83f05ff93cb76e14629789a5ed327a5 # shrinks to blocks = [(0, []), (0, []), (0, []), (0, []), (0, []), (0, []), (0, []), (0, []), (0, []), (0, [])], ops = [Set(0, 0, 0)]
+cc 85b120ca215ad2cb03993f5fff15a7ed1b96029724f9266b8aa97c2d56fcff0b # shrinks to blocks = [(0, []), (0, []), (0, []), (0, []), (0, []), (0, []), (0, []), (0, []), (0, []), (0, [])], ops = [Set(0, 0, 0)]
+cc 2d01ec1503e459b96089fd6736af469f9dd77d0560d05c18510a8703a4767538 # shrinks to blocks = [(0, [(2, 0), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5), (2, 6), (2, 7), (2, 8), (2, 9)])], ops = []

@@ -33,6 +33,13 @@
 
 #include "util/dstr.c"
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_sizeof_dstr(void);
+size_t oracle_alignof_dstr(void);
+size_t oracle_offsetof_dstr_array(void);
+size_t oracle_offsetof_dstr_len(void);
+size_t oracle_offsetof_dstr_capacity(void);
+
 /* Layout of struct dstr as the C compiler sees it. */
 size_t oracle_sizeof_dstr(void)
 {

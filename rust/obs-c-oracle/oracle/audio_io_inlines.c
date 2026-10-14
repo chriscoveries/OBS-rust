@@ -9,6 +9,54 @@
 
 #include "media-io/audio-io.h"
 
+/* Test-only exports called from Rust over FFI. */
+uint32_t oracle_get_audio_channels(int speakers);
+size_t oracle_get_audio_bytes_per_channel(int format);
+bool oracle_is_audio_planar(int format);
+size_t oracle_get_audio_planes(int format, int speakers);
+size_t oracle_get_audio_size(int format, int speakers, uint32_t frames);
+size_t oracle_get_total_audio_size(int format, int speakers, uint32_t frames);
+uint64_t oracle_audio_frames_to_ns(size_t sample_rate, uint64_t frames);
+uint64_t oracle_ns_to_audio_frames(size_t sample_rate, uint64_t frames);
+size_t oracle_max_audio_mixes(void);
+size_t oracle_max_audio_channels(void);
+size_t oracle_max_device_input_channels(void);
+size_t oracle_audio_output_frames(void);
+size_t oracle_total_audio_size(void);
+size_t oracle_audio_format_size(void);
+size_t oracle_audio_format_align(void);
+size_t oracle_audio_format_count(void);
+int oracle_audio_format_value(size_t i);
+size_t oracle_speaker_layout_size(void);
+size_t oracle_speaker_layout_align(void);
+size_t oracle_speaker_layout_count(void);
+int oracle_speaker_layout_value(size_t i);
+size_t oracle_audio_data_size(void);
+size_t oracle_audio_data_align(void);
+size_t oracle_audio_data_planes(void);
+size_t oracle_audio_data_offset_data(void);
+size_t oracle_audio_data_offset_frames(void);
+size_t oracle_audio_data_offset_timestamp(void);
+size_t oracle_audio_output_data_size(void);
+size_t oracle_audio_output_data_align(void);
+size_t oracle_audio_output_data_channels(void);
+size_t oracle_audio_output_data_offset_data(void);
+size_t oracle_audio_output_info_size(void);
+size_t oracle_audio_output_info_align(void);
+size_t oracle_audio_output_info_offset_name(void);
+size_t oracle_audio_output_info_offset_samples_per_sec(void);
+size_t oracle_audio_output_info_offset_format(void);
+size_t oracle_audio_output_info_offset_speakers(void);
+size_t oracle_audio_output_info_offset_input_callback(void);
+size_t oracle_audio_output_info_offset_input_param(void);
+size_t oracle_audio_input_callback_size(void);
+size_t oracle_audio_convert_info_size(void);
+size_t oracle_audio_convert_info_align(void);
+size_t oracle_audio_convert_info_offset_samples_per_sec(void);
+size_t oracle_audio_convert_info_offset_format(void);
+size_t oracle_audio_convert_info_offset_speakers(void);
+size_t oracle_audio_convert_info_offset_allow_clipping(void);
+
 uint32_t oracle_get_audio_channels(int speakers)
 {
 	return get_audio_channels((enum speaker_layout)speakers);

@@ -25,6 +25,8 @@ target_sources(
     utility/GoLiveAPI_PostData.hpp
     utility/media-time.c
     utility/media-time.h
+    utility/missing-files-list.c
+    utility/missing-files-list.h
     utility/MissingFilesModel.cpp
     utility/MissingFilesModel.hpp
     utility/MissingFilesPathItemDelegate.cpp
@@ -38,18 +40,50 @@ target_sources(
     utility/NativeEventFilter.hpp
     utility/output-filename-format.c
     utility/output-filename-format.h
+    utility/replay-buffer-estimate.cpp
+    utility/replay-buffer-estimate.hpp
+    utility/replay-buffer-naming.c
+    utility/replay-buffer-naming.h
     utility/output-filename-reserve.c
     utility/output-filename-reserve.h
+    utility/output-rescale.c
+    utility/output-rescale.h
+    utility/menu-text.c
+    utility/menu-text.h
     utility/multitrack-ladder.c
     utility/multitrack-ladder.h
     utility/product-name.c
+    utility/record-disk-space.c
+    utility/record-disk-space.h
     utility/product-name.h
+    utility/profile-activate.c
+    utility/profile-activate.h
+    utility/profile-remove.c
+    utility/profile-remove.h
+    utility/preview-audio-sources.cpp
+    utility/preview-audio-sources.hpp
+    utility/saved-transition.c
+    utility/saved-transition.h
     utility/scene-collection-migration.cpp
     utility/scene-collection-migration.hpp
+    utility/scene-list-remove.c
+    utility/scene-list-remove.h
     utility/service-encoder-settings.c
     utility/service-encoder-settings.h
+    utility/source-select-list.cpp
+    utility/source-select-list.hpp
+    utility/stream-service-select.c
+    utility/stream-service-select.h
+    utility/studio-mode-exit.c
+    utility/studio-mode-exit.h
+    utility/studio-mode-swap.c
+    utility/studio-mode-swap.h
+    utility/tbar-position.c
+    utility/tbar-position.h
     utility/transform-clipboard.c
     utility/transform-clipboard.h
+    utility/visibility-transition.c
+    utility/visibility-transition.h
     utility/OBSCanvas.cpp
     utility/OBSCanvas.hpp
     utility/OBSEventFilter.hpp

@@ -12,5 +12,5 @@ cmake/ALL_BUILD.vcxproj.user.in text eol=crlf
 # (Constitution of the obs-rust Project). Requires once per clone:
 #   git config merge.ours.driver true
 CONTRIBUTING.md merge=ours
-README.rst merge=ours
+README.md merge=ours
 CONSTITUTION.md merge=ours

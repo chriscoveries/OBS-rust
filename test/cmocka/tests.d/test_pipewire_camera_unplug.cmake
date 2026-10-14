@@ -18,6 +18,7 @@ if(OS_LINUX AND TARGET OBS::pipewire AND PipeWire_FOUND)
     "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/camera-portal.c"
     "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c"
     "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c"
     "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c"
     "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c"
     "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c"
@@ -37,14 +38,7 @@ if(OS_LINUX AND TARGET OBS::pipewire AND PipeWire_FOUND)
       X11::X11
       ${CMOCKA_LIBRARIES}
   )
-  target_link_options(
-    test_pipewire_camera_unplug
-    PRIVATE
-      "LINKER:--wrap=bfree"
-      "LINKER:--wrap=g_hash_table_insert"
-      "LINKER:--wrap=obs_pipewire_connect_fd"
-      "LINKER:--wrap=obs_pipewire_roundtrip"
-  )
+  target_link_options(test_pipewire_camera_unplug PRIVATE "LINKER:--wrap=bfree" "LINKER:--wrap=g_hash_table_insert")
   add_dependencies(cmocka-tests test_pipewire_camera_unplug)
   add_test(
     NAME test_pipewire_camera_unplug

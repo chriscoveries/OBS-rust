@@ -10,6 +10,14 @@ find_package(MbedTLS 3...<4 REQUIRED)
 find_package(Detours REQUIRED)
 find_package(nlohmann_json 3.11 REQUIRED)
 
+# The Rust build says so in its VERSIONINFO, with the full release version (#631).
+if(ENABLE_RUST_LIBOBS)
+  set(OBS_RC_PRODUCT_NAME "OBS-Studio-Rust")
+  set(OBS_RC_PRODUCT_VERSION "${OBS_RUST_VERSION}")
+else()
+  set(OBS_RC_PRODUCT_NAME "OBS Studio")
+  set(OBS_RC_PRODUCT_VERSION "${OBS_VERSION_CANONICAL}")
+endif()
 configure_file(cmake/windows/obs.rc.in obs.rc)
 
 target_sources(
@@ -48,6 +56,7 @@ target_link_libraries(
   obs-studio
   PRIVATE
     crypt32
+    shell32
     OBS::blake2
     OBS::updater-manifest
     OBS::w32-pthreads

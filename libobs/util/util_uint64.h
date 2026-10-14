@@ -22,11 +22,14 @@
 
 static inline uint64_t util_mul_div64(uint64_t num, uint64_t mul, uint64_t div)
 {
-#if defined(_MSC_VER) && defined(_M_X64) && (_MSC_VER >= 1920)
+#if defined(_MSC_VER) && defined(_M_X64) && (_MSC_VER >= 1920) && !defined(__clang__)
 	unsigned __int64 high;
 	const unsigned __int64 low = _umul128(num, mul, &high);
 	unsigned __int64 rem;
 	return _udiv128(high, low, div, &rem);
+#elif defined(_MSC_VER) && defined(_M_X64) && defined(__clang__)
+	/* clang-cl has no _udiv128; the same exact 128-bit quotient. */
+	return (uint64_t)(((unsigned __int128)num * mul) / div);
 #else
 	const uint64_t rem = num % div;
 	return (num / div) * mul + (rem * mul) / div;

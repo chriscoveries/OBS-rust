@@ -33,7 +33,7 @@ bool obs_pipewire_core_error_is_lost(bool *disconnected, uint32_t id, int res)
 	return true;
 }
 
-bool obs_pipewire_stream_state_is_lost(bool *disconnected, bool *streamed, enum pw_stream_state state)
+bool obs_pipewire_stream_state_is_lost(bool *disconnected, bool *streamed, bool replacing, enum pw_stream_state state)
 {
 	if (state == PW_STREAM_STATE_STREAMING)
 		*streamed = true;
@@ -41,9 +41,13 @@ bool obs_pipewire_stream_state_is_lost(bool *disconnected, bool *streamed, enum 
 	/* A stream that failed after streaming does not recover by itself
 	 * either (e.g. the producer renegotiated to formats we no longer
 	 * accept). Report it like a lost connection so the owner can set
-	 * everything up again. Errors before that (no matching format, no
-	 * target node) would fail the same way again, so leave those alone. */
-	if (state != PW_STREAM_STATE_ERROR || !*streamed || *disconnected)
+	 * everything up again. On a first connection, errors before that (no
+	 * matching format, no target node) would fail the same way again, so
+	 * leave those alone. A stream that replaces a lost one is different:
+	 * the old one worked, so whatever broke it may pass (a window that is
+	 * 0 pixels wide for a moment while it animates), and the owner retries
+	 * with a backoff (obs-rust/obs-studio#257). */
+	if (state != PW_STREAM_STATE_ERROR || (!*streamed && !replacing) || *disconnected)
 		return false;
 
 	*disconnected = true;
@@ -83,4 +87,21 @@ uint32_t obs_pipewire_reconnect_next_delay(uint32_t *attempts)
 	if (delay_ms > OBS_PIPEWIRE_RECONNECT_MAX_DELAY_MS)
 		delay_ms = OBS_PIPEWIRE_RECONNECT_MAX_DELAY_MS;
 	return delay_ms;
+}
+
+enum obs_pipewire_reconnect_step obs_pipewire_reconnect_attempt_failed(bool active, bool cancelled_by_user)
+{
+	if (!active)
+		return OBS_PIPEWIRE_RECONNECT_IGNORE;
+	return cancelled_by_user ? OBS_PIPEWIRE_RECONNECT_STOP : OBS_PIPEWIRE_RECONNECT_RETRY;
+}
+
+enum obs_pipewire_reconnect_stream_state obs_pipewire_reconnect_check_stream(bool streamed, bool showing)
+{
+	if (streamed)
+		return OBS_PIPEWIRE_RECONNECT_STREAM_STARTED;
+
+	/* A hidden source pauses its stream on purpose; it starts when the
+	 * source is shown again. */
+	return showing ? OBS_PIPEWIRE_RECONNECT_STREAM_FAILED : OBS_PIPEWIRE_RECONNECT_STREAM_WAIT;
 }

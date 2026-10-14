@@ -10,6 +10,20 @@ endif()
 # new test cannot go unbuilt (and show up in ctest as "Not Run").
 add_custom_target(cmocka-tests)
 
+# Existing C tests are never edited to satisfy a new warning, and they pass
+# float to double varargs and math freely (as does the SWIG-generated code some
+# of them compile), so -Wdouble-promotion (obs-rust/obs-studio#516) covers the
+# product code, not the tests.
+add_compile_options($<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang,GNU>:-Wno-double-promotion>)
+# Existing C tests are never edited to satisfy a new warning, and they cast
+# const away freely, so -Wcast-qual (obs-rust/obs-studio#516) covers the
+# product code, not the tests.
+add_compile_options($<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang,GNU>:-Wno-cast-qual>)
+# Likewise -Wformat=2 (obs-rust/obs-studio#516) covers the product code only.
+add_compile_options($<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang,GNU>:-Wno-format-nonliteral>)
+# Existing C tests are never edited (obs-rust/obs-studio#516).
+add_compile_options($<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang,GNU>:-Wno-shadow>)
+
 # Per-test sanitizers (obs-rust/obs-studio#159). Some tests compile the code
 # they check with ASan/UBSan so a bug fails the test. Those flags are added
 # only here: never on MSVC, never when the whole build is already sanitized
@@ -78,6 +92,39 @@ target_include_directories(test_hotkey_load PRIVATE ${CMOCKA_INCLUDE_DIR})
 target_link_libraries(test_hotkey_load PRIVATE OBS::libobs OBS::caption ${CMOCKA_LIBRARIES})
 add_dependencies(cmocka-tests test_hotkey_load)
 add_test(test_hotkey_load ${CMAKE_CURRENT_BINARY_DIR}/test_hotkey_load)
+
+# A core module that cannot be loaded (its file is missing, or a library it
+# needs, like libcef.so for obs-browser, is not installed) must not stop OBS
+# from loading the others or from starting (obs-rust/obs-studio#404). The test
+# lays out stub modules under every core module name next to a copy of itself.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET OBS::libobs-core-modules)
+  add_library(core_module_stub_dep SHARED core_module_stub_dep.c)
+  set_target_properties(core_module_stub_dep PROPERTIES OUTPUT_NAME obs-test-missing-dep)
+
+  add_library(core_module_stub MODULE core_module_stub.c)
+  target_link_libraries(core_module_stub PRIVATE OBS::libobs)
+  set_target_properties(core_module_stub PROPERTIES PREFIX "")
+
+  # No RPATH: the dependency is out of reach at run time, as libcef.so was.
+  add_library(core_module_stub_needs_dep MODULE core_module_stub.c)
+  target_compile_definitions(core_module_stub_needs_dep PRIVATE CORE_STUB_NEEDS_DEP)
+  target_link_libraries(core_module_stub_needs_dep PRIVATE OBS::libobs core_module_stub_dep)
+  set_target_properties(core_module_stub_needs_dep PROPERTIES PREFIX "" SKIP_BUILD_RPATH TRUE)
+
+  add_executable(test_core_module_load test_core_module_load.c)
+  target_include_directories(test_core_module_load PRIVATE ${CMOCKA_INCLUDE_DIR})
+  target_compile_definitions(
+    test_core_module_load
+    PRIVATE
+      CORE_STUB_PATH="$<TARGET_FILE:core_module_stub>"
+      CORE_STUB_NEEDS_DEP_PATH="$<TARGET_FILE:core_module_stub_needs_dep>"
+  )
+  target_link_libraries(test_core_module_load PRIVATE OBS::libobs OBS::libobs-core-modules ${CMOCKA_LIBRARIES})
+  add_dependencies(test_core_module_load core_module_stub core_module_stub_needs_dep)
+  add_dependencies(cmocka-tests test_core_module_load)
+  add_test(test_core_module_load ${CMAKE_CURRENT_BINARY_DIR}/test_core_module_load)
+  set_tests_properties(test_core_module_load PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+endif()
 
 # /dev/full reproduces delayed disk-write errors without fault injection.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -272,6 +319,24 @@ endif()
 
 add_dependencies(cmocka-tests test_threading)
 add_test(test_threading ${CMAKE_CURRENT_BINARY_DIR}/test_threading)
+
+# Concurrent reads and writes of the private video-stat storage (#175).
+# The sanitizer lane compiles this test with TSan to detect data races.
+add_executable(test_video_stats_race test_video_stats_race.c)
+target_link_libraries(test_video_stats_race PRIVATE OBS::libobs)
+if(NOT MSVC)
+  target_link_libraries(test_video_stats_race PRIVATE Threads::Threads)
+endif()
+add_dependencies(cmocka-tests test_video_stats_race)
+add_test(test_video_stats_race ${CMAKE_CURRENT_BINARY_DIR}/test_video_stats_race)
+
+# Qt-free concurrency check for the frontend meter's locked snapshot (#131).
+add_executable(test_volume_meter_snapshot test_volume_meter_snapshot.cpp)
+if(NOT MSVC)
+  target_link_libraries(test_volume_meter_snapshot PRIVATE Threads::Threads)
+endif()
+add_dependencies(cmocka-tests test_volume_meter_snapshot)
+add_test(test_volume_meter_snapshot ${CMAKE_CURRENT_BINARY_DIR}/test_volume_meter_snapshot)
 
 # task test (task.c)
 add_executable(test_task test_task.c)
@@ -554,6 +619,32 @@ target_link_libraries(test_video_frame PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
 
 add_dependencies(cmocka-tests test_video_frame)
 add_test(test_video_frame ${CMAKE_CURRENT_BINARY_DIR}/test_video_frame)
+
+# cmocka_qt_runtime(<test> <Qt target>): lets a Qt-linked test find Qt at run
+# time outside the app bundle, through the test's environment: macOS gets the
+# directory holding the Qt frameworks on DYLD_FRAMEWORK_PATH (a build rpath
+# does not reach the binary under the Xcode generator), Windows gets Qt's bin
+# directory on PATH. Linux finds Qt through the system loader. The path is
+# resolved here: tests added with add_test(<name> <cmd>) get no generator
+# expressions in their properties.
+function(cmocka_qt_runtime test qt_target)
+  get_target_property(qt_location ${qt_target} LOCATION)
+  if(NOT qt_location)
+    return()
+  endif()
+  if(OS_MACOS)
+    # .../lib/QtCore.framework/Versions/A/QtCore -> .../lib
+    string(REGEX REPLACE "/[^/]+\\.framework/.*$" "" qt_dir "${qt_location}")
+    set_property(
+      TEST ${test}
+      APPEND
+      PROPERTY ENVIRONMENT_MODIFICATION "DYLD_FRAMEWORK_PATH=path_list_prepend:${qt_dir}"
+    )
+  elseif(OS_WINDOWS)
+    get_filename_component(qt_dir "${qt_location}" DIRECTORY)
+    set_property(TEST ${test} APPEND PROPERTY ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${qt_dir}")
+  endif()
+endfunction()
 
 # One file per test from here on (obs-rust/obs-studio#137): add
 # tests.d/<test>.cmake instead of appending to this file, so concurrent PRs

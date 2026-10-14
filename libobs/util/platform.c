@@ -721,10 +721,19 @@ char *os_generate_formatted_filename(const char *extension, bool space, const ch
 			size_t len = strlen(spec[i][0]);
 
 			if (astrcmp_n(cmp, spec[i][0], len) == 0) {
+				/* The strftime format comes from the spec table, which is
+				 * only known at run time. */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+#endif
 				if (strlen(spec[i][1]))
 					strftime(convert, sizeof(convert), spec[i][1], cur_time);
 				else
 					strftime(convert, sizeof(convert), spec[i][0], cur_time);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 				dstr_copy(&c, convert);
 				if (c.len && valid_string(c.array))

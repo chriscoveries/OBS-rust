@@ -31,17 +31,23 @@ void quat_mul(struct quat *dst, const struct quat *q1, const struct quat *q2)
 {
 	struct vec3 q1axis, q2axis;
 	struct vec3 temp1, temp2;
+	float q1w, q2w;
+
+	/* vec3_add below stores through dst and clears w. Read the scalars
+	 * first so an overlapping q1 or q2 still contributes to the product. */
+	q1w = q1->w;
+	q2w = q2->w;
 
 	quat_vec3(&q1axis, q1);
 	quat_vec3(&q2axis, q2);
 
-	vec3_mulf(&temp1, &q2axis, q1->w);
-	vec3_mulf(&temp2, &q1axis, q2->w);
+	vec3_mulf(&temp1, &q2axis, q1w);
+	vec3_mulf(&temp2, &q1axis, q2w);
 	vec3_add(&temp1, &temp1, &temp2);
 	vec3_cross(&temp2, &q1axis, &q2axis);
 	vec3_add((struct vec3 *)dst, &temp1, &temp2);
 
-	dst->w = (q1->w * q2->w) - vec3_dot(&q1axis, &q2axis);
+	dst->w = (q1w * q2w) - vec3_dot(&q1axis, &q2axis);
 }
 
 void quat_from_axisang(struct quat *dst, const struct axisang *aa)
@@ -66,10 +72,15 @@ void quat_from_matrix3(struct quat *dst, const struct matrix3 *m)
 
 void quat_from_matrix4(struct quat *dst, const struct matrix4 *m)
 {
-	float tr = (m->x.x + m->y.y + m->z.z);
-	float inv_half;
-	float four_d;
+	struct matrix4 copy;
+	float tr, inv_half, four_d;
 	int i, j, k;
+
+	/* dst may sit on m. Later lanes read elements this function stores. */
+	matrix4_copy(&copy, m);
+	m = &copy;
+
+	tr = (m->x.x + m->y.y + m->z.z);
 
 	if (tr > 0.0f) {
 		four_d = sqrtf(tr + 1.0f);
@@ -80,7 +91,7 @@ void quat_from_matrix4(struct quat *dst, const struct matrix4 *m)
 		dst->y = (m->z.x - m->x.z) * inv_half;
 		dst->z = (m->x.y - m->y.x) * inv_half;
 	} else {
-		struct f4x4 *val = (struct f4x4 *)m;
+		const struct f4x4 *val = (const struct f4x4 *)m;
 
 		i = (m->x.x > m->y.y) ? 0 : 1;
 

@@ -131,7 +131,11 @@ static inline void ca_warn(struct coreaudio_data *ca, const char *func, const ch
 	va_start(args, format);
 
 	dstr_printf(&str, "[%s]:[device '%s'] ", func, ca->device_name);
+	/* Pass-through of the caller's format string. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
 	dstr_vcatf(&str, format, args);
+#pragma GCC diagnostic pop
 	blog(LOG_WARNING, "%s", str.array);
 	dstr_free(&str);
 

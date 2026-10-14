@@ -6,6 +6,9 @@
 #include "util/c99defs.h"
 #include "util/util_uint64.h"
 
+/* Test-only exports called from Rust over FFI. */
+uint64_t oracle_util_mul_div64(uint64_t num, uint64_t mul, uint64_t div);
+
 uint64_t oracle_util_mul_div64(uint64_t num, uint64_t mul, uint64_t div)
 {
 	return util_mul_div64(num, mul, div);

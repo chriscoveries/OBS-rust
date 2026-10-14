@@ -594,18 +594,27 @@ fail:
 void audio_monitor_reset(struct audio_monitor *monitor)
 {
 	struct audio_monitor new_monitor = {0};
-	bool success;
-	audio_monitor_free(monitor);
 
-	pthread_mutex_lock(&monitor->playback_mutex);
-	success = audio_monitor_init(&new_monitor, monitor->source);
-	pthread_mutex_unlock(&monitor->playback_mutex);
-
-	if (success) {
+	if (audio_monitor_init(&new_monitor, monitor->source)) {
+		audio_monitor_free(monitor);
 		*monitor = new_monitor;
 		audio_monitor_init_final(monitor);
 	} else {
 		audio_monitor_free(&new_monitor);
+		if (monitor->stream) {
+			pulseaudio_lock();
+			pa_context *context = pa_stream_get_context(monitor->stream);
+			bool context_good = context && PA_CONTEXT_IS_GOOD(pa_context_get_state(context));
+			pulseaudio_unlock();
+
+			if (!context_good) {
+				/* A failed replacement must not leave a terminal stream's
+				 * capture callback active. The empty monitor owns no ref. */
+				obs_source_t *source = monitor->source;
+				audio_monitor_free(monitor);
+				*monitor = (struct audio_monitor){.source = source, .ignore = true};
+			}
+		}
 	}
 }
 

@@ -468,7 +468,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 #ifdef ENABLE_DARRAY_TYPE_TEST
 #ifdef __cplusplus
 #define da_type_test(v, item)                 \
-	({                                    \
+	__extension__({                                    \
 		if (false) {                  \
 			auto _t = (v).array;  \
 			_t = (item);          \
@@ -478,7 +478,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 	})
 #else
 #define da_type_test(v, item)                         \
-	({                                            \
+	__extension__({                                            \
 		if (false) {                          \
 			const typeof(*(v).array) *_t; \
 			_t = (item);                  \
@@ -491,7 +491,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 
 #ifdef ENABLE_DARRAY_TYPE_TEST
 #define da_find(v, item, idx)                                        \
-	({                                                           \
+	__extension__({                                                           \
 		da_type_test(v, item);                               \
 		darray_find(sizeof(*(v).array), &(v).da, item, idx); \
 	})
@@ -501,7 +501,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 
 #ifdef ENABLE_DARRAY_TYPE_TEST
 #define da_push_back(v, item)                                        \
-	({                                                           \
+	__extension__({                                                           \
 		da_type_test(v, item);                               \
 		darray_push_back(sizeof(*(v).array), &(v).da, item); \
 	})
@@ -514,7 +514,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
  * which could be false positive. Extract the macro here to avoid the warning.
  */
 #define da_push_back_new(v)                                                  \
-	({                                                                   \
+	__extension__({                                                                   \
 		__typeof__(v) *d = &(v);                                     \
 		darray_ensure_capacity(sizeof(*d->array), &d->da, ++d->num); \
 		memset(&d->array[d->num - 1], 0, sizeof(*d->array));         \
@@ -526,7 +526,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 
 #ifdef ENABLE_DARRAY_TYPE_TEST
 #define da_push_back_array(dst, src_array, n)                                          \
-	({                                                                             \
+	__extension__({                                                                             \
 		da_type_test(dst, src_array);                                          \
 		darray_push_back_array(sizeof(*(dst).array), &(dst).da, src_array, n); \
 	})
@@ -536,7 +536,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 
 #ifdef ENABLE_DARRAY_TYPE_TEST
 #define da_push_back_da(dst, src)                                                    \
-	({                                                                           \
+	__extension__({                                                                           \
 		da_type_test(dst, (src).array);                                      \
 		darray_push_back_darray(sizeof(*(dst).array), &(dst).da, &(src).da); \
 	})
@@ -546,7 +546,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 
 #ifdef ENABLE_DARRAY_TYPE_TEST
 #define da_insert(v, idx, item)                                        \
-	({                                                             \
+	__extension__({                                                             \
 		da_type_test(v, item);                                 \
 		darray_insert(sizeof(*(v).array), &(v).da, idx, item); \
 	})
@@ -558,7 +558,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 
 #ifdef ENABLE_DARRAY_TYPE_TEST
 #define da_insert_array(dst, idx, src_array, n)                                          \
-	({                                                                               \
+	__extension__({                                                                               \
 		da_type_test(dst, src_array);                                            \
 		darray_insert_array(sizeof(*(dst).array), &(dst).da, idx, src_array, n); \
 	})
@@ -568,7 +568,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 
 #ifdef ENABLE_DARRAY_TYPE_TEST
 #define da_insert_da(dst, idx, src)                                                    \
-	({                                                                             \
+	__extension__({                                                                             \
 		da_type_test(dst, (src).array);                                        \
 		darray_insert_darray(sizeof(*(dst).array), &(dst).da, idx, &(src).da); \
 	})
@@ -580,7 +580,7 @@ static inline void darray_swap(const size_t element_size, struct darray *dst, co
 
 #ifdef ENABLE_DARRAY_TYPE_TEST
 #define da_erase_item(dst, item)                                          \
-	({                                                                \
+	__extension__({                                                                \
 		da_type_test(dst, item);                                  \
 		darray_erase_item(sizeof(*(dst).array), &(dst).da, item); \
 	})

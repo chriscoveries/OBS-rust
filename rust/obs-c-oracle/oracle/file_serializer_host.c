@@ -1,9 +1,9 @@
 /* Symbols file-serializer.c needs from platform.c / bmem.c, without pulling
  * obs.h in. On Unix, os_fopen / os_fseeki64 / os_ftelli64 match platform.c.
- * os_unlink, os_rename, and os_file_exists are the Rust platform-nix shims.
+ * os_unlink, os_rename, and os_file_exists are the Rust platform shims.
  * os_safe_replace is oracle_host_os_safe_replace so the file oracles keep
- * the C copy. On Windows these follow platform.c (wide fopen) and
- * platform-windows.c (DeleteFileW / MoveFileExW). */
+ * the C copy. On Windows fopen follows platform.c (wide fopen). The
+ * safe-replace copy follows platform-windows.c. */
 #define _FILE_OFFSET_BITS 64
 #ifndef _WIN32
 /* fseeko/ftello are POSIX; -std=c11 hides them without this. */
@@ -28,6 +28,12 @@
  * becomes U+FFFD instead of failing. */
 size_t os_utf8_to_wcs_ptr(const char *str, size_t len, wchar_t **pstr);
 void bfree(void *ptr);
+
+/* Windows stand-ins for the platform.c / platform-windows.c functions. */
+FILE *os_fopen(const char *path, const char *mode);
+int os_fseeki64(FILE *file, int64_t offset, int origin);
+int64_t os_ftelli64(FILE *file);
+int oracle_host_os_safe_replace(const char *target, const char *from, const char *backup);
 
 /* platform.c os_fopen + os_wfopen (MSVC branch). Like libobs, the
  * conversion result is not checked. */
@@ -59,44 +65,9 @@ int64_t os_ftelli64(FILE *file)
 	return _ftelli64(file);
 }
 
-/* platform-windows.c os_unlink / os_rename / os_safe_replace. */
-int os_unlink(const char *path)
-{
-	wchar_t *w_path;
-	bool success;
-
-	os_utf8_to_wcs_ptr(path, 0, &w_path);
-	if (!w_path)
-		return -1;
-
-	success = !!DeleteFileW(w_path);
-	bfree(w_path);
-
-	return success ? 0 : -1;
-}
-
-int os_rename(const char *old_path, const char *new_path)
-{
-	wchar_t *old_path_utf16 = NULL;
-	wchar_t *new_path_utf16 = NULL;
-	int code = -1;
-
-	if (!os_utf8_to_wcs_ptr(old_path, 0, &old_path_utf16)) {
-		return -1;
-	}
-	if (!os_utf8_to_wcs_ptr(new_path, 0, &new_path_utf16)) {
-		goto error;
-	}
-
-	code = MoveFileExW(old_path_utf16, new_path_utf16, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
-
-error:
-	bfree(old_path_utf16);
-	bfree(new_path_utf16);
-	return code;
-}
-
-int os_safe_replace(const char *target, const char *from, const char *backup)
+/* platform-windows.c os_safe_replace, under the private name. os_unlink
+ * and os_rename are the Rust shims. */
+int oracle_host_os_safe_replace(const char *target, const char *from, const char *backup)
 {
 	wchar_t *wtarget = NULL;
 	wchar_t *wfrom = NULL;
@@ -126,6 +97,12 @@ fail:
 }
 #else
 #include <unistd.h>
+
+/* Test-only exports called from Rust over FFI. */
+FILE *os_fopen(const char *path, const char *mode);
+int os_fseeki64(FILE *file, int64_t offset, int origin);
+int64_t os_ftelli64(FILE *file);
+int oracle_host_os_safe_replace(const char *target, const char *from, const char *backup);
 
 FILE *os_fopen(const char *path, const char *mode)
 {

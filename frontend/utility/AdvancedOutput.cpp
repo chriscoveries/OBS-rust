@@ -1,6 +1,7 @@
 #include "AdvancedOutput.hpp"
 
 #include <utility/audio-encoders.hpp>
+#include <utility/replay-buffer-naming.h>
 #include <utility/service-encoder-settings.h>
 #include <utility/StartMultiTrackVideoStreamingGuard.hpp>
 #include <widgets/OBSBasic.hpp>
@@ -863,6 +864,26 @@ bool AdvancedOutput::StartRecording()
 	return true;
 }
 
+void AdvancedOutput::UpdateReplayBufferNaming()
+{
+	if (!replayBuffer || (ffmpegOutput && !ffmpegRecording)) {
+		return;
+	}
+
+	const char *path = config_get_string(main->Config(), "AdvOut", ffmpegRecording ? "FFFilePath" : "RecFilePath");
+	const char *recFormat =
+		config_get_string(main->Config(), "AdvOut", ffmpegRecording ? "FFExtension" : "RecFormat2");
+	const char *filenameFormat = config_get_string(main->Config(), "Output", "FilenameFormatting");
+	bool noSpace = config_get_bool(main->Config(), "AdvOut",
+				       ffmpegRecording ? "FFFileNameWithoutSpace" : "RecFileNameWithoutSpace");
+	const char *rbPrefix = config_get_string(main->Config(), "SimpleOutput", "RecRBPrefix");
+	const char *rbSuffix = config_get_string(main->Config(), "SimpleOutput", "RecRBSuffix");
+
+	string ext = GetFormatExt(recFormat);
+	struct replay_buffer_naming naming = {path, filenameFormat, rbPrefix, rbSuffix, ext.c_str(), !noSpace};
+	replay_buffer_naming_refresh(replayBuffer, &naming);
+}
+
 bool AdvancedOutput::StartReplayBuffer()
 {
 	const char *path;
@@ -901,15 +922,12 @@ bool AdvancedOutput::StartReplayBuffer()
 		rbTime = config_get_int(main->Config(), "AdvOut", "RecRBTime");
 		rbSize = config_get_int(main->Config(), "AdvOut", "RecRBSize");
 
-		string f = GetFormatString(filenameFormat, rbPrefix, rbSuffix);
 		string ext = GetFormatExt(recFormat);
 
 		OBSDataAutoRelease settings = obs_data_create();
 
-		obs_data_set_string(settings, "directory", path);
-		obs_data_set_string(settings, "format", f.c_str());
-		obs_data_set_string(settings, "extension", ext.c_str());
-		obs_data_set_bool(settings, "allow_spaces", !noSpace);
+		struct replay_buffer_naming naming = {path, filenameFormat, rbPrefix, rbSuffix, ext.c_str(), !noSpace};
+		replay_buffer_naming_set(settings, &naming);
 		obs_data_set_int(settings, "max_time_sec", rbTime);
 		obs_data_set_int(settings, "max_size_mb", usesBitrate ? 0 : rbSize);
 

@@ -21,7 +21,7 @@ void v4l2_framerate_list_add_discrete(obs_property_t *prop, struct dstr *buffer,
 {
 	float fps = (float)denominator / numerator;
 	int64_t pack = v4l2_pack_tuple(numerator, denominator);
-	dstr_printf(buffer, "%.2f", fps);
+	dstr_printf(buffer, "%.2f", (double)fps);
 	obs_property_list_add_int(prop, buffer->array, pack);
 }
 

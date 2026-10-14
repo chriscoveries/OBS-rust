@@ -11,6 +11,14 @@
 
 #include "util/bitstream.c"
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_bitstream_reader_size(void);
+size_t oracle_bitstream_reader_align(void);
+size_t oracle_bitstream_reader_offset_pos(void);
+size_t oracle_bitstream_reader_offset_subPos(void);
+size_t oracle_bitstream_reader_offset_buf(void);
+size_t oracle_bitstream_reader_offset_len(void);
+
 /* Layout of struct bitstream_reader as the C compiler sees the real header. */
 size_t oracle_bitstream_reader_size(void)
 {

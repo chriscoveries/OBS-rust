@@ -42,11 +42,12 @@
 //! - Mid-dispatch removals that shrink the list below the loop's current
 //!   index: the C reads the stale darray tail (freed-capacity bytes) and
 //!   invokes it; the port skips — no defined C equivalent to reproduce.
-//! - Unix-first: built only where `crate::platform::with_audio_thread_port!`
-//!   expands (Unix) — the recursive mutex is a pthread one and there is no
-//!   Windows backend, so Windows keeps `media-io/audio-io.c` (its
-//!   exports stay marked C-side); the oracle's POSIX timing is gated the
-//!   same way. A Windows backend is separate work.
+//! - Built where `crate::platform::with_audio_thread_port!` expands.
+//!   Unix locks with a pthread recursive mutex. Windows locks with a
+//!   `CRITICAL_SECTION` (also recursive) and the worker registers the
+//!   MMCSS "Audio" task, as `audio-io.c` does under `_WIN32`. The stop
+//!   flag is an atomic; C uses `os_event_try` on a manual event. The
+//!   worker is a Rust thread, not `pthread_create`.
 //!
 use crate::audio_io::{AUDIO_OUTPUT_FRAMES, MAX_AUDIO_CHANNELS, MAX_AUDIO_MIXES};
 
@@ -780,6 +781,7 @@ impl Drop for AudioOutput {
 /// The audio thread: `&Shared` for its whole life — never `&mut` and never
 /// the owner object.
 fn audio_thread(shared: *const Shared) {
+    let _mmcss = crate::platform::AudioThreadClass::enter();
     // SAFETY: the Shared box outlives the thread — AudioOutput::drop joins
     // before tearing it down.
     let s = unsafe { &*shared };

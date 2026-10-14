@@ -14,4 +14,4 @@ sudo=; [ "$(id -u)" = 0 ] || sudo=sudo
 $sudo apt-get update
 # shellcheck disable=SC2086 # word-splitting the package list is intended
 $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $pkgs \
-  valgrind xvfb xauth libgl1-mesa-dri dbus-daemon dbus-x11 qt6-image-formats-plugins
+  valgrind gdb xvfb xauth libgl1-mesa-dri dbus-daemon dbus-x11 qt6-image-formats-plugins

@@ -95,8 +95,8 @@ int os_event_wait(os_event_t *event)
 
 static inline void add_ms_to_ts(struct timespec *ts, unsigned long milliseconds)
 {
-	ts->tv_sec += milliseconds / 1000;
-	ts->tv_nsec += (milliseconds % 1000) * 1000000;
+	ts->tv_sec += (time_t)(milliseconds / 1000);
+	ts->tv_nsec += (long)((milliseconds % 1000) * 1000000);
 	if (ts->tv_nsec >= 1000000000) {
 		ts->tv_sec += 1;
 		ts->tv_nsec -= 1000000000;
@@ -222,7 +222,7 @@ struct os_sem_data {
 int os_sem_init(os_sem_t **sem, int value)
 {
 	sem_t new_sem;
-	int ret = sem_init(&new_sem, 0, value);
+	int ret = sem_init(&new_sem, 0, (unsigned int)value);
 	if (ret != 0)
 		return ret;
 
@@ -262,12 +262,12 @@ void os_set_thread_name(const char *name)
 #elif defined(__FreeBSD__)
 	pthread_set_name_np(pthread_self(), name);
 #elif defined(__GLIBC__) && !defined(__MINGW32__)
-	if (strlen(name) <= 15) {
-		pthread_setname_np(pthread_self(), name);
-	} else {
-		char *thread_name = bstrdup_n(name, 15);
-		pthread_setname_np(pthread_self(), thread_name);
-		bfree(thread_name);
-	}
+	/* Truncate on the stack: a heap copy here is an allocation (and a free)
+	 * on every new thread, so bnum_allocs() drifts right after a thread
+	 * starts, e.g. after obs_startup() (obs-rust/obs-studio#663). */
+	char thread_name[16];
+	strncpy(thread_name, name, sizeof(thread_name) - 1);
+	thread_name[sizeof(thread_name) - 1] = 0;
+	pthread_setname_np(pthread_self(), thread_name);
 #endif
 }

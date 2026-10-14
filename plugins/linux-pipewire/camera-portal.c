@@ -72,18 +72,24 @@ struct pw_portal_connection {
 
 struct pw_portal_connection *connection = NULL;
 
-static void pw_portal_connection_free(struct pw_portal_connection *connection)
+static void pw_portal_connection_free(struct pw_portal_connection *conn)
 {
-	if (!connection)
+	if (!conn)
 		return;
 
-	g_cancellable_cancel(connection->cancellable);
+	g_cancellable_cancel(conn->cancellable);
 
-	g_clear_pointer(&connection->devices, g_hash_table_destroy);
-	g_clear_pointer(&connection->obs_pw, obs_pipewire_destroy);
-	g_clear_pointer(&connection->sources, g_ptr_array_unref);
-	g_clear_object(&connection->cancellable);
-	bfree(connection);
+	/* The device proxies live on the PipeWire thread, which still runs
+	 * here: destroy them with its loop locked. */
+	if (conn->obs_pw)
+		obs_pipewire_lock(conn->obs_pw);
+	g_clear_pointer(&conn->devices, g_hash_table_destroy);
+	if (conn->obs_pw)
+		obs_pipewire_unlock(conn->obs_pw);
+	g_clear_pointer(&conn->obs_pw, obs_pipewire_destroy);
+	g_clear_pointer(&conn->sources, g_ptr_array_unref);
+	g_clear_object(&conn->cancellable);
+	bfree(conn);
 }
 
 static GDBusProxy *camera_proxy = NULL;
@@ -474,7 +480,7 @@ static bool control_changed(void *data, obs_properties_t *props, obs_property_t 
 	}
 	case OBS_PROPERTY_FLOAT: {
 		float val = obs_data_get_double(settings, obs_property_name(prop));
-		spa_pod_builder_add(&b, id, SPA_POD_Float(val), 0);
+		spa_pod_builder_add(&b, id, SPA_POD_Float((double)val), 0);
 		break;
 	}
 	case OBS_PROPERTY_INT:
@@ -528,27 +534,27 @@ static inline void add_control_property(obs_properties_t *props, obs_data_t *set
 			if (labels == NULL)
 				return;
 
-			prop = obs_properties_add_list(props, (char *)name, (char *)name, OBS_COMBO_TYPE_LIST,
-						       OBS_COMBO_FORMAT_INT);
+			prop = obs_properties_add_list(props, name, name, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 
-			spa_pod_parser_pod(&prs, (struct spa_pod *)labels);
+			spa_pod_parser_pod(&prs, (struct spa_pod *)(uintptr_t)labels);
 			if (spa_pod_parser_push_struct(&prs, &f) < 0)
 				return;
 
 			while (1) {
-				int32_t id;
+				int32_t enum_id;
 				const char *desc;
-				if (spa_pod_parser_get_int(&prs, &id) < 0 || spa_pod_parser_get_string(&prs, &desc) < 0)
+				if (spa_pod_parser_get_int(&prs, &enum_id) < 0 ||
+				    spa_pod_parser_get_string(&prs, &desc) < 0)
 					break;
-				obs_property_list_add_int(prop, (char *)desc, id);
+				obs_property_list_add_int(prop, desc, enum_id);
 			}
 		} else {
 			min = n_vals > 1 ? vals[1] : def;
 			max = n_vals > 2 ? vals[2] : def;
 			step = n_vals > 3 ? vals[3] : (max - min) / 256.0f;
-			prop = obs_properties_add_int_slider(props, (char *)name, (char *)name, min, max, step);
+			prop = obs_properties_add_int_slider(props, name, name, min, max, step);
 		}
-		obs_data_set_default_int(settings, (char *)name, def);
+		obs_data_set_default_int(settings, name, def);
 		obs_property_set_modified_callback2(prop, control_changed, SPA_UINT32_TO_PTR(id));
 		break;
 	}
@@ -556,8 +562,8 @@ static inline void add_control_property(obs_properties_t *props, obs_data_t *set
 		int32_t *vals = SPA_POD_BODY(pod);
 		if (n_vals < 1)
 			return;
-		prop = obs_properties_add_bool(props, (char *)name, (char *)name);
-		obs_data_set_default_bool(settings, (char *)name, vals[0]);
+		prop = obs_properties_add_bool(props, name, name);
+		obs_data_set_default_bool(settings, name, vals[0]);
 		obs_property_set_modified_callback2(prop, control_changed, SPA_UINT32_TO_PTR(id));
 		break;
 	}
@@ -570,8 +576,8 @@ static inline void add_control_property(obs_properties_t *props, obs_data_t *set
 		min = n_vals > 1 ? vals[1] : def;
 		max = n_vals > 2 ? vals[2] : def;
 		step = n_vals > 3 ? vals[3] : (max - min) / 256.0f;
-		prop = obs_properties_add_float_slider(props, (char *)name, (char *)name, min, max, step);
-		obs_data_set_default_double(settings, (char *)name, def);
+		prop = obs_properties_add_float_slider(props, name, name, min, max, step);
+		obs_data_set_default_double(settings, name, def);
 		obs_property_set_modified_callback2(prop, control_changed, SPA_UINT32_TO_PTR(id));
 		break;
 	}
@@ -650,7 +656,7 @@ static bool framerate_list(struct camera_device *dev, uint32_t pixelformat, cons
 	{
 		const struct spa_fraction *framerate_values;
 		enum spa_choice_type choice;
-		const struct spa_pod_prop *prop;
+		const struct spa_pod_prop *fr_prop;
 		struct spa_rectangle this_resolution;
 		struct spa_pod *framerate_pod;
 		uint32_t media_subtype;
@@ -683,11 +689,11 @@ static bool framerate_list(struct camera_device *dev, uint32_t pixelformat, cons
 		if (this_resolution.width != resolution->width || this_resolution.height != resolution->height)
 			continue;
 
-		prop = spa_pod_find_prop(p->param, NULL, SPA_FORMAT_VIDEO_framerate);
-		if (!prop)
+		fr_prop = spa_pod_find_prop(p->param, NULL, SPA_FORMAT_VIDEO_framerate);
+		if (!fr_prop)
 			continue;
 
-		framerate_pod = spa_pod_get_values(&prop->value, &n_framerates, &choice);
+		framerate_pod = spa_pod_get_values(&fr_prop->value, &n_framerates, &choice);
 		if (framerate_pod->type != SPA_TYPE_Fraction) {
 			blog(LOG_WARNING, "Framerate is not a fraction - something is wrong");
 			continue;
@@ -876,7 +882,7 @@ static void populate_cameras_list(struct camera_portal_source *camera_source, ob
 
 	device_found = false;
 	g_hash_table_iter_init(&iter, connection->devices);
-	while (g_hash_table_iter_next(&iter, (gpointer *)&device_id, (gpointer *)&device)) {
+	while (g_hash_table_iter_next(&iter, (gpointer *)(uintptr_t)&device_id, (gpointer *)&device)) {
 		const char *device_name;
 
 		device_name = pw_properties_get(device->properties, PW_KEY_NODE_DESCRIPTION);
@@ -1026,7 +1032,7 @@ static void on_registry_global_remove_cb(void *user_data, uint32_t id)
 	GHashTableIter iter;
 
 	g_hash_table_iter_init(&iter, connection->devices);
-	while (g_hash_table_iter_next(&iter, (gpointer *)&device_id, (gpointer *)&device)) {
+	while (g_hash_table_iter_next(&iter, (gpointer *)(uintptr_t)&device_id, (gpointer *)&device)) {
 		if (device->id != id)
 			continue;
 		blog(LOG_INFO, "[pipewire-camera] Removed device %s", device_id);
@@ -1072,8 +1078,13 @@ static void on_pipewire_remote_opened_cb(GObject *source, GAsyncResult *res, voi
 		return;
 	}
 
-	connection->obs_pw = obs_pipewire_connect_fd(pipewire_fd, &registry_events, connection);
+	connection->obs_pw = obs_pipewire_connect_fd(pipewire_fd);
+	if (!connection->obs_pw)
+		return;
 
+	/* The registry callbacks use connection->obs_pw, so listen only once
+	 * it is set (obsproject/obs-studio#13971). */
+	obs_pipewire_add_registry_listener(connection->obs_pw, &registry_events, connection);
 	obs_pipewire_roundtrip(connection->obs_pw);
 }
 

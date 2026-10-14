@@ -22,6 +22,9 @@ runs:
         echo "services-validation action requires a macOS-based or Linux-based runner."
         exit 2
 
+    - name: Set Up uv 🐍
+      uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
     - name: Validate Flatpak Manifest 🕵️
       shell: bash
       working-directory: ${{ inputs.workingDirectory }}
@@ -30,7 +33,7 @@ runs:
 
         echo ::group::Run Validation
         if [[ '${{ inputs.failCondition }}' == 'never' ]]; then set +e; fi
-        python3 -u \
+        PYTHONUNBUFFERED=1 uv run --no-project \
           build-aux/format-manifest.py \
           build-aux/com.obsproject.Studio.json \
           --check \

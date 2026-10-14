@@ -472,8 +472,8 @@ static void calculate_bounds_data(struct obs_scene_item *item, struct vec2 *orig
 	add_alignment(origin, item->bounds_align, (int)-width_diff, (int)-height_diff);
 
 	/* Set cropping if enabled and large enough size difference exists */
-	if (crop_to_bounds(item) && (width_diff < -0.1 || height_diff < -0.1)) {
-		bool crop_width = width_diff < -0.1;
+	if (crop_to_bounds(item) && ((double)width_diff < -0.1 || (double)height_diff < -0.1)) {
+		bool crop_width = (double)width_diff < -0.1;
 		bool crop_flipped = crop_width ? width < 0.0f : height < 0.0f;
 
 		float crop_diff = crop_width ? width_diff : height_diff;
@@ -869,6 +869,27 @@ static bool are_texcoords_centered(struct matrix4 *m)
 	return memcmp(m, &copy, sizeof(*m)) == 0;
 }
 
+/* An item's show/hide transition only runs out, and releases the item's
+ * source, when it is rendered. An item drawn through a texture is skipped
+ * while its source has no size (a Media Source that cleared its frame at the
+ * end), so render the running transition anyway: with no size it draws
+ * nothing, as for an item drawn directly. */
+static void render_empty_item_transition(struct obs_scene_item *item)
+{
+	obs_source_t *transition = NULL;
+
+	if (item->user_visible && transition_active(item->show_transition))
+		transition = item->show_transition;
+	else if (!item->user_visible && transition_active(item->hide_transition))
+		transition = item->hide_transition;
+
+	if (!transition)
+		return;
+
+	obs_transition_set_size(transition, 0, 0);
+	obs_source_video_render(transition);
+}
+
 static inline void render_item(struct obs_scene_item *item)
 {
 	GS_DEBUG_MARKER_BEGIN_FORMAT(GS_DEBUG_COLOR_ITEM, "Item: %s", obs_source_get_name(item->source));
@@ -894,6 +915,7 @@ static inline void render_item(struct obs_scene_item *item)
 		uint32_t height = obs_source_get_height(item->source);
 
 		if (!width || !height) {
+			render_empty_item_transition(item);
 			goto cleanup;
 		}
 
@@ -914,14 +936,14 @@ static inline void render_item(struct obs_scene_item *item)
 					      -(float)(item->crop.top + item->bounds_crop.top), 0.0f);
 
 			if (item->user_visible && transition_active(item->show_transition)) {
-				const int cx = obs_source_get_width(item->source);
-				const int cy = obs_source_get_height(item->source);
-				obs_transition_set_size(item->show_transition, cx, cy);
+				const int show_cx = obs_source_get_width(item->source);
+				const int show_cy = obs_source_get_height(item->source);
+				obs_transition_set_size(item->show_transition, show_cx, show_cy);
 				obs_source_video_render(item->show_transition);
 			} else if (!item->user_visible && transition_active(item->hide_transition)) {
-				const int cx = obs_source_get_width(item->source);
-				const int cy = obs_source_get_height(item->source);
-				obs_transition_set_size(item->hide_transition, cx, cy);
+				const int hide_cx = obs_source_get_width(item->source);
+				const int hide_cy = obs_source_get_height(item->source);
+				obs_transition_set_size(item->hide_transition, hide_cx, hide_cy);
 				obs_source_video_render(item->hide_transition);
 			} else {
 				obs_source_set_texcoords_centered(item->source, true);
@@ -2097,30 +2119,60 @@ obs_sceneitem_t *obs_scene_find_sceneitem_by_id(obs_scene_t *scene, int64_t id)
 	return item;
 }
 
+/* Must be called with the scene locked. Only compares pointers and follows the
+ * links of items that are in the scene, which the scene lock protects. An item
+ * that left the scene may be changed by whoever holds its new scene's lock, so
+ * its fields must not be read here. */
+static bool scene_has_item(const struct obs_scene *scene, const struct obs_scene_item *item)
+{
+	for (const struct obs_scene_item *cur = scene->first_item; cur; cur = cur->next) {
+		if (cur == item)
+			return true;
+	}
+	return false;
+}
+
 void obs_scene_enum_items(obs_scene_t *scene, bool (*callback)(obs_scene_t *, obs_sceneitem_t *, void *), void *param)
 {
 	struct obs_scene_item *item;
+	obs_scene_item_ptr_array_t items;
 
 	if (!scene || !callback)
 		return;
 
+	da_init(items);
+
 	full_lock(scene);
 
+	/* The callback may remove items other than the current one, or move them
+	 * to another scene (a group), so walk a snapshot that holds a reference
+	 * to every item and skip the ones that are no longer in this scene.
+	 * Membership is decided by the scene's own item list, which the scene
+	 * lock we hold protects; the fields of an item that has left the scene
+	 * are not read. An item being removed stays in the list until it is
+	 * detached, but it is already marked removed (also while its removal
+	 * signals run), and its removal needs this scene's lock. */
 	item = scene->first_item;
 	while (item) {
-		struct obs_scene_item *next = item->next;
-
 		obs_sceneitem_addref(item);
-
-		if (!callback(scene, item, param)) {
-			obs_sceneitem_release(item);
-			break;
-		}
-
-		obs_sceneitem_release(item);
-
-		item = next;
+		da_push_back(items, &item);
+		item = item->next;
 	}
+
+	for (size_t i = 0; i < items.num; i++) {
+		item = items.array[i];
+
+		if (!scene_has_item(scene, item) || item->removed)
+			continue;
+
+		if (!callback(scene, item, param))
+			break;
+	}
+
+	for (size_t i = 0; i < items.num; i++)
+		obs_sceneitem_release(items.array[i]);
+
+	da_free(items);
 
 	full_unlock(scene);
 }

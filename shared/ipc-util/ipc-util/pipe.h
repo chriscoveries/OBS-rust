@@ -21,7 +21,7 @@
 
 #ifdef __cplusplus
 extern "C" {
-#elif _MSC_VER
+#elif defined(_MSC_VER)
 #ifndef inline
 #define inline __inline
 #endif

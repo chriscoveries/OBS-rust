@@ -32,6 +32,8 @@
 
 /* Parity-test probe only, not part of util/threading.h: a non-blocking
  * take. The handle is the opaque pointer, as in threading-windows.c. */
+int oracle_os_sem_trywait(os_sem_t *sem);
+
 int oracle_os_sem_trywait(os_sem_t *sem)
 {
 	if (!sem)

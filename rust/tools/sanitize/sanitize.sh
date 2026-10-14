@@ -43,7 +43,7 @@ inst=$b/rundir/$type
 mkdir -p "$root" || exit 1
 [ -n "${SKIP_TESTS:-}" ] || rm -rf "$out"
 mkdir -p "$out"
-[ -n "${OBS_VERSION_OVERRIDE:-}" ] || OBS_VERSION_OVERRIDE=$(git -C "$src" describe --always --tags 2>/dev/null || true)
+[ -n "${OBS_VERSION_OVERRIDE:-}" ] || OBS_VERSION_OVERRIDE=$(git -C "$src" describe --always --tags --match "[0-9]*.[0-9]*.[0-9]*" 2>/dev/null || true)
 export CCACHE_BASEDIR=$src
 
 echo "== [$tool] configure + build (ENABLE_RUST_LIBOBS=${RUST_LIBOBS:-OFF})"
@@ -83,6 +83,14 @@ export TSAN_OPTIONS="halt_on_error=0:second_deadlock_stack=1:log_path=$out/tsan"
 vg=(valgrind --error-exitcode=99 --child-silent-after-fork=yes --errors-for-leak-kinds=definite
   --leak-check=full --show-leak-kinds=definite --num-callers=40 --track-origins=yes --fullpath-after=)
 
+# One headless display for the unit tests (several start OBS, which needs
+# one on Linux) and the app launch.
+disp=:$((90 + RANDOM % 9))
+Xvfb $disp -screen 0 1920x1080x24 >/dev/null 2>&1 &
+xpid=$!
+export DISPLAY=$disp LIBGL_ALWAYS_SOFTWARE=1 QT_QPA_PLATFORM=xcb
+sleep 2
+
 if [ -z "${SKIP_TESTS:-}" ]; then
   echo "== [$tool] unit tests"
   mkdir -p "$out/tests"
@@ -106,10 +114,6 @@ if [ -z "${SKIP_TESTS:-}" ]; then
 fi
 
 echo "== [$tool] app launch (${secs}s)"
-disp=:$((90 + RANDOM % 9))
-Xvfb $disp -screen 0 1920x1080x24 >/dev/null 2>&1 &
-xpid=$!
-export DISPLAY=$disp LIBGL_ALWAYS_SOFTWARE=1 QT_QPA_PLATFORM=xcb
 # PCRE2 JIT runs code from a dual-mapped memfd that valgrind cannot follow (SEGV in /memfd:sljit).
 export QT_ENABLE_REGEXP_JIT=0
 sleep 2
@@ -125,8 +129,26 @@ if [ $tool = valgrind ]; then
   grace=240
 fi
 cd "$inst/bin" || exit 1
-timeout -s INT -k $grace $secs dbus-run-session -- "${cmd[@]}" >"$out/app.log" 2>&1
-echo "app exit=$?" | tee "$out/app-exit.txt"
+dbus-run-session -- "${cmd[@]}" >"$out/app.log" 2>&1 &
+spid=$!
+sleep 1
+# OBS, or valgrind running it; dbus-run-session's other child is dbus-daemon.
+app=$(pgrep -P $spid -f "$inst/bin/obs" | head -1)
+for _ in $(seq "$secs"); do kill -0 $spid 2>/dev/null || break; sleep 1; done
+[ -n "$app" ] && kill -INT "$app" 2>/dev/null
+status=closed
+for _ in $(seq "$grace"); do kill -0 $spid 2>/dev/null || { status=exited; break; }; sleep 1; done
+if [ $status = closed ] && [ -n "$app" ] && kill -0 "$app" 2>/dev/null; then
+  # Still running after SIGINT + grace: record where it hangs (#462). gdb
+  # needs sudo to attach to a non-child under ptrace_scope=1.
+  gdbcmd=(gdb -batch -ex 'set pagination off' -ex 'info threads' -ex 'thread apply all bt' -p "$app")
+  sudo -n "${gdbcmd[@]}" >"$out/hang-backtrace.txt" 2>&1 || "${gdbcmd[@]}" >"$out/hang-backtrace.txt" 2>&1
+  kill -KILL "$app" $spid 2>/dev/null
+  status=killed
+fi
+wait $spid
+code=$?
+echo "app exit=$code ($status)" | tee "$out/app-exit.txt"
 cp -r "$HOME/.config/obs-studio/logs" "$out/obs-logs" 2>/dev/null || true
 kill $xpid 2>/dev/null
 exit 0

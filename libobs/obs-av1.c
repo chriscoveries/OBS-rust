@@ -44,9 +44,9 @@ static void parse_obu_header(const uint8_t *buf, size_t size, size_t *obu_start,
 	if (size < 1)
 		return;
 
-	*obu_type = get_bits(*buf, 1, 4);
-	extension_flag = get_bits(*buf, 5, 1);
-	has_size_field = get_bits(*buf, 6, 1);
+	*obu_type = (int)get_bits(*buf, 1, 4);
+	extension_flag = (int)get_bits(*buf, 5, 1);
+	has_size_field = (int)get_bits(*buf, 6, 1);
 
 	if (extension_flag)
 		(*obu_start)++;
@@ -134,10 +134,10 @@ void metadata_obu(const uint8_t *source_buffer, size_t source_bufsize, uint8_t *
 	 * 	trailing_bits( obu_size * 8 - payloadBits )
 	 */
 
-	int64_t size_field = 1 + source_bufsize + 1;
+	int64_t size_field = (int64_t)(1 + source_bufsize + 1);
 	uint8_t size_buf[10];
 	size_t size_buf_size = 0;
-	encode_uleb128(size_field, size_buf, &size_buf_size);
+	encode_uleb128((uint64_t)size_field, size_buf, &size_buf_size);
 	// header + obu_size + metadata_type + metadata_payload + trailing_bits
 	*outbuf_size = 1 + size_buf_size + 1 + source_bufsize + 1;
 	*out_buffer = bzalloc(*outbuf_size);
@@ -170,7 +170,7 @@ bool obs_av1_keyframe(const uint8_t *data, size_t size)
 	while (start < end) {
 		size_t obu_start, obu_size;
 		int obu_type;
-		parse_obu_header(start, end - start, &obu_start, &obu_size, &obu_type);
+		parse_obu_header(start, (size_t)(end - start), &obu_start, &obu_size, &obu_type);
 
 		if (obu_size) {
 			if (obu_type == OBS_OBU_FRAME || obu_type == OBS_OBU_FRAME_HEADER) {
@@ -200,7 +200,7 @@ void obs_extract_av1_headers(const uint8_t *packet, size_t size, uint8_t **new_p
 	while (start < end) {
 		size_t obu_start, obu_size;
 		int obu_type;
-		parse_obu_header(start, end - start, &obu_start, &obu_size, &obu_type);
+		parse_obu_header(start, (size_t)(end - start), &obu_start, &obu_size, &obu_type);
 
 		if (obu_type == OBS_OBU_METADATA || obu_type == OBS_OBU_SEQUENCE_HEADER) {
 			da_push_back_array(header, start, obu_start + obu_size);

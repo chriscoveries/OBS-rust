@@ -69,7 +69,7 @@ AutoConfig::AutoConfig(QWidget *parent) : QWizard(parent)
 	OBSBasic *main = OBSBasic::Get();
 	main->EnableOutputs(false);
 
-	installEventFilter(CreateShortcutFilter());
+	installEventFilter(CreateShortcutFilter(this));
 
 	std::string serviceType;
 	GetServiceInfo(serviceType, serviceName, server, key);

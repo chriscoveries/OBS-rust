@@ -171,13 +171,17 @@ static void seek_to(mp_cache_t *c, int64_t pos)
 		return;
 	}
 
+	/* pos is in microseconds; the cached frames' timestamps are decoded
+	 * pts, in nanoseconds and scaled by the speed */
+	int64_t pos_ns = c->speed > 0 ? pos * 1000 * 100 / c->speed : pos * 1000;
+
 	if (c->has_video) {
 		struct obs_source_frame *v;
 
 		for (size_t i = 0; i < c->video_frames.num; i++) {
 			v = &c->video_frames.array[i];
 			new_v_idx = i;
-			if ((int64_t)v->timestamp >= pos) {
+			if ((int64_t)v->timestamp >= pos_ns) {
 				break;
 			}
 		}
@@ -195,7 +199,7 @@ static void seek_to(mp_cache_t *c, int64_t pos)
 		for (size_t i = 0; i < c->audio_segments.num; i++) {
 			a = &c->audio_segments.array[i];
 			new_a_idx = i;
-			if ((int64_t)a->timestamp >= pos) {
+			if ((int64_t)a->timestamp >= pos_ns) {
 				break;
 			}
 		}
@@ -552,7 +556,7 @@ static void fill_audio(void *data, struct obs_source_audio *audio)
 	size_t planes = get_audio_planes(dup.format, dup.speakers);
 	if (planes > 1) {
 		size = get_audio_bytes_per_channel(dup.format) * dup.frames;
-		uint8_t *out = (uint8_t *)dup.data[0];
+		uint8_t *out = (uint8_t *)(uintptr_t)dup.data[0];
 
 		for (size_t i = 0; i < planes; i++) {
 			if (i > 0)
@@ -562,7 +566,7 @@ static void fill_audio(void *data, struct obs_source_audio *audio)
 			out += size;
 		}
 	} else {
-		memcpy((uint8_t *)dup.data[0], audio->data[0], size);
+		memcpy((uint8_t *)(uintptr_t)dup.data[0], audio->data[0], size);
 	}
 
 	c->final_a_duration = c->m.a.last_duration;
@@ -663,8 +667,7 @@ void mp_cache_free(mp_cache_t *c)
 	mp_cache_stop(c);
 	mp_kill_thread(c);
 
-	if (c->m.fmt)
-		mp_media_free(&c->m);
+	mp_media_free(&c->m);
 
 	for (size_t i = 0; i < c->video_frames.num; i++) {
 		struct obs_source_frame *f = &c->video_frames.array[i];
@@ -672,7 +675,7 @@ void mp_cache_free(mp_cache_t *c)
 	}
 	for (size_t i = 0; i < c->audio_segments.num; i++) {
 		struct obs_source_audio *a = &c->audio_segments.array[i];
-		bfree((void *)a->data[0]);
+		bfree((void *)(uintptr_t)a->data[0]);
 	}
 	da_free(c->video_frames);
 	da_free(c->audio_segments);
@@ -691,6 +694,9 @@ void mp_cache_play(mp_cache_t *c, bool loop)
 	if (c->active)
 		c->reset = true;
 
+	/* A stop the thread has not handled yet still resets the cache, but
+	 * playback starts again, so it must not report that it stopped. */
+	c->stopping = false;
 	c->looping = loop;
 	c->active = true;
 

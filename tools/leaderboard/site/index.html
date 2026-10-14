@@ -49,6 +49,9 @@ h1 em{font-style:normal;color:var(--rust)}
 .r3 .gauge i{background:repeating-linear-gradient(90deg,var(--cu) 0 6px,transparent 6px 8px)}
 .cnt{text-align:right;font:700 34px/1 "JetBrains Mono",monospace;color:var(--fg);background:#101213;border:2px solid #000;padding:6px 10px;box-shadow:inset 0 0 0 1px var(--edge);letter-spacing:.04em}
 .r1 .cnt{color:var(--rust);font-size:42px}
+.cnt .delta{display:block;margin-top:3px;font:700 14px/1 "JetBrains Mono",monospace;letter-spacing:.04em}
+.delta-up{color:#3ddc6a}.delta-up svg{fill:#3ddc6a;vertical-align:-1px;margin-right:4px}.delta-none{color:#5d6367}
+.cap{margin-top:10px;font:500 13px "JetBrains Mono",monospace;color:#a9aeb2;letter-spacing:.04em}.cap .up{color:#3ddc6a}
 .cnt small{display:block;font:500 10px "JetBrains Mono";color:var(--cu);letter-spacing:.14em;margin-top:2px}
 footer{padding:20px 40px 0;font:500 12px "JetBrains Mono",monospace;color:#8a8f93;text-transform:uppercase;letter-spacing:.06em}
 footer a{color:var(--cu)}
@@ -68,6 +71,7 @@ footer a{color:var(--cu)}
 <h1>obs<em>-rust</em><br>Leaderboard</h1>
 <p class="sub">Ranked by <b>merged pull requests</b> &middot; credit to the original author</p>
 <span class="tag" id="tot">Loading...</span>
+<p class="cap" id="cap"></p>
 </div>
 </header>
 <section class="board">
@@ -85,8 +89,9 @@ const C=[...d.contributors].sort((a,b)=>a.rank-b.rank),max=Math.max(1,...C.map(c
 const fmt=s=>new Date(s).toLocaleDateString("en",{month:"short",year:"numeric"});
 const gh=l=>"https://github.com/"+encodeURIComponent(l);
 document.getElementById("tot").textContent=(d.merged_pr_total||C.reduce((a,c)=>a+c.merged_prs,0))+" merged PRs logged";
-document.getElementById("list").innerHTML=C.map(c=>`<div class="row r${c.rank}"><div class="plate">${String(c.rank).padStart(2,"0")}</div><img src="${esc(c.avatar_url)}" alt=""><div><div class="who"><a href="${gh(c.login)}">${esc(c.login)}</a></div><div class="when">${fmt(c.first_contribution)} - ${fmt(c.last_contribution)}</div></div><div class="meter"><div class="gauge"><i style="width:${Math.round(100*c.merged_prs/max)}%"></i></div></div><div class="cnt">${c.merged_prs}<small>MERGED</small></div></div>`).join("");
-document.getElementById("foot").innerHTML=`Updated ${new Date(d.generated_at).toUTCString()} &middot; <a href="https://github.com/${esc(d.repo)}">${esc(d.repo)}</a> &middot; <a href="leaderboard.json">JSON</a>`;
+document.getElementById("list").innerHTML=C.map(c=>`<div class="row r${c.rank}"><div class="plate">${String(c.rank).padStart(2,"0")}</div><img src="${esc(c.avatar_url)}" alt=""><div><div class="who"><a href="${gh(c.login)}">${esc(c.login)}</a></div><div class="when">${fmt(c.first_contribution)} - ${fmt(c.last_contribution)}</div></div><div class="meter"><div class="gauge"><i style="width:${Math.round(100*c.merged_prs/max)}%"></i></div></div><div class="cnt">${c.merged_prs}${c.today_badge||""}<small>MERGED</small></div></div>`).join("");
+if(d.since_caption)document.getElementById("cap").innerHTML=`<span class="up">&#9650;</span> = ${esc(d.since_caption)} &middot; ${d.today_total||0} today`;
+document.getElementById("foot").innerHTML=`Updated ${esc(d.generated_pacific||new Date(d.generated_at).toUTCString())} &middot; <a href="https://github.com/${esc(d.repo)}">${esc(d.repo)}</a> &middot; <a href="leaderboard.json">JSON</a>`;
 document.body.dataset.ready="1";
 })();
 </script>

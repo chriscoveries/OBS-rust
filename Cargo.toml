@@ -9,6 +9,10 @@ rust-version = "1.98"
 license = "GPL-2.0-or-later"
 publish = false
 
+# Shared third-party pins (exact, so loader behaviour cannot drift).
+[workspace.dependencies]
+libloading = "=0.8.9"
+
 [profile.release]
 # libobs links the Rust staticlib; keep panics from unwinding across the C ABI.
 panic = "abort"

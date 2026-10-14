@@ -2,6 +2,44 @@
 
 include_guard(GLOBAL)
 
+# _obs_download_dependency: Downloads url to destination, checking its SHA256.
+# A dropped connection or timeout is retried (3 attempts, 10 s then 20 s
+# apart), so one slow request doesn't fail a release build.
+function(_obs_download_dependency url destination hash)
+  if(NOT DEFINED OBS_DEPENDENCY_DOWNLOAD_RETRY_DELAY)
+    set(OBS_DEPENDENCY_DOWNLOAD_RETRY_DELAY 10)
+  endif()
+  set(attempts 3)
+  foreach(attempt RANGE 1 ${attempts})
+    message(STATUS "Downloading ${url} (attempt ${attempt} of ${attempts})")
+    # No EXPECTED_HASH: on a failed transfer it raises an error of its own,
+    # which fails the configure even when a retry succeeds.
+    file(DOWNLOAD "${url}" "${destination}.tmp" STATUS download_status)
+    list(GET download_status 0 error_code)
+    list(GET download_status 1 error_message)
+    if(NOT error_code)
+      file(SHA256 "${destination}.tmp" actual_hash)
+      string(TOLOWER "${hash}" expected_hash)
+      if(NOT actual_hash STREQUAL expected_hash)
+        set(error_code 1)
+        set(error_message "SHA256 mismatch: expected ${hash}, got ${actual_hash}")
+      endif()
+    endif()
+    if(NOT error_code)
+      file(RENAME "${destination}.tmp" "${destination}")
+      message(STATUS "Downloading ${url} - done")
+      return()
+    endif()
+    file(REMOVE "${destination}.tmp")
+    if(attempt LESS attempts)
+      math(EXPR delay "${OBS_DEPENDENCY_DOWNLOAD_RETRY_DELAY} * ${attempt}")
+      message(STATUS "Download failed (${error_message}); retrying in ${delay} s")
+      execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep ${delay})
+    endif()
+  endforeach()
+  message(FATAL_ERROR "Unable to download ${url}, failed with error: ${error_message}")
+endfunction()
+
 # _check_deps_version: Checks for obs-deps VERSION file in prefix paths
 function(_check_deps_version version)
   set(found FALSE PARENT_SCOPE)
@@ -152,19 +190,7 @@ function(_check_dependencies)
     endif()
 
     if(NOT EXISTS "${dependencies_dir}/${file}")
-      message(STATUS "Downloading ${url}")
-      file(DOWNLOAD "${url}" "${dependencies_dir}/${file}.tmp" STATUS download_status EXPECTED_HASH SHA256=${hash})
-
-      list(GET download_status 0 error_code)
-      list(GET download_status 1 error_message)
-      if(error_code)
-        file(REMOVE "${dependencies_dir}/${file}.tmp")
-        message(STATUS "Downloading ${url} - Failure")
-        message(FATAL_ERROR "Unable to download ${url}, failed with error: ${error_message}")
-      else()
-        file(RENAME "${dependencies_dir}/${file}.tmp" "${dependencies_dir}/${file}")
-        message(STATUS "Downloading ${url} - done")
-      endif()
+      _obs_download_dependency("${url}" "${dependencies_dir}/${file}" "${hash}")
     endif()
 
     if(NOT OBS_DEPENDENCY_${dependency}_${arch}_HASH STREQUAL ${hash})

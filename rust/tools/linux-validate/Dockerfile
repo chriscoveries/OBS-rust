@@ -4,6 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
   build-essential cmake ninja-build pkg-config git ca-certificates curl file \
   libglib2.0-dev libcurl4-openssl-dev \
+  libffmpeg-nvenc-dev \
   libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev \
   libjansson-dev libx11-xcb-dev libgles2-mesa-dev libwayland-dev libpipewire-0.3-dev libpulse-dev libx264-dev \
   libmbedtls-dev libgl1-mesa-dev uthash-dev libsimde-dev libluajit-5.1-dev python3-dev \

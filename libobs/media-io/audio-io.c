@@ -116,8 +116,8 @@ static inline void do_audio_output(struct audio_output *audio, size_t mix_idx, u
 
 		float (*buf)[AUDIO_OUTPUT_FRAMES] = input->conversion.allow_clipping ? mix->buffer_unclamped
 										     : mix->buffer;
-		for (size_t i = 0; i < audio->planes; i++)
-			data.data[i] = (uint8_t *)buf[i];
+		for (size_t p = 0; p < audio->planes; p++)
+			data.data[p] = (uint8_t *)buf[p];
 
 		data.frames = frames;
 		data.timestamp = timestamp;

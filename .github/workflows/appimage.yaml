@@ -1,22 +1,36 @@
 name: AppImage
 run-name: AppImage build and portability test (${{ github.ref_name }}) 📦
 # Builds the AppImage, proves it runs in stock containers, and then:
-#   push to master  -> the rolling "continuous" pre-release carries it
 #   push of a tag   -> that tag's release carries it (created if missing)
-#   workflow_call   -> release-rust.yaml builds it for the daily beta
+#   workflow_call   -> release-rust.yaml builds it for the daily beta and, with
+#                      publish_continuous, refreshes the rolling "continuous"
+#                      pre-release (daily, not per master push: #436)
 #   PR / dispatch   -> artifact only
 on:
   push:
-    branches:
-      - master
     tags:
       - '*'
     paths-ignore:
       - '**.md'
   workflow_call:
     inputs:
+      rust_libobs:
+        description: Build libobs with the Rust ports (ENABLE_RUST_LIBOBS)
+        type: boolean
+        required: false
+        default: true
       ref:
         description: The commit to build (defaults to the caller's)
+        type: string
+        required: false
+        default: ''
+      publish_continuous:
+        description: Publish the build as the rolling "continuous" pre-release
+        type: boolean
+        required: false
+        default: false
+      rust_version:
+        description: Full OBS-Studio-Rust release string to embed (e.g. 0.1.0-beta.20261013) and expect from --version
         type: string
         required: false
         default: ''
@@ -96,7 +110,10 @@ jobs:
           sudo apt-get update
           mkdir -p .apt-cache/partial
           # Same set as .github/scripts/utils.zsh/setup_ubuntu, minus CEF/VLC/Python
-          # (not shipped in the AppImage), plus tools for packaging.
+          # (not shipped in the AppImage), plus tools for packaging, plus what the
+          # bundled libpipewire loads at runtime: its modules (libpipewire-0.3-modules)
+          # and client.conf (pipewire-bin). assemble-appdir.sh fails without them
+          # (obs-rust/obs-studio#426).
           sudo -E apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 -o Dir::Cache::archives="$PWD/.apt-cache" \
             build-essential cmake ninja-build ccache pkg-config git curl ca-certificates \
             patchelf desktop-file-utils file squashfs-tools zsync \
@@ -104,7 +121,8 @@ jobs:
             libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev \
             libswresample-dev libswscale-dev libjansson-dev libx11-xcb-dev libgles2-mesa-dev \
             libwayland-dev libpipewire-0.3-dev libpulse-dev libx264-dev libmbedtls-dev \
-            libgl1-mesa-dev uthash-dev libsimde-dev libluajit-5.1-dev swig libxss-dev libglvnd-dev \
+            libpipewire-0.3-modules pipewire-bin \
+            libgl1-mesa-dev libgbm-dev ffmpeg uthash-dev libsimde-dev libluajit-5.1-dev swig libxss-dev libglvnd-dev \
             libx11-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xinerama0-dev libxcb-composite0-dev \
             libxinerama-dev libxcb1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libatk1.0-dev libatk-bridge2.0-dev libxcomposite-dev libxdamage-dev \
@@ -116,6 +134,23 @@ jobs:
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
             libxcb-shape0 libxcb-xkb1 libxcb-sync1 libxcb-xinerama0
           sudo chown -R "$(id -u):$(id -g)" .apt-cache # apt ran as root; the cache action must read it
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Build libavutil with host VA compatibility
+        run: |
+          # Keep Ubuntu's complete feature configuration. Only the optional
+          # newer VA mapping API is adapted; exports/backends are audited.
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update -qq
+          sudo -E apt-get -y -qq -o DPkg::Lock::Timeout=120 -o Dir::Cache::archives="$PWD/.apt-cache" build-dep --arch-only ffmpeg=7:8.0.1-3ubuntu2
+          sudo chown -R "$(id -u):$(id -g)" .apt-cache
+          uv run --no-project build-aux/appimage/build_vaapi_compat.py avutil-compat
+          # FFmpeg's recipe replaces this with libsrt-gnutls-dev, which lacks
+          # the library name OBS's finder expects. Restore OBS's build input
+          # after the audited avutil build; keep MPEG-TS/SRT enabled.
+          sudo -E apt-get -y -qq -o DPkg::Lock::Timeout=120 -o Dir::Cache::archives="$PWD/.apt-cache" install libsrt-openssl-dev
+          sudo chown -R "$(id -u):$(id -g)" .apt-cache
 
       - name: Determine version 🏷️
         run: |
@@ -132,8 +167,11 @@ jobs:
       - name: Configure 🔧
         id: configure
         env:
-          RUST_LIBOBS: ${{ github.event_name != 'workflow_dispatch' || inputs.rust_libobs }}
+          # Keep absent inputs (push, tag, pull_request) distinct from explicit
+          # false: loose Boolean equality would treat both as zero.
+          RUST_LIBOBS: ${{ format('{0}', inputs.rust_libobs) != 'false' }}
           QSV: ${{ github.event_name == 'workflow_dispatch' && inputs.qsv }}
+          OBS_RUST_VERSION: ${{ inputs.rust_version }}
         run: |
           echo "rust=${RUST_LIBOBS^^}" >> "$GITHUB_OUTPUT" # the tests check the build really has it
           cmake --preset ubuntu-ci \
@@ -180,7 +218,7 @@ jobs:
       - name: Assemble AppDir 📁
         run: |
           DESTDIR="$PWD/AppDir" cmake --install build_ubuntu
-          build-aux/appimage/assemble-appdir.sh AppDir
+          build-aux/appimage/assemble-appdir.sh AppDir avutil-compat/libavutil.so.60
 
       - name: Create AppImage 📀
         env:
@@ -194,22 +232,54 @@ jobs:
           chmod +x appimagetool
           # Runners have no /dev/fuse: extract appimagetool instead of running it.
           ./appimagetool --appimage-extract >/dev/null
-          # A master build is published as the "continuous" pre-release (release job),
-          # so it carries update information: AppImageUpdate and friends can then
-          # fetch the next continuous build as a delta against this one (.zsync).
+          # A build published as the "continuous" pre-release (release job) carries
+          # update information: AppImageUpdate and friends can then fetch the next
+          # continuous build as a delta against this one (.zsync).
           update=()
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/master ]; then
-            update=(-u "gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|continuous|OBS_Studio-*-x86_64.AppImage.zsync")
+          if [ "${{ inputs.publish_continuous }}" = true ]; then
+            update=(-u "gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|continuous|OBS-Studio-Rust-*-linux-x86_64.AppImage.zsync")
           fi
-          ARCH=x86_64 squashfs-root/AppRun --no-appstream "${update[@]}" AppDir "OBS_Studio-${OBS_VERSION}-x86_64.AppImage"
-          ls -lh OBS_Studio-*
+          version="$(AppDir/AppRun --version)"
+          asset="$(uv run --no-project build-aux/appimage/asset_metadata.py name --version "$version")"
+          ARCH=x86_64 squashfs-root/AppRun --no-appstream "${update[@]}" AppDir "$asset"
+          ls -lh OBS-Studio-*
+
+      - name: Build the test helper 🧰
+        # Run by test-appimage.sh next to obs, with the AppImage's own loader and
+        # (through the same relative DT_RPATH obs has) its own libraries: runtime
+        # probes, a fake ScreenCast/Camera portal and the test tone.
+        run: |
+          gcc -O2 -Wall -Wextra -Werror -o obs-appimage-testkit build-aux/appimage/testkit.c \
+            $(pkg-config --cflags --libs gio-unix-2.0 libpipewire-0.3 libpulse) -lm \
+            -Wl,--disable-new-dtags -Wl,-rpath,'$ORIGIN/../lib'
+          gcc -O2 -Wall -Wextra -Werror -o obs-appimage-gpu-test build-aux/appimage/gpu-test.c \
+            $(pkg-config --cflags --libs gbm egl glesv2 libavcodec libavformat libavutil) \
+            -Wl,--disable-new-dtags -Wl,-rpath,'$ORIGIN/../lib'
+          ffmpeg -v error -f lavfi -i testsrc2=size=128x72:rate=12 -frames:v 12 \
+            -c:v libx264 -pix_fmt yuv420p -bf 0 -crf 18 gpu-h264.mp4
+          ffmpeg -v error -i gpu-h264.mp4 -pix_fmt yuv420p -f rawvideo gpu-reference.yuv
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: obs-appimage-gpu-test
+          path: |
+            obs-appimage-gpu-test
+            gpu-h264.mp4
+            gpu-reference.yuv
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: obs-studio-appimage
           path: |
-            OBS_Studio-*-x86_64.AppImage
-            OBS_Studio-*-x86_64.AppImage.zsync
+            OBS-Studio-*-linux-x86_64.AppImage
+            OBS-Studio-*-linux-x86_64.AppImage.zsync
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: obs-appimage-testkit
+          path: obs-appimage-testkit
           if-no-files-found: error
 
   test:
@@ -220,8 +290,10 @@ jobs:
       fail-fast: false
       matrix:
         # Different glibc versions and families, none with OBS dependencies installed:
-        # Debian 13 (glibc 2.41), Ubuntu 22.04 (2.35, older than the build host), Fedora.
-        image: ['debian:trixie-slim', 'ubuntu:22.04', 'fedora:latest']
+        # Debian 13 (glibc 2.41), Ubuntu 22.04 (2.35, older than the build host), Fedora, and
+        # Arch Linux (rolling: glibc 2.44+, newer than the 2.43 the AppImage is built with, whose
+        # Mesa/LLVM cannot load against an older glibc; obs-rust/obs-studio#621).
+        image: ['debian:trixie-slim', 'ubuntu:22.04', 'fedora:latest', 'archlinux:latest']
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -232,6 +304,10 @@ jobs:
         with:
           name: obs-studio-appimage
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: obs-appimage-testkit
+
       # Package downloads of the test infrastructure (X server, Mesa, ...) are cached per image.
       - name: Restore test-infrastructure packages
         id: pkgcache
@@ -240,17 +316,73 @@ jobs:
           path: pkgcache
           key: testpkgs-${{ matrix.image }}-${{ hashFiles('build-aux/appimage/test-appimage.sh') }}
 
-      - name: Run the AppImage in a stock container 🐳
+      # One fresh container per scenario, so nothing one scenario starts or
+      # leaves behind can affect another; each also fails if it leaves anything
+      # running. Every scenario runs even after one fails.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Install host GPU runtime for metadata check
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_SUSPEND: '1'
         run: |
-          mkdir -p results pkgcache/apt pkgcache/lists pkgcache/dnf
-          docker run --rm --cap-add SYS_PTRACE \
-            ${{ matrix.image == 'debian:trixie-slim' && '-e HOSTILE_QT=1' || '' }} \
-            ${{ needs.build.outputs.rust == 'TRUE' && '-e EXPECT_RUST=1' || '' }} \
-            -v "$PWD/pkgcache/apt:/var/cache/apt/archives" \
-            -v "$PWD/pkgcache/lists:/var/lib/apt/lists" \
-            -v "$PWD/pkgcache/dnf:/var/cache/libdnf5" \
-            -v "$PWD:/work" -w /work "${{ matrix.image }}" \
-            bash -c 'build-aux/appimage/test-appimage.sh OBS_Studio-*-x86_64.AppImage results'
+          # The actual frontend loads the unbundled GPU libraries even for --version.
+          # Provide the same host driver stack as the distro runtime scenarios.
+          mkdir -p results pkgcache/apt pkgcache/lists pkgcache/dnf pkgcache/pacman
+          sudo apt-get update -qq
+          sudo -E apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 \
+            libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libgl1 libegl1 libgbm1 libdrm2 \
+            libva2 libva-drm2 libva-x11-2 libopengl0 libwayland-client0 libwayland-egl1 libvulkan1
+
+      - name: Verify AppImage identity and updater metadata
+        env:
+          REQUIRE_UPDATE: ${{ inputs.publish_continuous }}
+        run: |
+          set -euo pipefail
+          chmod +x OBS-Studio-*-linux-x86_64.AppImage
+          options=()
+          [ "$REQUIRE_UPDATE" != true ] || options=(--require-update)
+          uv run --no-project build-aux/appimage/asset_metadata.py verify \
+            OBS-Studio-*-linux-x86_64.AppImage --repository "$GITHUB_REPOSITORY" "${options[@]}"
+
+      - name: Run the AppImage in stock containers 🐳
+        run: |
+          mkdir -p results pkgcache/apt pkgcache/lists pkgcache/dnf pkgcache/pacman
+          status=0
+          for scenario in bundle first-start probes saved-profile saved-profile-custom saved-profile-existing; do
+            echo "::group::Scenario: $scenario"
+            docker run --rm --cap-add SYS_PTRACE \
+              ${{ matrix.image == 'debian:trixie-slim' && '-e HOSTILE_QT=1' || '' }} \
+              ${{ inputs.publish_continuous && '-e EXPECT_APPIMAGE_UPDATE=1' || '' }} \
+              ${{ needs.build.outputs.rust == 'TRUE' && '-e EXPECT_RUST=1' || '' }} \
+              ${{ inputs.rust_version != '' && format('-e EXPECT_RUST_VERSION={0}', inputs.rust_version) || '' }} \
+              -v "$PWD/pkgcache/apt:/var/cache/apt/archives" \
+              -v "$PWD/pkgcache/lists:/var/lib/apt/lists" \
+              -v "$PWD/pkgcache/dnf:/var/cache/libdnf5" \
+              -v "$PWD/pkgcache/pacman:/var/cache/pacman/pkg" \
+              -v "$PWD:/work" -w /work "${{ matrix.image }}" \
+              bash -c "build-aux/appimage/test-appimage.sh OBS-Studio-*-linux-x86_64.AppImage results/$scenario obs-appimage-testkit $scenario" ||
+              { status=1; echo "::error::scenario $scenario failed on ${{ matrix.image }}"; }
+            echo "::endgroup::"
+          done
+          exit $status
+
+      # The container must not have ffmpeg (OBS's libraries have to come from the
+      # AppImage), so the recording it made is checked out here.
+      - name: Check the recording 🎞️
+        run: |
+          command -v ffmpeg >/dev/null || sudo apt-get install -y --no-install-recommends ffmpeg >/dev/null
+          build-aux/appimage/verify-recording.sh --self-test
+          # (test-appimage.sh allows a run without the test producers only on
+          # Ubuntu 22.04, and fails anywhere else)
+          for scenario in saved-profile saved-profile-custom saved-profile-existing; do
+            if [ -f "results/$scenario/recording-skipped.txt" ]; then
+              echo "::notice::no recording on ${{ matrix.image }} ($scenario): $(cat "results/$scenario/recording-skipped.txt")"
+            else
+              build-aux/appimage/verify-recording.sh "results/$scenario/recording.mkv"
+            fi
+          done
 
       - name: Fix cache ownership
         if: always()
@@ -273,10 +405,12 @@ jobs:
   release:
     name: Publish to GitHub Releases 🚀
     needs: [build, test]
-    # Only after the AppImage has run on every distribution in the matrix, and
-    # only for pushes: a master push feeds the rolling "continuous" pre-release,
-    # a tag push the release of that tag. (release-rust.yaml publishes the
-    # daily beta itself; its call of this workflow is not a push.)
+    # Only after the AppImage has run on every distribution in the matrix
+    # (test-appimage.sh: bundle check, first start, runtime probes, and a saved
+    # profile with PipeWire screen capture, camera and microphone recording): a
+    # tag push feeds the release of that tag. (The daily beta and the rolling
+    # "continuous" pre-release are published by release-rust.yaml, after its
+    # release gate: #624.)
     if: github.event_name == 'push'
     runs-on: ubuntu-26.04
     permissions:
@@ -285,26 +419,6 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: obs-studio-appimage
-
-      - name: Publish the continuous build 🔄
-        if: github.ref == 'refs/heads/master'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          ls -l OBS_Studio-*
-          cat >notes.md <<EOF
-          Rolling build of OBS-Studio-Rust from the latest \`master\`, currently [\`${GITHUB_SHA:0:9}\`](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA). Replaced on every push that builds and passes the AppImage test on Debian, Ubuntu and Fedora.
-
-          **Pre-release, unsigned.** \`chmod +x OBS_Studio-*-x86_64.AppImage && ./OBS_Studio-*-x86_64.AppImage\`. Everything down to glibc is inside; only the GPU driver comes from the host. The \`.zsync\` file lets AppImageUpdate fetch the next build as a delta. Limits and troubleshooting: \`build-aux/appimage/README.md\`.
-          EOF
-          # The release is recreated rather than edited so that its tag moves to this
-          # commit; the download URL .../releases/download/continuous/<file> stays.
-          gh release delete continuous --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
-          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/continuous" 2>/dev/null || true
-          gh release create continuous --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
-            --title "OBS-Studio-Rust continuous build" --notes-file notes.md \
-            OBS_Studio-*-x86_64.AppImage OBS_Studio-*-x86_64.AppImage.zsync
 
       - name: Attach to the tag's release 🏷️
         if: startsWith(github.ref, 'refs/tags/')
@@ -320,7 +434,7 @@ jobs:
             [0-9]* | obs-studio-rust-v*) ;;
             *) echo "::notice::$TAG is not an OBS-Studio-Rust tag; nothing to publish"; exit 0 ;;
           esac
-          ls -l OBS_Studio-*
+          ls -l OBS-Studio-*
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # A tag pushed by hand has no release yet. Betas and release candidates
             # stay marked as such; tags carrying a release are published as one.
@@ -331,4 +445,4 @@ jobs:
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag $pre \
               --title "$TAG" --notes "AppImage of \`$TAG\`, built from [\`${GITHUB_SHA:0:9}\`](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)."
           fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber OBS_Studio-*-x86_64.AppImage
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber OBS-Studio-*-linux-x86_64.AppImage

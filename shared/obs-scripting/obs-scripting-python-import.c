@@ -33,7 +33,7 @@
 #define VERSION_PATTERN "%d%d"
 #define FILE_PATTERN "python%s.dll"
 #define PATH_MAX MAX_PATH
-#elif __APPLE__
+#elif defined(__APPLE__)
 #define VERSION_PATTERN "%d.%d"
 #define FILE_PATTERN "Python.framework/Versions/%s/lib/libpython%s.dylib"
 #endif

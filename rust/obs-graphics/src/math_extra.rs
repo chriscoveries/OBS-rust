@@ -12,8 +12,7 @@
 //!
 //! `vec3_close` is one-sided (`v1 - v2 < epsilon` on each of xyz, `w`
 //! ignored). `calc_torque` therefore copies `v2` for some far-apart pairs.
-//! The safe function reads both inputs first. The shim re-reads `v1` after
-//! storing the scaled step, matching C when `dst` aliases `v1`.
+//! The safe function and the shim both read `v1` before any write.
 
 use crate::vec2::Vec2;
 use crate::vec3::Vec3;

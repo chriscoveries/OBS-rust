@@ -33,6 +33,32 @@ Set-Location $RepoRoot
 # cmocka.dll must be on PATH for the test executables.
 $env:PATH = "$CMockaPrefix/bin;$env:PATH"
 
+# ctest reports a crashed test only as "Exception: SegFault". Run each failed
+# test once more under cdb and print the faulting stack, so a Windows-only
+# crash can be diagnosed from the log.
+function Show-CrashStacks([string]$build) {
+  $failedLog = Join-Path $build 'Testing/Temporary/LastTestsFailed.log'
+  if (-not (Test-Path $failedLog)) { return }
+  $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/Debuggers/x64/cdb.exe'
+  if (-not (Test-Path $kits)) {
+    Write-Host 'cdb.exe not found; no crash stacks'
+    return
+  }
+  $qt = Get-ChildItem -Path (Join-Path $RepoRoot '.deps') -Recurse -Filter 'Qt6Core.dll' -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  $runPath = $env:PATH
+  if ($qt) { $runPath = "$($qt.DirectoryName);$runPath" }
+  foreach ($line in Get-Content $failedLog) {
+    $name = ($line -split ':', 2)[1]
+    if (-not $name) { continue }
+    $exe = Get-ChildItem -Path $build -Recurse -Filter "$name.exe" | Select-Object -First 1
+    if (-not $exe) { continue }
+    Write-Host "== crash stack: $name"
+    $env:PATH = $runPath
+    & $kits -g -G -lines -c '.ecxr;kn 40;q' $exe.FullName 2>&1 | Select-Object -Last 80 | ForEach-Object { Write-Host $_ }
+  }
+}
+
 function Find-Dumpbin {
   $cmd = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
   if ($cmd) { return $cmd.Source }
@@ -84,6 +110,7 @@ foreach ($mode in 'OFF', 'ON') {
     $ctestExit = $LASTEXITCODE
   }
 
+  if ($ctestExit -ne 0) { Show-CrashStacks $build }
   $env:PATH = $savedPath
   if ($ctestExit -ne 0) { throw "ctest failed ($ctestExit)" }
 

@@ -684,8 +684,8 @@ obs_source_t *obs_source_duplicate(obs_source_t *source, const char *new_name, b
 
 		obs_scene_t *new_scene = obs_scene_duplicate(
 			scene, new_name, create_private ? OBS_SCENE_DUP_PRIVATE_COPY : OBS_SCENE_DUP_COPY);
-		obs_source_t *new_source = obs_scene_get_source(new_scene);
-		return new_source;
+		obs_source_t *dup_source = obs_scene_get_source(new_scene);
+		return dup_source;
 	}
 
 	if ((source->info.output_flags & OBS_SOURCE_DO_NOT_DUPLICATE) != 0) {
@@ -872,8 +872,8 @@ static void obs_source_destroy_defer(struct obs_source *source)
 	obs_context_data_free(&source->context);
 
 	if (source->owns_info_id) {
-		bfree((void *)source->info.id);
-		bfree((void *)source->info.unversioned_id);
+		bfree((void *)(uintptr_t)source->info.id);
+		bfree((void *)(uintptr_t)source->info.unversioned_id);
 	}
 
 	bfree(source);
@@ -1565,7 +1565,7 @@ static void source_output_audio_place(obs_source_t *source, const struct audio_d
 
 	buf_placement = get_buf_placement(audio, in->timestamp - source->audio_ts) * sizeof(float);
 
-#if DEBUG_AUDIO == 1
+#if defined(DEBUG_AUDIO) && DEBUG_AUDIO == 1
 	blog(LOG_DEBUG, "frames: %lu, size: %lu, placement: %lu, base_ts: %llu, ts: %llu", (unsigned long)in->frames,
 	     (unsigned long)source->audio_input_buf[0].size, (unsigned long)buf_placement, source->audio_ts,
 	     in->timestamp);
@@ -1625,6 +1625,7 @@ static void source_output_audio_data(obs_source_t *source, const struct audio_da
 	uint64_t os_time = os_gettime_ns();
 	int64_t sync_offset;
 	bool using_direct_ts = false;
+	bool continuous = false;
 	bool push_back = false;
 	int64_t drift_error = 0;
 
@@ -1651,6 +1652,7 @@ static void source_output_audio_data(obs_source_t *source, const struct audio_da
 			/* how far the samples run ahead of the timestamps */
 			drift_error = (int64_t)(source->next_audio_ts_min - in.timestamp);
 			in.timestamp = source->next_audio_ts_min;
+			continuous = true;
 		} else {
 			blog(LOG_DEBUG,
 			     "Audio timestamp for '%s' exceeded TS_SMOOTHING_THRESHOLD, diff=%" PRIu64
@@ -1680,13 +1682,18 @@ static void source_output_audio_data(obs_source_t *source, const struct audio_da
 		if (diff < TS_SMOOTHING_THRESHOLD) {
 			push_back = true;
 
-		} else if (diff > MAX_TS_VAR) {
+		} else if (diff > MAX_TS_VAR && !continuous) {
 			/* This typically only happens if used with async video when
 			 * audio/video start transitioning in to a timestamp jump.
 			 * Audio will typically have a timestamp jump, and then video
 			 * will have a timestamp jump.  If that case is encountered,
 			 * just clear the audio data in that small window and force a
-			 * resync.  This handles all cases rather than just looping. */
+			 * resync.  This handles all cases rather than just looping.
+			 *
+			 * If the audio itself did not jump, the timing of the
+			 * source's video moved (a Video Delay (Async) filter), and
+			 * the audio follows it as it does for smaller moves:
+			 * resetting would only be undone by the next frame. */
 			reset_audio_timing(source, data->timestamp, os_time);
 			in.timestamp = data->timestamp + source->timing_adjust;
 		}
@@ -4039,8 +4046,8 @@ static void process_audio_balancing(struct obs_source *source, uint32_t frames, 
 	switch (type) {
 	case OBS_BALANCE_TYPE_SINE_LAW:
 		for (uint32_t frame = 0; frame < frames; frame++) {
-			data[0][frame] = data[0][frame] * sinf((1.0f - balance) * (M_PI / 2.0f));
-			data[1][frame] = data[1][frame] * sinf(balance * (M_PI / 2.0f));
+			data[0][frame] = data[0][frame] * sinf((float)((double)(1.0f - balance) * (M_PI / 2.0)));
+			data[1][frame] = data[1][frame] * sinf((float)((double)balance * (M_PI / 2.0)));
 		}
 		break;
 	case OBS_BALANCE_TYPE_SQUARE_LAW:
@@ -4066,10 +4073,21 @@ static void process_audio(obs_source_t *source, const struct obs_source_audio *a
 	uint32_t frames = audio->frames;
 	bool mono_output;
 
+	/* The resampler holds back the last samples of every packet for its
+	 * filter. A packet that does not continue the previous one (a media
+	 * file started again after it ended) begins a new stream: drop what is
+	 * held back instead of playing it in front of the new audio. */
+	bool discontinuous = source->resampler && source->next_resample_in_ts &&
+			     uint64_diff(audio->timestamp, source->next_resample_in_ts) >= TS_SMOOTHING_THRESHOLD;
+
 	if (source->sample_info.samples_per_sec != audio->samples_per_sec ||
 	    source->sample_info.format != audio->format || source->sample_info.speakers != audio->speakers ||
-	    source->last_async_compensation != os_atomic_load_bool(&source->async_compensation))
+	    source->last_async_compensation != os_atomic_load_bool(&source->async_compensation) || discontinuous)
 		reset_resampler(source, audio);
+
+	if (audio->samples_per_sec)
+		source->next_resample_in_ts =
+			audio->timestamp + util_mul_div64(audio->frames, 1000000000ULL, audio->samples_per_sec);
 
 	if (source->audio_failed)
 		return;
@@ -4154,7 +4172,7 @@ void remove_async_frame(obs_source_t *source, struct obs_source_frame *frame)
 	}
 }
 
-/* #define DEBUG_ASYNC_FRAMES 1 */
+#define DEBUG_ASYNC_FRAMES 0
 
 static bool ready_async_frame(obs_source_t *source, uint64_t sys_time)
 {
@@ -4639,6 +4657,7 @@ int64_t obs_source_get_sync_offset(const obs_source_t *source)
 struct source_enum_data {
 	obs_source_enum_proc_t enum_callback;
 	void *param;
+	obs_source_t *stop_source;
 };
 
 static void enum_source_active_tree_callback(obs_source_t *parent, obs_source_t *child, void *param)
@@ -4706,6 +4725,12 @@ void obs_source_enum_active_tree(obs_source_t *source, obs_source_enum_proc_t en
 static void enum_source_full_tree_callback(obs_source_t *parent, obs_source_t *child, void *param)
 {
 	struct source_enum_data *data = param;
+	/* Child admission can hold stop_source's nonrecursive transition mutex.
+	 * Report that edge before descending, even if a plugin changed the tree. */
+	if (child == data->stop_source) {
+		data->enum_callback(parent, child, data->param);
+		return;
+	}
 	bool is_transition = child->info.type == OBS_SOURCE_TYPE_TRANSITION;
 
 	if (is_transition)
@@ -4723,9 +4748,10 @@ static void enum_source_full_tree_callback(obs_source_t *parent, obs_source_t *c
 	data->enum_callback(parent, child, data->param);
 }
 
-void obs_source_enum_full_tree(obs_source_t *source, obs_source_enum_proc_t enum_callback, void *param)
+static void enum_source_full_tree(obs_source_t *source, obs_source_enum_proc_t enum_callback, void *param,
+				  obs_source_t *stop_source)
 {
-	struct source_enum_data data = {enum_callback, param};
+	struct source_enum_data data = {enum_callback, param, stop_source};
 	bool is_transition;
 
 	if (!data_valid(source, "obs_source_enum_full_tree"))
@@ -4750,6 +4776,11 @@ void obs_source_enum_full_tree(obs_source_t *source, obs_source_enum_proc_t enum
 	}
 
 	obs_source_release(source);
+}
+
+void obs_source_enum_full_tree(obs_source_t *source, obs_source_enum_proc_t enum_callback, void *param)
+{
+	enum_source_full_tree(source, enum_callback, param, NULL);
 }
 
 struct descendant_info {
@@ -4778,7 +4809,7 @@ bool obs_source_add_active_child(obs_source_t *parent, obs_source_t *child)
 		return false;
 	}
 
-	obs_source_enum_full_tree(child, check_descendant, &info);
+	enum_source_full_tree(child, check_descendant, &info, parent);
 	if (info.exists)
 		return false;
 
@@ -5424,11 +5455,15 @@ static void custom_audio_render(obs_source_t *source, uint32_t mixers, size_t ch
 	}
 
 	success = source->info.audio_render(source->context.data, &ts, &audio_data, mixers, channels, sample_rate);
+	/* The callback may render other sources or submit capture audio. */
+	pthread_mutex_lock(&source->audio_buf_mutex);
 	source->audio_ts = success ? ts : 0;
 	source->audio_pending = !success;
 
-	if (!success || !source->audio_ts || !mixers)
+	if (!success || !source->audio_ts || !mixers) {
+		pthread_mutex_unlock(&source->audio_buf_mutex);
 		return;
+	}
 
 	for (size_t mix = 0; mix < MAX_AUDIO_MIXES; mix++) {
 		uint32_t mix_bit = 1 << mix;
@@ -5442,6 +5477,7 @@ static void custom_audio_render(obs_source_t *source, uint32_t mixers, size_t ch
 	}
 
 	apply_audio_volume(source, mixers, channels, sample_rate);
+	pthread_mutex_unlock(&source->audio_buf_mutex);
 }
 
 static void audio_submix(obs_source_t *source, size_t channels, size_t sample_rate)
@@ -5481,7 +5517,7 @@ static inline void process_audio_source_tick(obs_source_t *source, uint32_t mixe
 
 	pthread_mutex_lock(&source->audio_buf_mutex);
 
-	if (source->audio_input_buf[0].size < size) {
+	if (!source->audio_ts || source->audio_input_buf[0].size < size) {
 		source->audio_pending = true;
 		pthread_mutex_unlock(&source->audio_buf_mutex);
 		return;
@@ -5489,8 +5525,6 @@ static inline void process_audio_source_tick(obs_source_t *source, uint32_t mixe
 
 	for (size_t ch = 0; ch < channels; ch++)
 		deque_peek_front(&source->audio_input_buf[ch], source->audio_output_buf[0][ch], size);
-
-	pthread_mutex_unlock(&source->audio_buf_mutex);
 
 	for (size_t mix = 1; mix < MAX_AUDIO_MIXES; mix++) {
 		uint32_t mix_and_val = (1 << mix);
@@ -5514,6 +5548,7 @@ static inline void process_audio_source_tick(obs_source_t *source, uint32_t mixe
 
 	if (audio_submix) {
 		source->audio_pending = false;
+		pthread_mutex_unlock(&source->audio_buf_mutex);
 		return;
 	}
 
@@ -5522,6 +5557,7 @@ static inline void process_audio_source_tick(obs_source_t *source, uint32_t mixe
 
 	apply_audio_volume(source, mixers, channels, sample_rate);
 	source->audio_pending = false;
+	pthread_mutex_unlock(&source->audio_buf_mutex);
 }
 
 void obs_source_audio_render(obs_source_t *source, uint32_t mixers, size_t channels, size_t sample_rate, size_t size)
@@ -5544,11 +5580,6 @@ void obs_source_audio_render(obs_source_t *source, uint32_t mixers, size_t chann
 		audio_submix(source, channels, sample_rate);
 	}
 
-	if (!source->audio_ts) {
-		source->audio_pending = true;
-		return;
-	}
-
 	process_audio_source_tick(source, mixers, channels, sample_rate, size);
 }
 
@@ -5565,7 +5596,14 @@ bool obs_source_audio_pending(const obs_source_t *source)
 
 uint64_t obs_source_get_audio_timestamp(const obs_source_t *source)
 {
-	return obs_source_valid(source, "obs_source_get_audio_timestamp") ? source->audio_ts : 0;
+	if (!obs_source_valid(source, "obs_source_get_audio_timestamp"))
+		return 0;
+	/* Locking synchronizes the read without changing the logical source. */
+	pthread_mutex_t *mutex = (pthread_mutex_t *)(uintptr_t)&source->audio_buf_mutex;
+	pthread_mutex_lock(mutex);
+	uint64_t timestamp = source->audio_ts;
+	pthread_mutex_unlock(mutex);
+	return timestamp;
 }
 
 void obs_source_get_audio_mix(const obs_source_t *source, struct obs_source_audio_mix *audio)

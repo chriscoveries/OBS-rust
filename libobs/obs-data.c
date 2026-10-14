@@ -595,7 +595,7 @@ static json_t *obs_data_to_json(obs_data_t *data, bool with_defaults)
 
 /* ------------------------------------------------------------------------- */
 
-obs_data_t *obs_data_create()
+obs_data_t *obs_data_create(void)
 {
 	struct obs_data *data = bzalloc(sizeof(struct obs_data));
 	data->ref = 1;
@@ -1292,7 +1292,7 @@ obs_data_array_t *obs_data_get_autoselect_array(obs_data_t *data, const char *na
 	return obs_data_item_get_autoselect_array(get_item(data, name));
 }
 
-obs_data_array_t *obs_data_array_create()
+obs_data_array_t *obs_data_array_create(void)
 {
 	struct obs_data_array *array = bzalloc(sizeof(struct obs_data_array));
 	array->ref = 1;

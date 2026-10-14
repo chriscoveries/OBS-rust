@@ -3,6 +3,10 @@
  * real header functions. */
 #include "media-io/audio-math.h"
 
+/* Test-only exports called from Rust over FFI. */
+float oracle_mul_to_db(float mul);
+float oracle_db_to_mul(float db);
+
 float oracle_mul_to_db(float mul)
 {
 	return mul_to_db(mul);

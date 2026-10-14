@@ -39,19 +39,19 @@ static struct {
 	float matrix[OBS_COUNTOF(bpp_info)][2][16];
 } format_info[] = {
 	{
-		VIDEO_CS_601,
-		0.114f,
-		0.299f,
+		.color_space = VIDEO_CS_601,
+		.Kb = 0.114f,
+		.Kr = 0.299f,
 	},
 	{
-		VIDEO_CS_709,
-		0.0722f,
-		0.2126f,
+		.color_space = VIDEO_CS_709,
+		.Kb = 0.0722f,
+		.Kr = 0.2126f,
 	},
 	{
-		VIDEO_CS_2100_PQ,
-		0.0593f,
-		0.2627f,
+		.color_space = VIDEO_CS_2100_PQ,
+		.Kb = 0.0593f,
+		.Kr = 0.2627f,
 	},
 };
 
@@ -117,7 +117,7 @@ static void initialize_matrix(float const Kb, float const Kr, float bit_range_ma
 #endif
 }
 
-static void initialize_matrices()
+static void initialize_matrices(void)
 {
 	static const float full_range_min3[] = {0, 0, 0};
 

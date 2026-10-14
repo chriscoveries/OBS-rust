@@ -63,6 +63,19 @@ target_sources(
 
 target_compile_definitions(obs-outputs PRIVATE USE_MBEDTLS CRYPTO)
 
+# Vendored librtmp (C89 code that casts away const throughout) is not ported
+# or edited here; -Wcast-qual and -Wshadow (obs-rust/obs-studio#516) cover our own sources.
+set_source_files_properties(
+  librtmp/amf.c
+  librtmp/cencode.c
+  librtmp/hashswf.c
+  librtmp/log.c
+  librtmp/md5.c
+  librtmp/parseurl.c
+  librtmp/rtmp.c
+  PROPERTIES COMPILE_OPTIONS "$<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang,GNU>:-Wno-cast-qual;-Wno-shadow>"
+)
+
 target_compile_options(
   obs-outputs
   PRIVATE

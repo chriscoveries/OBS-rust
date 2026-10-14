@@ -25,7 +25,7 @@
 const _: &str = env!("OBS_ORACLE_INPUT_HASH");
 
 pub mod array_serializer;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod audio_io;
 pub mod audio_io_inlines;
 pub mod audio_math;
@@ -48,10 +48,15 @@ pub mod graphics_math;
 pub mod hevc;
 pub mod lexer;
 pub mod nal;
+pub mod obs_nvenc;
 pub mod path_extension;
 pub mod pipe;
+#[cfg(target_os = "macos")]
+pub mod platform_cocoa;
 #[cfg(unix)]
 pub mod platform_nix;
+#[cfg(all(windows, target_env = "msvc"))]
+pub mod platform_windows;
 pub mod profiler;
 pub mod profiler_snapshot;
 pub mod task;
@@ -62,5 +67,6 @@ pub mod util_uint64;
 pub mod vec2;
 pub mod video_fourcc;
 pub mod video_frame;
+pub mod video_io;
 pub mod video_io_inlines;
 pub mod video_matrices;

@@ -237,7 +237,7 @@ static inline void init_module_info(struct exception_handler_data *data)
 	data->enumerate_loaded_modules64(data->process, (PENUMLOADED_MODULES_CALLBACK64)enum_all_modules, data);
 }
 
-extern const char *get_win_release_id();
+extern const char *get_win_release_id(void);
 
 static inline void write_header(struct exception_handler_data *data)
 {

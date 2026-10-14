@@ -32,6 +32,8 @@
 #include <utility/BaseLexer.hpp>
 #include <utility/FFmpegCodec.hpp>
 #include <utility/FFmpegFormat.hpp>
+#include <utility/output-rescale.h>
+#include <utility/replay-buffer-estimate.hpp>
 #include <utility/SettingsEventFilter.hpp>
 #ifdef YOUTUBE_ENABLED
 #include <utility/YoutubeApiWrappers.hpp>
@@ -338,6 +340,36 @@ void RestrictResetBitrates(initializer_list<QComboBox *> boxes, int maxbitrate);
 #define ADV_RESTART     &OBSBasicSettings::AdvancedChangedRestart
 /* clang-format on */
 
+namespace {
+/* The "Rescale Output" filter and resolution boxes of one Output tab, driven
+ * through utility/output-rescale.h. */
+struct RescaleBoxes {
+	QComboBox *filter;
+	QComboBox *res;
+};
+
+output_rescale_ops RescaleOps(RescaleBoxes *boxes)
+{
+	output_rescale_ops ops = {};
+	ops.param = boxes;
+	ops.rescales = [](void *param) {
+		auto *b = static_cast<RescaleBoxes *>(param);
+		return b->filter->currentData() != OBS_SCALE_DISABLE;
+	};
+	ops.filter_enabled = [](void *param) {
+		/* The box's own state, not whether a parent is disabled. */
+		return !static_cast<RescaleBoxes *>(param)->filter->testAttribute(Qt::WA_ForceDisabled);
+	};
+	ops.set_filter_enabled = [](void *param, bool enabled) {
+		static_cast<RescaleBoxes *>(param)->filter->setEnabled(enabled);
+	};
+	ops.set_res_enabled = [](void *param, bool enabled) {
+		static_cast<RescaleBoxes *>(param)->res->setEnabled(enabled);
+	};
+	return ops;
+}
+} // namespace
+
 OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	: QDialog(parent),
 	  main(qobject_cast<OBSBasic *>(parent)),
@@ -400,7 +432,8 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	HookWidget(ui->appearanceDensity2,   CHECK_CHANGED,  APPEAR_CHANGED);
 	HookWidget(ui->appearanceDensity3,   CHECK_CHANGED,  APPEAR_CHANGED);
 	HookWidget(ui->appearanceDensity4,   CHECK_CHANGED,  APPEAR_CHANGED);
-	HookWidget(ui->service,              COMBO_CHANGED,  STREAM1_CHANGED);
+	/* ui->service marks Stream changes in on_service_currentIndexChanged. */
+	ui->service->setProperty("changed", QVariant(false));
 	HookWidget(ui->server,               COMBO_CHANGED,  STREAM1_CHANGED);
 	HookWidget(ui->customServer,         EDIT_CHANGED,   STREAM1_CHANGED);
 	HookWidget(ui->serviceCustomServer,  EDIT_CHANGED,   STREAM1_CHANGED);
@@ -821,8 +854,11 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	addScaleFilter("Basic.Settings.Video.DownscaleFilter.Lanczos", OBS_SCALE_LANCZOS);
 
 	auto connectScaleFilter = [&](QComboBox *filter, QComboBox *res) -> void {
-		connect(filter, &QComboBox::currentIndexChanged, this,
-			[this, res, filter](int) { res->setEnabled(filter->currentData() != OBS_SCALE_DISABLE); });
+		connect(filter, &QComboBox::currentIndexChanged, this, [res, filter](int) {
+			RescaleBoxes boxes{filter, res};
+			output_rescale_ops ops = RescaleOps(&boxes);
+			output_rescale_filter_changed(&ops);
+		});
 	};
 
 	connectScaleFilter(ui->advOutRescaleFilter, ui->advOutRescale);
@@ -1882,13 +1918,16 @@ void OBSBasicSettings::LoadAdvOutputStreamingSettings()
 	int rescaleFilter = config_get_int(main->Config(), "AdvOut", "RescaleFilter");
 	int trackIndex = config_get_int(main->Config(), "AdvOut", "TrackIndex");
 	int audioMixes = config_get_int(main->Config(), "AdvOut", "StreamMultiTrackAudioMixes");
-	ui->advOutRescale->setEnabled(rescaleFilter != OBS_SCALE_DISABLE);
 	ui->advOutRescale->setCurrentText(rescaleRes);
 
 	int idx = ui->advOutRescaleFilter->findData(rescaleFilter);
 	if (idx != -1) {
 		ui->advOutRescaleFilter->setCurrentIndex(idx);
 	}
+
+	RescaleBoxes rescaleBoxes{ui->advOutRescaleFilter, ui->advOutRescale};
+	output_rescale_ops rescaleOps = RescaleOps(&rescaleBoxes);
+	output_rescale_filter_changed(&rescaleOps);
 
 	QStringList specList = QTStr("FilenameFormatting.completer").split(QRegularExpression("\n"));
 	QCompleter *specCompleter = new QCompleter(specList);
@@ -5258,22 +5297,21 @@ void OBSBasicSettings::SimpleReplayBufferChanged()
 		memMB = 1;
 	}
 
-	ui->simpleRBEstimate->setObjectName("");
 	if (streamQuality) {
 		if (memMB <= memMaxMB) {
-			ui->simpleRBEstimate->setText(QTStr(ESTIMATE_STR).arg(QString::number(int(memMB))));
+			SetReplayBufferEstimate(ui->simpleRBEstimate,
+						QTStr(ESTIMATE_STR).arg(QString::number(int(memMB))), false);
 		} else {
-			ui->simpleRBEstimate->setText(
-				QTStr(ESTIMATE_TOO_LARGE_STR)
-					.arg(QString::number(int(memMB)), QString::number(int(memMaxMB))));
-			ui->simpleRBEstimate->setProperty("class", "text-warning");
+			SetReplayBufferEstimate(ui->simpleRBEstimate,
+						QTStr(ESTIMATE_TOO_LARGE_STR)
+							.arg(QString::number(int(memMB)),
+							     QString::number(int(memMaxMB))),
+						true);
 		}
 	} else {
-		ui->simpleRBEstimate->setText(QTStr(ESTIMATE_UNKNOWN_STR));
+		SetReplayBufferEstimate(ui->simpleRBEstimate, QTStr(ESTIMATE_UNKNOWN_STR), false);
 		ui->simpleRBMegsMax->setMaximum(memMaxMB);
 	}
-
-	ui->simpleRBEstimate->style()->polish(ui->simpleRBEstimate);
 
 	UpdateAutomaticReplayBufferCheckboxes();
 }
@@ -5359,28 +5397,28 @@ void OBSBasicSettings::AdvReplayBufferChanged()
 		varRateControl = false;
 	}
 
-	ui->advRBEstimate->setObjectName("");
 	if (varRateControl) {
 		ui->advRBMegsMax->setVisible(false);
 		ui->advRBMegsMaxLabel->setVisible(false);
 
 		if (memMB <= memMaxMB) {
-			ui->advRBEstimate->setText(QTStr(ESTIMATE_STR).arg(QString::number(int(memMB))));
+			SetReplayBufferEstimate(ui->advRBEstimate, QTStr(ESTIMATE_STR).arg(QString::number(int(memMB))),
+						false);
 		} else {
-			ui->advRBEstimate->setText(
-				QTStr(ESTIMATE_TOO_LARGE_STR)
-					.arg(QString::number(int(memMB)), QString::number(int(memMaxMB))));
-			ui->advRBEstimate->setProperty("class", "text-warning");
+			SetReplayBufferEstimate(ui->advRBEstimate,
+						QTStr(ESTIMATE_TOO_LARGE_STR)
+							.arg(QString::number(int(memMB)),
+							     QString::number(int(memMaxMB))),
+						true);
 		}
 	} else {
 		ui->advRBMegsMax->setVisible(true);
 		ui->advRBMegsMaxLabel->setVisible(true);
 		ui->advRBMegsMax->setMaximum(memMaxMB);
-		ui->advRBEstimate->setText(QTStr(ESTIMATE_UNKNOWN_STR));
+		SetReplayBufferEstimate(ui->advRBEstimate, QTStr(ESTIMATE_UNKNOWN_STR), false);
 	}
 
 	ui->advReplayBufferFrame->setEnabled(!lossless && replayBufferEnabled);
-	ui->advRBEstimate->style()->polish(ui->advRBEstimate);
 	ui->advReplayBuf->setEnabled(!lossless);
 
 	UpdateAutomaticReplayBufferCheckboxes();
@@ -6006,8 +6044,9 @@ void OBSBasicSettings::UpdateMultitrackVideo()
 		ui->advOutEncoder->setDisabled(disable_video);
 
 		ui->advOutUseRescale->setDisabled(disable_video);
-		ui->advOutRescale->setDisabled(disable_video);
-		ui->advOutRescaleFilter->setDisabled(disable_video);
+		RescaleBoxes rescaleBoxes{ui->advOutRescaleFilter, ui->advOutRescale};
+		output_rescale_ops rescaleOps = RescaleOps(&rescaleBoxes);
+		output_rescale_set_locked(&rescaleOps, disable_video);
 
 		if (streamEncoderProps) {
 			streamEncoderProps->SetDisabled(disable_video);

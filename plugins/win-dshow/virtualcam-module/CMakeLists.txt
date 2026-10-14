@@ -121,6 +121,7 @@ if(OBS_PARENT_ARCHITECTURE STREQUAL CMAKE_VS_PLATFORM_NAME)
       COMMAND "${CMAKE_COMMAND}" --build ${CMAKE_SOURCE_DIR}/build_x86 --config $<CONFIG> -t obs-virtualcam-module
       COMMENT "Build x86 obs-virtualcam-module"
     )
+    obs_serialize_x86_build(obs-virtualcam-module)
   endif()
 
   add_dependencies(win-dshow obs-virtualcam-module)

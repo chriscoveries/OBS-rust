@@ -1,0 +1,16 @@
+[package]
+name = "obs-nvenc-plugin"
+version = "0.1.0"
+description = "The Rust staticlib linked into plugins/obs-nvenc when ENABLE_RUST_LIBOBS=ON"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[dependencies]
+obs-nvenc = { path = "../obs-nvenc" }

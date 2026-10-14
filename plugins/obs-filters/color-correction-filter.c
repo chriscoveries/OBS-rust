@@ -174,7 +174,7 @@ static void color_correction_filter_update_v1(void *data, obs_data_t *settings)
 	float opacity = (float)obs_data_get_int(settings, SETTING_OPACITY) * 0.01f;
 
 	/* Hue is the radian of 0 to 360 degrees. */
-	float half_angle = 0.5f * (float)(hue_shift / (180.0f / M_PI));
+	float half_angle = 0.5f * (float)((double)hue_shift / (180.0 / M_PI));
 
 	/* Pseudo-Quaternion To Matrix. */
 	float rot_quad1 = root3 * (float)sin(half_angle);
@@ -313,7 +313,7 @@ static void color_correction_filter_update_v2(void *data, obs_data_t *settings)
 	float opacity = (float)obs_data_get_double(settings, SETTING_OPACITY);
 
 	/* Hue is the radian of 0 to 360 degrees. */
-	float half_angle = 0.5f * (float)(hue_shift / (180.0f / M_PI));
+	float half_angle = 0.5f * (float)((double)hue_shift / (180.0 / M_PI));
 
 	/* Pseudo-Quaternion To Matrix. */
 	float rot_quad1 = root3 * (float)sin(half_angle);

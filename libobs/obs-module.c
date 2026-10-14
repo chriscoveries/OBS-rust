@@ -534,6 +534,15 @@ static void load_all_callback(void *param, const struct obs_module_info2 *info)
 		blog(LOG_DEBUG, "Failed to load module file '%s', module failed to open", info->bin_path);
 		obs_create_disabled_module(&disabled_module, info->bin_path, info->data_path,
 					   OBS_MODULE_FAILED_TO_OPEN);
+		if (info->type == OBS_MODULE_TYPE_CORE) {
+			/* Most often a library the module needs is not
+			 * installed (libcef.so for obs-browser). Carry on
+			 * without it, as for a plugin, instead of failing
+			 * the core module load and with it OBS startup. */
+			disabled_module->module_type = info->type;
+			blog(LOG_WARNING, "Core module '%s' could not be opened, continuing without it", info->name);
+			return;
+		}
 		goto load_failure;
 	case MODULE_ERROR:
 		blog(LOG_DEBUG, "Failed to load module file '%s' (unknown error)", info->bin_path);
@@ -595,8 +604,8 @@ static void find_modules_in_path(struct obs_module_path *omp, obs_find_module_ca
 
 void obs_load_plugins(struct obs_runtime_module_info *info, struct obs_module_failure_info *error)
 {
-	struct obs_module_path omp = {.bin = (char *)info->path_info.binary,
-				      .data = (char *)info->path_info.data,
+	struct obs_module_path omp = {.bin = (char *)(uintptr_t)info->path_info.binary,
+				      .data = (char *)(uintptr_t)info->path_info.data,
 				      .type = info->type};
 
 	struct fail_info failure = {0};
@@ -1017,14 +1026,14 @@ cleanup:
 
 #define HANDLE_ERROR(size_var, structure, info)                                         \
 	do {                                                                            \
-		struct structure data = {0};                                            \
+		struct structure err_data = {0};                                            \
 		if (!size_var)                                                          \
 			return;                                                         \
                                                                                         \
-		memcpy(&data, info, sizeof(data) < size_var ? sizeof(data) : size_var); \
+		memcpy(&err_data, info, sizeof(err_data) < size_var ? sizeof(err_data) : size_var); \
                                                                                         \
-		if (data.type_data && data.free_type_data)                              \
-			data.free_type_data(data.type_data);                            \
+		if (err_data.type_data && err_data.free_type_data)                              \
+			err_data.free_type_data(err_data.type_data);                            \
 	} while (false)
 
 #define source_warn(format, ...) blog(LOG_WARNING, "obs_register_source: " format, ##__VA_ARGS__)

@@ -57,11 +57,13 @@ void norm_to_polar(struct vec2 *dst, const struct vec3 *norm)
 
 void polar_to_norm(struct vec3 *dst, const struct vec2 *polar)
 {
-	float sinx = sinf(polar->x);
+	float x = polar->x;
+	float y = polar->y;
+	float sinx = sinf(x);
 
-	dst->x = sinx * cosf(polar->y);
-	dst->y = sinx * sinf(polar->y);
-	dst->z = cosf(polar->x);
+	dst->x = sinx * cosf(y);
+	dst->y = sinx * sinf(y);
+	dst->z = cosf(x);
 }
 
 float calc_torquef(float val1, float val2, float torque, float min_adjust, float t)
@@ -96,8 +98,14 @@ float calc_torquef(float val1, float val2, float torque, float min_adjust, float
 void calc_torque(struct vec3 *dst, const struct vec3 *v1, const struct vec3 *v2, float torque, float min_adjust,
 		 float t)
 {
-	struct vec3 line, dir;
+	struct vec3 line, dir, a, b;
 	float orig_dist, torque_dist, adjust_dist;
+
+	/* The move path stores dst, then adds v1. Copy both inputs first. */
+	vec3_copy(&a, v1);
+	vec3_copy(&b, v2);
+	v1 = &a;
+	v2 = &b;
 
 	if (vec3_close(v1, v2, EPSILON)) {
 		vec3_copy(dst, v2);

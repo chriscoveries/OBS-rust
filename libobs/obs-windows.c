@@ -129,7 +129,7 @@ static void log_conflicting_software(void)
 	log_lenovo_vantage();
 }
 
-extern const char *get_win_release_id();
+extern const char *get_win_release_id(void);
 
 static void log_windows_version(void)
 {

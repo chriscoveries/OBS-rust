@@ -174,6 +174,15 @@ Encoder Definition Structure (obs_encoder_info)
 
    :return: Number of samples
 
+.. member:: void (*request_keyframe)(void *data)
+
+   Video encoders only (optional). Asks the encoder to make its next frame
+   a keyframe. libobs calls it when an output starts on an encoder that is
+   already running for another output (for example a recording started
+   while the replay buffer runs), because the new output gets no packet
+   before a keyframe. It is called from the thread starting the output, so
+   set a flag that the next encode call acts on.
+
 Encoder Packet Structure (encoder_packet)
 -----------------------------------------
 

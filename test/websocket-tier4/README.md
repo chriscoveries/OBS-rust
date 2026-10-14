@@ -42,10 +42,10 @@ obs-websocket port (Phase 5 item 3).
 ## Run
 
 ```sh
-python3 test/websocket-tier4/run_tier4.py                # uses `obs` on PATH
-python3 test/websocket-tier4/run_tier4.py --obs /path/to/obs
-TIER4_PORT=4460 python3 test/websocket-tier4/run_tier4.py
-TIER4_VERBOSE=1 python3 test/websocket-tier4/run_tier4.py  # log each status code
+uv run test/websocket-tier4/run_tier4.py                # uses `obs` on PATH
+uv run test/websocket-tier4/run_tier4.py --obs /path/to/obs
+TIER4_PORT=4460 uv run test/websocket-tier4/run_tier4.py
+TIER4_VERBOSE=1 uv run test/websocket-tier4/run_tier4.py  # log each status code
 ```
 
 Flags:

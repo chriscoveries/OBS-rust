@@ -122,7 +122,7 @@ static void actually_destroy_service(struct obs_service *service)
 
 	obs_context_data_free(&service->context);
 	if (service->owns_info_id)
-		bfree((void *)service->info.id);
+		bfree((void *)(uintptr_t)service->info.id);
 	bfree(service);
 }
 

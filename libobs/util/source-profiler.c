@@ -369,7 +369,7 @@ void source_profiler_frame_collect(void)
 			ucirclebuf_push(&ent->render_gpu_sum, 0);
 		}
 
-		const obs_source_t *src = *(const obs_source_t **)smps->hh.key;
+		const obs_source_t *src = *(const obs_source_t *const *)smps->hh.key;
 		if (is_async_video_source(src)) {
 			uint64_t ts = obs_source_get_last_async_ts(src);
 			ucirclebuf_push(&ent->async_rendered_ts, ts);

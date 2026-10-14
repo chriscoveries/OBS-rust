@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Shared registration lists are split per unit (obs-rust/obs-studio#137).
 
 Every port used to append to the same few lists, so concurrent port PRs
 conflicted with each other on every merge. These checks keep the lists
 fragment-based or derived.
 
-    python3 -m unittest ci/test_registration.py
+    uv run python -m unittest ci/test_registration.py
 """
 
 from __future__ import annotations

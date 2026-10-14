@@ -174,7 +174,6 @@ static BOOL CALLBACK enum_monitor_props(HMONITOR handle, HDC hdc, LPRECT rect, L
 	size_t monitor_id = 0;
 	struct dstr monitor_desc = {0};
 	struct dstr resolution = {0};
-	struct dstr format_string = {0};
 
 	monitor_id = obs_property_list_item_count(monitor_list);
 
@@ -184,18 +183,15 @@ static BOOL CALLBACK enum_monitor_props(HMONITOR handle, HDC hdc, LPRECT rect, L
 	dstr_catf(&resolution, "%dx%d @ %d,%d", mi.rcMonitor.right - mi.rcMonitor.left,
 		  mi.rcMonitor.bottom - mi.rcMonitor.top, mi.rcMonitor.left, mi.rcMonitor.top);
 
-	dstr_copy(&format_string, "%s %d: %s");
+	dstr_catf(&monitor_desc, "%s %d: %s", TEXT_MONITOR, monitor_id + 1, resolution.array);
 	if (mi.dwFlags == MONITORINFOF_PRIMARY) {
-		dstr_catf(&format_string, " (%s)", TEXT_PRIMARY_MONITOR);
+		dstr_catf(&monitor_desc, " (%s)", TEXT_PRIMARY_MONITOR);
 	}
-
-	dstr_catf(&monitor_desc, format_string.array, TEXT_MONITOR, monitor_id + 1, resolution.array);
 
 	obs_property_list_add_int(monitor_list, monitor_desc.array, (int)monitor_id);
 
 	dstr_free(&monitor_desc);
 	dstr_free(&resolution);
-	dstr_free(&format_string);
 
 	return TRUE;
 }

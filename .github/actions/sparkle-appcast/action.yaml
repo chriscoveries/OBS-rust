@@ -42,8 +42,8 @@ runs:
         if (( ${+RUNNER_DEBUG} )) setopt XTRACE
 
         print ::group::Install Dependencies
-        brew update
-        brew install --quiet coreutils pandoc
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew update
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew install --quiet coreutils pandoc
         print ::endgroup::
 
     - name: Set Up Sparkle ✨

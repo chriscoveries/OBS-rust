@@ -421,7 +421,7 @@ static void add_audio_buffering(struct obs_core_audio *audio, size_t sample_rate
 	*ts = new_ts;
 }
 
-static bool audio_buffer_insufficient(struct obs_source *source, size_t sample_rate, uint64_t min_ts)
+static bool audio_buffer_insufficient_locked(struct obs_source *source, size_t sample_rate, uint64_t min_ts)
 {
 	size_t total_floats = AUDIO_OUTPUT_FRAMES;
 	size_t size;
@@ -448,15 +448,25 @@ static bool audio_buffer_insufficient(struct obs_source *source, size_t sample_r
 	return false;
 }
 
+static bool audio_buffer_insufficient(struct obs_source *source, size_t sample_rate, uint64_t min_ts)
+{
+	pthread_mutex_lock(&source->audio_buf_mutex);
+	bool insufficient = audio_buffer_insufficient_locked(source, sample_rate, min_ts);
+	pthread_mutex_unlock(&source->audio_buf_mutex);
+	return insufficient;
+}
+
 static inline const char *find_min_ts(struct obs_core_data *data, uint64_t *min_ts)
 {
 	obs_source_t *buffering_source = NULL;
 	struct obs_source *source = data->first_audio_source;
 	while (source) {
+		pthread_mutex_lock(&source->audio_buf_mutex);
 		if (!source->audio_pending && source->audio_ts && source->audio_ts < *min_ts) {
 			*min_ts = source->audio_ts;
 			buffering_source = source;
 		}
+		pthread_mutex_unlock(&source->audio_buf_mutex);
 
 		source = (struct obs_source *)source->next_audio_source;
 	}
@@ -592,23 +602,23 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 
 		/* NOTE: these are source channels, not audio channels */
 		for (uint32_t i = 0; i < MAX_CHANNELS; i++) {
-			obs_source_t *source = view->channels[i];
-			if (!source)
+			obs_source_t *channel_source = view->channels[i];
+			if (!channel_source)
 				continue;
-			if (!obs_source_active(source))
+			if (!obs_source_active(channel_source))
 				continue;
-			if (obs_source_removed(source))
+			if (obs_source_removed(channel_source))
 				continue;
 
 			/* first, add top-level sources as root_nodes */
 			if (mix->mix_audio)
-				da_push_back(audio->root_nodes, &source);
+				da_push_back(audio->root_nodes, &channel_source);
 
 			/* Build audio tree, tag duplicate individual sources */
-			obs_source_enum_active_tree(source, push_audio_tree2, audio);
+			obs_source_enum_active_tree(channel_source, push_audio_tree2, audio);
 
 			/* add top-level sources to audio tree */
-			push_audio_tree(NULL, source, audio);
+			push_audio_tree(NULL, channel_source, audio);
 		}
 		pthread_mutex_unlock(&view->channels_mutex);
 	}
@@ -629,36 +639,38 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 	/* ------------------------------------------------ */
 	/* render audio data */
 	for (size_t i = 0; i < audio->render_order.num; i++) {
-		obs_source_t *source = audio->render_order.array[i];
-		obs_source_audio_render(source, mixers, channels, sample_rate, audio_size);
-		if (should_silence_monitored_source(source, audio))
-			clear_audio_output_buf(source, audio);
+		obs_source_t *render_source = audio->render_order.array[i];
+		obs_source_audio_render(render_source, mixers, channels, sample_rate, audio_size);
+		if (should_silence_monitored_source(render_source, audio))
+			clear_audio_output_buf(render_source, audio);
 
 		/* if a source has gone backward in time and we can no
 		 * longer buffer, drop some or all of its audio */
-		if (audio_buffering_maxed(audio) && source->audio_ts != 0 && source->audio_ts < ts.start) {
-			if (source->info.audio_render) {
+		bool rerender = false;
+		pthread_mutex_lock(&render_source->audio_buf_mutex);
+		if (audio_buffering_maxed(audio) && render_source->audio_ts != 0 &&
+		    render_source->audio_ts < ts.start) {
+			if (render_source->info.audio_render) {
 				blog(LOG_DEBUG,
 				     "render audio source %s timestamp has "
 				     "gone backwards",
-				     obs_source_get_name(source));
+				     obs_source_get_name(render_source));
 
 				/* just avoid further damage */
-				source->audio_pending = true;
+				render_source->audio_pending = true;
 #if DEBUG_AUDIO == 1
 				/* this should really be fixed */
 				assert(false);
 #endif
 			} else {
-				pthread_mutex_lock(&source->audio_buf_mutex);
-				bool rerender = ignore_audio(source, channels, sample_rate, ts.start);
-				pthread_mutex_unlock(&source->audio_buf_mutex);
-
-				/* if we (potentially) recovered, re-render */
-				if (rerender)
-					obs_source_audio_render(source, mixers, channels, sample_rate, audio_size);
+				rerender = ignore_audio(render_source, channels, sample_rate, ts.start);
 			}
 		}
+		pthread_mutex_unlock(&render_source->audio_buf_mutex);
+
+		/* Rendering can call plugins; release the buffer lock first. */
+		if (rerender)
+			obs_source_audio_render(render_source, mixers, channels, sample_rate, audio_size);
 	}
 
 	/* ------------------------------------------------ */
@@ -681,17 +693,17 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 	/* mix audio */
 	if (!audio->buffering_wait_ticks) {
 		for (size_t i = 0; i < audio->root_nodes.num; i++) {
-			obs_source_t *source = audio->root_nodes.array[i];
+			obs_source_t *root_source = audio->root_nodes.array[i];
 
-			if (source->audio_pending)
+			if (root_source->audio_pending)
 				continue;
 
-			pthread_mutex_lock(&source->audio_buf_mutex);
+			pthread_mutex_lock(&root_source->audio_buf_mutex);
 
-			if (source->audio_output_buf[0][0] && source->audio_ts)
-				mix_audio(mixes, source, channels, sample_rate, &ts);
+			if (root_source->audio_output_buf[0][0] && root_source->audio_ts)
+				mix_audio(mixes, root_source, channels, sample_rate, &ts);
 
-			pthread_mutex_unlock(&source->audio_buf_mutex);
+			pthread_mutex_unlock(&root_source->audio_buf_mutex);
 		}
 	}
 

@@ -70,8 +70,8 @@ runs:
         echo ::group::Install Dependencies
         eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
         echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> $GITHUB_PATH
-        brew update
-        brew install --quiet zsh
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew update
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew install --quiet zsh
         echo ::endgroup::
 
     - name: Run Ubuntu packaging
@@ -90,6 +90,12 @@ runs:
         if [[ '${{ inputs.package }}' == true ]] package_args+=(--package)
 
         ${{ inputs.workingDirectory }}/.github/scripts/package-ubuntu ${package_args}
+
+    # windows_zip_check.py (split-symbols in Package-Windows.ps1, then the
+    # verify step) runs through uv.
+    - name: Set Up uv 🐍
+      if: runner.os == 'Windows'
+      uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
     - name: Run Windows packaging
       if: runner.os == 'Windows'
@@ -113,3 +119,24 @@ runs:
         }
 
         .github/scripts/Package-windows.ps1 @PackageArgs
+
+    # The runner has the VC++ redistributable, so launching proves little on
+    # its own: the script also checks the zip's DLL imports against its
+    # contents (#626, #627). Launch only x64; arm64 cannot run here.
+    - name: Verify Windows package 🔎
+      if: runner.os == 'Windows'
+      shell: pwsh
+      working-directory: ${{ inputs.workingDirectory }}
+      run: |
+        $Zip = Get-ChildItem "build_${{ inputs.target }}/obs-studio-*-windows-${{ inputs.target }}.zip" | Select-Object -First 1
+        $CheckArgs = @('check', $Zip.FullName)
+        if ( '${{ inputs.target }}' -eq 'x64' ) {
+          $CheckArgs += '--run'
+          # Cross-built ARM64 packages get this version check on their native
+          # runner. --expect-version requires executing the frontend.
+          if ( $Env:OBS_RUST_VERSION ) {
+            $CheckArgs += @('--expect-version', $Env:OBS_RUST_VERSION)
+          }
+        }
+        uv run --no-project ci/windows_zip_check.py @CheckArgs
+        if ( $LASTEXITCODE -ne 0 ) { exit $LASTEXITCODE }

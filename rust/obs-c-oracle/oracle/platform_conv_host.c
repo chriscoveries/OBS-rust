@@ -20,6 +20,15 @@ void bfree(void *ptr);
 size_t utf8_to_wchar(const char *in, size_t insize, wchar_t *out, size_t outsize, int flags);
 size_t wchar_to_utf8(const wchar_t *in, size_t insize, char *out, size_t outsize, int flags);
 
+/* Test-only exports called from Rust over FFI. */
+size_t os_mbs_to_wcs(const char *str, size_t len, wchar_t *dst, size_t dst_size);
+size_t os_utf8_to_wcs(const char *str, size_t len, wchar_t *dst, size_t dst_size);
+size_t os_wcs_to_utf8(const wchar_t *str, size_t len, char *dst, size_t dst_size);
+size_t os_mbs_to_wcs_ptr(const char *str, size_t len, wchar_t **pstr);
+size_t os_utf8_to_wcs_ptr(const char *str, size_t len, wchar_t **pstr);
+size_t os_wcs_to_utf8_ptr(const wchar_t *str, size_t len, char **pstr);
+size_t os_mbs_to_utf8_ptr(const char *str, size_t len, char **pstr);
+
 size_t os_mbs_to_wcs(const char *str, size_t len, wchar_t *dst, size_t dst_size)
 {
 	UNUSED_PARAMETER(len);

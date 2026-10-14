@@ -15,6 +15,32 @@
 #   --tests REGEX  limit the repeat run to tests matching REGEX (ctest -R)
 set -euo pipefail
 
+# ctest reports a crashed test only as "Segmentation fault". Run each failed
+# test again under lldb (repeatedly, since crashes can be intermittent) and
+# print the faulting stack of every thread, so a macOS-only crash can be
+# diagnosed from the log.
+show_crash_stacks() {
+  local build="$1" failed line name exe attempt out
+  failed="$build/Testing/Temporary/LastTestsFailed.log"
+  [ -f "$failed" ] || return 0
+  command -v lldb >/dev/null || { echo "lldb not found; no crash stacks"; return 0; }
+  while IFS= read -r line; do
+    name="${line#*:}"
+    [ -n "$name" ] || continue
+    exe=$(find "$build" -type f -name "$name" -perm -u+x | head -1)
+    [ -n "$exe" ] || continue
+    echo "== crash stack: $name"
+    for attempt in $(seq 1 30); do
+      out=$(cd "$(dirname "$exe")" && lldb --batch -o run -k "bt all" -k quit -- "$exe" 2>&1) || true
+      if printf '%s' "$out" | grep -q "stop reason = "; then
+        printf '%s\n' "$out" | tail -150
+        break
+      fi
+      [ "$attempt" -lt 30 ] || echo "no crash in 30 lldb runs of $name"
+    done
+  done <"$failed"
+}
+
 repeat=0
 tests=
 while [ $# -gt 0 ]; do
@@ -62,7 +88,7 @@ for mode in OFF ON; do
     >"$build.configure.log" 2>&1 || { tail -40 "$build.configure.log"; exit 1; }
   cmake --build "$build" --config RelWithDebInfo \
     --target libobs cmocka-tests \
-    >"$build.build.log" 2>&1 || { grep -E "error|Error" "$build.build.log" | head -40; exit 1; }
+    >"$build.build.log" 2>&1 || { grep -E ": (fatal )?error|BUILD FAILED" "$build.build.log" | sort -u | head -40; exit 1; }
 
   lib=$(find "$build" -path '*libobs.framework*' -name libobs -type f | head -1)
   if [ -z "$lib" ]; then
@@ -84,8 +110,12 @@ for mode in OFF ON; do
   fi
 
   echo "== [$mode] ctest"
-  DYLD_FRAMEWORK_PATH="$framework_dir" DYLD_LIBRARY_PATH="$(dirname "$avcodec")" \
-    ctest --test-dir "$build" -C RelWithDebInfo --output-on-failure
+  if ! DYLD_FRAMEWORK_PATH="$framework_dir" DYLD_LIBRARY_PATH="$(dirname "$avcodec")" \
+    ctest --test-dir "$build" -C RelWithDebInfo --output-on-failure; then
+    DYLD_FRAMEWORK_PATH="$framework_dir" DYLD_LIBRARY_PATH="$(dirname "$avcodec")" \
+      show_crash_stacks "$build"
+    exit 1
+  fi
 
   if [ "$repeat" -gt 0 ]; then
     echo "== [$mode] ctest --repeat until-fail:$repeat${tests:+ -R $tests}"

@@ -104,6 +104,9 @@ void os_dlclose(void *module)
 		dlclose(module);
 }
 
+/* Declared only in obs-module.c, which calls it. */
+void get_plugin_info(const char *path, bool *is_obs_plugin);
+
 void get_plugin_info(const char *path, bool *is_obs_plugin)
 {
 	*is_obs_plugin = true;
@@ -182,8 +185,8 @@ bool os_sleepto_ns(uint64_t time_target)
 	struct timespec req, remain;
 	memset(&req, 0, sizeof(req));
 	memset(&remain, 0, sizeof(remain));
-	req.tv_sec = time_target / 1000000000;
-	req.tv_nsec = time_target % 1000000000;
+	req.tv_sec = (time_t)(time_target / 1000000000);
+	req.tv_nsec = (long)(time_target % 1000000000);
 
 	while (nanosleep(&req, &remain)) {
 		req = remain;
@@ -280,7 +283,10 @@ int os_get_program_data_path(char *dst, size_t size, const char *name)
 
 char *os_get_program_data_path_ptr(const char *name)
 {
-	size_t len = snprintf(NULL, 0, "/usr/local/share/%s", !!name ? name : "");
+	int ret = snprintf(NULL, 0, "/usr/local/share/%s", !!name ? name : "");
+	if (ret < 0)
+		return NULL;
+	size_t len = (size_t)ret;
 	char *str = bmalloc(len + 1);
 	snprintf(str, len + 1, "/usr/local/share/%s", !!name ? name : "");
 	str[len] = 0;
@@ -410,7 +416,7 @@ size_t os_get_abs_path(const char *path, char *abspath, size_t size)
 		return 0;
 
 	ret = snprintf(abspath, min_size, "%s", newpath);
-	return ret >= 0 ? ret : 0;
+	return ret >= 0 ? (size_t)ret : 0;
 }
 
 char *os_get_abs_path_ptr(const char *path)
@@ -637,165 +643,15 @@ int os_chdir(const char *path)
 	return chdir(path);
 }
 
-#if !defined(__APPLE__)
+/* os_inhibit_sleep_* for Linux and FreeBSD live in platform-nix-inhibit.c,
+ * which is also built with ENABLE_RUST_LIBOBS. */
 
-#if defined(GIO_FOUND)
-struct dbus_sleep_info;
-struct portal_inhibit_info;
-
-extern struct dbus_sleep_info *dbus_sleep_info_create(void);
-extern void dbus_inhibit_sleep(struct dbus_sleep_info *dbus, const char *sleep, bool active);
-extern void dbus_sleep_info_destroy(struct dbus_sleep_info *dbus);
-
-extern struct portal_inhibit_info *portal_inhibit_info_create(void);
-extern void portal_inhibit(struct portal_inhibit_info *portal, const char *reason, bool active);
-extern void portal_inhibit_info_destroy(struct portal_inhibit_info *portal);
-#endif
-
-struct os_inhibit_info {
-#if defined(GIO_FOUND)
-	struct dbus_sleep_info *dbus;
-	struct portal_inhibit_info *portal;
-#endif
-	pthread_t screensaver_thread;
-	os_event_t *stop_event;
-	char *reason;
-	posix_spawnattr_t attr;
-	bool active;
-};
-
-os_inhibit_t *os_inhibit_sleep_create(const char *reason)
-{
-	struct os_inhibit_info *info = bzalloc(sizeof(*info));
-	sigset_t set;
-
-#if defined(GIO_FOUND)
-	info->portal = portal_inhibit_info_create();
-	if (!info->portal) {
-		/* In a Flatpak, only the portal can be used for inhibition. */
-		if (access("/.flatpak-info", F_OK) == 0) {
-			bfree(info);
-			return NULL;
-		}
-
-		info->dbus = dbus_sleep_info_create();
-	}
-
-	if (info->portal || info->dbus) {
-		info->reason = bstrdup(reason);
-		return info;
-	}
-#endif
-	os_event_init(&info->stop_event, OS_EVENT_TYPE_AUTO);
-	posix_spawnattr_init(&info->attr);
-
-	sigemptyset(&set);
-	posix_spawnattr_setsigmask(&info->attr, &set);
-	sigaddset(&set, SIGPIPE);
-	posix_spawnattr_setsigdefault(&info->attr, &set);
-	posix_spawnattr_setflags(&info->attr, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
-
-	info->reason = bstrdup(reason);
-	return info;
-}
-
-extern char **environ;
-
-static void reset_screensaver(os_inhibit_t *info)
-{
-	char *argv[3] = {(char *)"xdg-screensaver", (char *)"reset", NULL};
-	pid_t pid;
-
-	int err = posix_spawnp(&pid, "xdg-screensaver", NULL, &info->attr, argv, environ);
-	if (err == 0) {
-		int status;
-		while (waitpid(pid, &status, 0) == -1)
-			;
-	} else {
-		blog(LOG_WARNING, "Failed to create xdg-screensaver: %d", err);
-	}
-}
-
-static void *screensaver_thread(void *param)
-{
-	os_inhibit_t *info = param;
-
-	while (os_event_timedwait(info->stop_event, 30000) == ETIMEDOUT)
-		reset_screensaver(info);
-
-	return NULL;
-}
-
-bool os_inhibit_sleep_set_active(os_inhibit_t *info, bool active)
-{
-	int ret;
-
-	if (!info)
-		return false;
-	if (info->active == active)
-		return false;
-
-#if defined(GIO_FOUND)
-	if (info->portal)
-		portal_inhibit(info->portal, info->reason, active);
-	if (info->dbus)
-		dbus_inhibit_sleep(info->dbus, info->reason, active);
-	if (info->portal || info->dbus) {
-		info->active = active;
-		return true;
-	}
-#endif
-
-	if (!info->stop_event)
-		return true;
-
-	if (active) {
-		ret = pthread_create(&info->screensaver_thread, NULL, &screensaver_thread, info);
-		if (ret < 0) {
-			blog(LOG_ERROR, "Failed to create screensaver "
-					"inhibitor thread");
-			return false;
-		}
-	} else {
-		os_event_signal(info->stop_event);
-		pthread_join(info->screensaver_thread, NULL);
-	}
-
-	info->active = active;
-	return true;
-}
-
-void os_inhibit_sleep_destroy(os_inhibit_t *info)
-{
-	if (info) {
-		os_inhibit_sleep_set_active(info, false);
-#if defined(GIO_FOUND)
-		if (info->portal) {
-			portal_inhibit_info_destroy(info->portal);
-		} else if (info->dbus) {
-			dbus_sleep_info_destroy(info->dbus);
-		} else {
-			os_event_destroy(info->stop_event);
-			posix_spawnattr_destroy(&info->attr);
-		}
-#else
-		os_event_destroy(info->stop_event);
-		posix_spawnattr_destroy(&info->attr);
-#endif
-
-		bfree(info->reason);
-		bfree(info);
-	}
-}
-
-#endif
-
-void os_breakpoint()
+void os_breakpoint(void)
 {
 	raise(SIGTRAP);
 }
 
-void os_oom()
+void os_oom(void)
 {
 	raise(SIGTRAP);
 }
@@ -1020,26 +876,26 @@ static inline bool os_get_proc_memory_usage_internal(statm_t *statm)
 
 bool os_get_proc_memory_usage(os_proc_memory_usage_t *usage)
 {
-	statm_t statm = {};
+	statm_t statm = {0};
 	if (!os_get_proc_memory_usage_internal(&statm))
 		return false;
 
-	usage->resident_size = (uint64_t)statm.resident_size * sysconf(_SC_PAGESIZE);
+	usage->resident_size = (uint64_t)statm.resident_size * (uint64_t)sysconf(_SC_PAGESIZE);
 	usage->virtual_size = statm.virtual_size;
 	return true;
 }
 
 uint64_t os_get_proc_resident_size(void)
 {
-	statm_t statm = {};
+	statm_t statm = {0};
 	if (!os_get_proc_memory_usage_internal(&statm))
 		return 0;
-	return (uint64_t)statm.resident_size * sysconf(_SC_PAGESIZE);
+	return (uint64_t)statm.resident_size * (uint64_t)sysconf(_SC_PAGESIZE);
 }
 
 uint64_t os_get_proc_virtual_size(void)
 {
-	statm_t statm = {};
+	statm_t statm = {0};
 	if (!os_get_proc_memory_usage_internal(&statm))
 		return 0;
 	return (uint64_t)statm.virtual_size;
@@ -1063,7 +919,7 @@ uint64_t os_get_sys_free_size(void)
 static uint64_t total_memory = 0;
 static bool total_memory_initialized = false;
 
-static void os_get_sys_total_size_internal()
+static void os_get_sys_total_size_internal(void)
 {
 	total_memory_initialized = true;
 

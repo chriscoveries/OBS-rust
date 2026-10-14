@@ -328,7 +328,7 @@ extern void amf_load(void);
 extern void amf_unload(void);
 #endif
 
-#if ENABLE_FFMPEG_LOGGING
+#ifdef ENABLE_FFMPEG_LOGGING
 extern void obs_ffmpeg_load_logging(void);
 extern void obs_ffmpeg_unload_logging(void);
 #endif
@@ -411,7 +411,7 @@ bool obs_module_load(void)
 #endif
 #endif
 
-#if ENABLE_FFMPEG_LOGGING
+#ifdef ENABLE_FFMPEG_LOGGING
 	obs_ffmpeg_load_logging();
 #endif
 	return true;
@@ -419,7 +419,7 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
-#if ENABLE_FFMPEG_LOGGING
+#ifdef ENABLE_FFMPEG_LOGGING
 	obs_ffmpeg_unload_logging();
 #endif
 

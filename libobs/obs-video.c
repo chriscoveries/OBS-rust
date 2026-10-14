@@ -162,10 +162,16 @@ static inline void draw_mix_texture(const size_t mix_idx)
 	gs_eparam_t *param = gs_effect_get_param_by_name(effect, "image");
 	gs_effect_set_texture_srgb(param, tex);
 
+	/* A copy of the other mix's canvas, alpha included: blending would
+	 * multiply the colour by an alpha that the canvas can have at 0 where
+	 * colour shows (Subtract blending), and those areas would turn black. */
+	gs_blend_state_push();
+	gs_enable_blending(false);
 	gs_enable_framebuffer_srgb(true);
 	while (gs_effect_loop(effect, "Draw"))
 		gs_draw_sprite(tex, 0, 0, 0);
 	gs_enable_framebuffer_srgb(false);
+	gs_blend_state_pop();
 }
 
 static const char *render_main_texture_name = "render_main_texture";
@@ -821,8 +827,7 @@ static inline void video_sleep(struct obs_core_video *video, uint64_t *p_time, u
 		*p_time = cur_time + interval_ns * count;
 	}
 
-	video->total_frames += count;
-	video->lagged_frames += count - 1;
+	obs_video_stats_add_frames(&video->stats, count, count - 1);
 
 	vframe_info.timestamp = cur_time;
 	vframe_info.count = count;
@@ -848,14 +853,14 @@ static inline void video_sleep(struct obs_core_video *video, uint64_t *p_time, u
 
 	pthread_mutex_lock(&obs->video.mixes_mutex);
 	for (size_t i = 0, num = obs->video.mixes.num; i < num; i++) {
-		struct obs_core_video_mix *video = obs->video.mixes.array[i];
-		bool raw_active = video->raw_was_active;
-		bool gpu_active = video->gpu_was_active;
+		struct obs_core_video_mix *mix = obs->video.mixes.array[i];
+		bool raw_active = mix->raw_was_active;
+		bool gpu_active = mix->gpu_was_active;
 
 		if (raw_active)
-			deque_push_back(&video->vframe_info_buffer, &vframe_info, sizeof(vframe_info));
+			deque_push_back(&mix->vframe_info_buffer, &vframe_info, sizeof(vframe_info));
 		if (gpu_active)
-			deque_push_back(&video->vframe_info_buffer_gpu, &vframe_info, sizeof(vframe_info));
+			deque_push_back(&mix->vframe_info_buffer_gpu, &vframe_info, sizeof(vframe_info));
 	}
 	pthread_mutex_unlock(&obs->video.mixes_mutex);
 }
@@ -1143,9 +1148,9 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 	context->fps_total_frames++;
 
 	if (context->fps_total_ns >= 1000000000ULL) {
-		obs->video.video_fps =
-			(double)context->fps_total_frames / ((double)context->fps_total_ns / 1000000000.0);
-		obs->video.video_avg_frame_time_ns = context->frame_time_total_ns / (uint64_t)context->fps_total_frames;
+		const double fps = (double)context->fps_total_frames / ((double)context->fps_total_ns / 1000000000.0);
+		const uint64_t avg_frame_time_ns = context->frame_time_total_ns / (uint64_t)context->fps_total_frames;
+		obs_video_stats_set_timing(&obs->video.stats, fps, avg_frame_time_ns);
 
 		context->frame_time_total_ns = 0;
 		context->fps_total_ns = 0;

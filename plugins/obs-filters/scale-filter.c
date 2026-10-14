@@ -189,7 +189,7 @@ static void scale_filter_tick(void *data, float seconds)
 	double new_aspect = (double)filter->cx_in / (double)filter->cy_in;
 
 	if (filter->aspect_ratio_only) {
-		if (fabs(old_aspect - new_aspect) <= EPSILON) {
+		if (fabs(old_aspect - new_aspect) <= (double)EPSILON) {
 			filter->target_valid = false;
 			return;
 		} else {

@@ -359,7 +359,7 @@ void obs_output_destroy(obs_output_t *output)
 		obs_context_data_free(&output->context);
 		deque_free(&output->delay_data);
 		if (output->owns_info_id)
-			bfree((void *)output->info.id);
+			bfree((void *)(uintptr_t)output->info.id);
 		if (output->last_error_message)
 			bfree(output->last_error_message);
 		bfree(output);
@@ -387,8 +387,8 @@ bool obs_output_actual_start(obs_output_t *output)
 		success = output->info.start(output->context.data);
 
 	if (success) {
-		output->starting_drawn_count = obs->video.total_frames;
-		output->starting_lagged_count = obs->video.lagged_frames;
+		obs_video_stats_frame_counts(&obs->video.stats, &output->starting_drawn_count,
+					     &output->starting_lagged_count);
 	}
 
 	if (!success)
@@ -419,6 +419,14 @@ bool obs_output_start(obs_output_t *output)
 	if (!output->context.data)
 		return false;
 
+	/* A start is still in progress (a stream still connecting): starting
+	 * again would run start() on the output data the first start is still
+	 * using. A delayed output handles its own restarts. */
+	if (os_atomic_load_bool(&output->starting) && !delay_active(output)) {
+		blog(LOG_WARNING, "Output '%s' is already starting", output->context.name);
+		return false;
+	}
+
 	if (flag_service(output) &&
 	    !(obs_service_can_try_to_connect(output->service) && obs_service_initialize(output->service, output)))
 		return false;
@@ -444,8 +452,11 @@ static void log_frame_info(struct obs_output *output)
 {
 	struct obs_core_video *video = &obs->video;
 
-	uint32_t drawn = video->total_frames - output->starting_drawn_count;
-	uint32_t lagged = video->lagged_frames - output->starting_lagged_count;
+	uint32_t total_frames;
+	uint32_t lagged_frames;
+	obs_video_stats_frame_counts(&video->stats, &total_frames, &lagged_frames);
+	uint32_t drawn = total_frames - output->starting_drawn_count;
+	uint32_t lagged = lagged_frames - output->starting_lagged_count;
 
 	int dropped = obs_output_get_frames_dropped(output);
 	int total = output->total_frames;
@@ -1021,7 +1032,7 @@ void obs_output_remove_encoder(struct obs_output *output, struct obs_encoder *en
 	obs_output_remove_encoder_internal(output, encoder);
 }
 
-static struct caption_track_data *create_caption_track()
+static struct caption_track_data *create_caption_track(void)
 {
 	struct caption_track_data *rval = bzalloc(sizeof(struct caption_track_data));
 	pthread_mutex_init_value(&rval->caption_mutex);
@@ -2733,6 +2744,8 @@ static void reset_raw_output(obs_output_t *output)
 
 static void calculate_batch_size(struct obs_output *output)
 {
+	output->interleaver_max_batch_size = 0;
+
 	struct obs_video_info ovi;
 	obs_get_video_info(&ovi);
 	DARRAY(uint64_t) intervals;
@@ -3070,7 +3083,7 @@ static void output_reconnect(struct obs_output *output)
 		os_atomic_set_bool(&output->reconnecting, false);
 	} else {
 		blog(LOG_INFO, "Output '%s': Reconnecting in %.02f seconds..", output->context.name,
-		     (float)(output->reconnect_retry_cur_msec / 1000.0));
+		     (double)(float)(output->reconnect_retry_cur_msec / 1000.0));
 
 		signal_reconnect(output);
 	}
@@ -3200,8 +3213,8 @@ void obs_output_caption(obs_output_t *output, const struct obs_source_cea_708 *c
 			continue;
 		}
 		pthread_mutex_lock(&ctrack->caption_mutex);
-		for (size_t i = 0; i < captions->packets; i++) {
-			deque_push_back(&ctrack->caption_data, captions->data + (i * 3), 3 * sizeof(uint8_t));
+		for (size_t pkt = 0; pkt < captions->packets; pkt++) {
+			deque_push_back(&ctrack->caption_data, captions->data + (pkt * 3), 3 * sizeof(uint8_t));
 		}
 		pthread_mutex_unlock(&ctrack->caption_mutex);
 	}

@@ -11,6 +11,13 @@
 
 #include "graphics/vec2.c"
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_vec2_size(void);
+size_t oracle_vec2_align(void);
+size_t oracle_vec2_offset_x(void);
+size_t oracle_vec2_offset_y(void);
+size_t oracle_vec2_offset_ptr(void);
+
 /* Layout of struct vec2. */
 size_t oracle_vec2_size(void)
 {

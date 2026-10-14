@@ -19,6 +19,7 @@ One name per thing, so releases, crates and tags can't be confused (#320).
 |---|---|---|
 | libobs port | `obs-<area>`, named after the libobs directory | `obs-util`, `obs-graphics`, `obs-media-io`, `obs-codec` |
 | libobs staticlib (C ABI drop-in) | `libobs-rust` | |
+| Plugin staticlib | `obs-<plugin>-plugin` | `obs-nvenc-plugin` |
 | Test oracle (dev-only) | `obs-c-oracle` | |
 | Product binary | `obs-studio-rust` | |
 

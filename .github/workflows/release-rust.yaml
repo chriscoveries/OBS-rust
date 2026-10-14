@@ -2,20 +2,38 @@ name: Release OBS-Studio-Rust
 run-name: Daily OBS-Studio-Rust beta 🦀
 # Daily beta: builds OBS-Studio-Rust (ENABLE_RUST_LIBOBS=ON) for Linux, macOS
 # and Windows from master, plus the Linux AppImage (appimage.yaml), and
-# publishes an unsigned GitHub pre-release tagged
+# publishes a GitHub pre-release (macOS signed/notarized when credentials exist) tagged
 # obs-studio-rust-v<rust/libobs-rust version>-beta.<YYYYMMDD>.
 #   gh workflow run release-rust.yaml      # today's release now
-# Relaxed on purpose: a platform that fails to build or verify is left out and
-# the rest still ship; a day that already has a release is skipped. The release
-# creates the tag itself, so push.yaml's upstream OBS tag pipeline doesn't run.
+#   gh workflow run release-rust.yaml --ref <branch> -f verify_only=true
+#     builds the same candidate packages and gate without publishing anything.
+# Release gate (obs-rust/obs-studio#436): the full CI run (Flatpak, every OBS
+# build, Tier 2 on all OSes) moved out of PRs and master pushes and runs here
+# at the candidate SHA; nothing is published unless it passes. The release's
+# own artifact builds are strict (#622): the release is published only when the
+# gate and every platform (Linux deb + AppImage, macOS, Windows) built and
+# verified; otherwise the run fails and publishes nothing. A day that already
+# has a release is skipped, unless a maintainer dispatches with repair=true
+# (#623), which completes or replaces today's release from master. The
+# rolling "continuous" AppImage moves only after the gate, in place (#624).
+# The release creates the tag itself, so push.yaml's upstream OBS tag pipeline doesn't run.
 on:
   schedule:
     - cron: '0 9 * * *'
   workflow_dispatch:
+    inputs:
+      repair:
+        description: Replace or complete today's release if its tag already exists (master only)
+        type: boolean
+        default: false
+      verify_only:
+        description: Build and verify candidate packages from this ref without publishing
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: release-rust
+  group: ${{ inputs.verify_only && format('verify-rust-{0}', github.ref) || 'release-rust' }}
   cancel-in-progress: false
 jobs:
   check:
@@ -27,33 +45,44 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       crate: ${{ steps.check.outputs.crate }}
       skip: ${{ steps.check.outputs.skip }}
+      repair: ${{ steps.check.outputs.repair }}
+      verify_only: ${{ steps.check.outputs.verify_only }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          REPAIR: ${{ inputs.repair }}
+          VERIFY_ONLY: ${{ inputs.verify_only }}
         run: |
           set -euo pipefail
           crate=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/libobs-rust/Cargo.toml | head -1)
           version="$crate-beta.$(date -u +%Y%m%d)"
           tag="obs-studio-rust-v$version"
-          skip=false
+          exists=false
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
-            echo "::notice::$tag already exists; today's beta is out"
-            skip=true
+            exists=true
+            echo "::notice::$tag already exists"
           fi
+          # Refuses non-master refs and stale dates; decides skip/repair.
+          decision=$(uv run --no-project ci/release_decision.py check \
+            --event "$GITHUB_EVENT_NAME" --ref "$GITHUB_REF" --repair "$REPAIR" \
+            --tag-exists "$exists" --tag-date "${version##*.}" --today "$(date -u +%Y%m%d)" \
+            --verify-only "$VERIFY_ONLY")
+          echo "$decision"
           {
             echo "crate=$crate"
             echo "version=$version"
             echo "tag=$tag"
             echo "sha=$GITHUB_SHA"
-            echo "skip=$skip"
+            echo "$decision"
           } >>"$GITHUB_OUTPUT"
 
   build:
-    name: Build ${{ matrix.os }} 🧱
+    name: Build ${{ matrix.os }} ${{ matrix.target }} 🧱
     needs: check
     if: needs.check.outputs.skip != 'true'
     strategy:
@@ -66,10 +95,21 @@ jobs:
           - os: macos
             runner: macos-26
             target: arm64
+          # Intel Macs (#628): cross-built on the arm64 runner, as the gate does.
+          - os: macos
+            runner: macos-26
+            target: x86_64
           - os: windows
             runner: windows-2025-vs2026
             target: x64
+          - os: windows
+            runner: windows-2025-vs2026
+            target: arm64
     runs-on: ${{ matrix.runner }}
+    env:
+      # The full release string: the build embeds it (log banner, About, bundle,
+      # VERSIONINFO) and "Collect and verify" checks the package for it (#631).
+      OBS_RUST_VERSION: ${{ needs.check.outputs.version }}
     steps:
       # fetch-depth 0: versionconfig.cmake derives the base OBS version from tags.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -78,18 +118,6 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           persist-credentials: false
-
-      # The build scripts leave ENABLE_RUST_LIBOBS at its default (OFF), and
-      # Build-Windows.ps1 does not read it from the environment. Flip the
-      # default, as obs-rust/obs-smoke does for all three platforms.
-      - name: Enable Rust libobs 🦀
-        shell: bash
-        run: |
-          set -euo pipefail
-          sed -i.bak 's/option(ENABLE_RUST_LIBOBS \(".*"\) OFF)/option(ENABLE_RUST_LIBOBS \1 ON)/' libobs/CMakeLists.txt
-          rm libobs/CMakeLists.txt.bak
-          grep -n 'option(ENABLE_RUST_LIBOBS' libobs/CMakeLists.txt | grep -q ' ON)'
-          git update-index --assume-unchanged libobs/CMakeLists.txt
 
       - name: Select Xcode 🍏
         if: matrix.os == 'macos'
@@ -100,6 +128,21 @@ jobs:
           mkdir -p "$cas"
           echo "XCODE_CAS_PATH=$cas" >>"$GITHUB_ENV"
 
+      - name: Set Up Code Signing 🔑
+        if: matrix.os == 'macos'
+        id: codesign
+        uses: ./.github/actions/setup-macos-codesigning
+        with:
+          codesignIdentity: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          codesignCertificate: ${{ secrets.MACOS_SIGNING_CERT }}
+          certificatePassword: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+          keychainPassword: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          provisioningProfile: ${{ secrets.MACOS_SIGNING_PROVISIONING_PROFILE }}
+          notarizationUser: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
+          notarizationPassword: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
       # Corrosion runs cargo inside the CMake build; same soldr as build-project.yaml.
       - name: Set up soldr 🦀
         uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
@@ -107,11 +150,29 @@ jobs:
           version: 0.9.31
           shims: true
 
+      # The x86_64 leg is cross-built on an arm64 runner: Corrosion builds
+      # libobs-rust for x86_64-apple-darwin (libobs/cmake/rust-target.cmake),
+      # which needs that target's standard library.
+      - name: Add the Rust x86_64 macOS target 🦀
+        if: matrix.os == 'macos' && matrix.target == 'x86_64'
+        run: rustup target add x86_64-apple-darwin
+
+      # Corrosion infers aarch64-pc-windows-msvc from the ARM64 Visual Studio
+      # preset, but the x64 runner still needs its standard library installed.
+      - name: Add the Rust Windows arm64 target 🦀
+        if: matrix.os == 'windows' && matrix.target == 'arm64'
+        run: rustup target add aarch64-pc-windows-msvc
+
       - name: Build OBS-Studio-Rust 🧱
         uses: ./.github/actions/build-obs
         with:
+          rustLibobs: 'ON'
           target: ${{ matrix.target }}
           config: RelWithDebInfo
+          codesign: ${{ matrix.os == 'macos' && steps.codesign.outputs.haveCodesignIdent == 'true' }}
+          codesignIdent: ${{ steps.codesign.outputs.codesignIdent || '-' }}
+          codesignTeam: ${{ steps.codesign.outputs.codesignTeam }}
+          provisioningProfileUUID: ${{ steps.codesign.outputs.provisioningProfileUUID }}
 
       - name: Package OBS-Studio-Rust 📀
         uses: ./.github/actions/package-obs
@@ -119,43 +180,89 @@ jobs:
           target: ${{ matrix.target }}
           config: RelWithDebInfo
           package: ${{ matrix.os != 'windows' }}
+          codesign: ${{ matrix.os == 'macos' && steps.codesign.outputs.haveCodesignIdent == 'true' }}
+          codesignIdent: ${{ steps.codesign.outputs.codesignIdent || '-' }}
+          notarize: ${{ matrix.os == 'macos' && steps.codesign.outputs.haveCodesignIdent == 'true' && steps.codesign.outputs.haveNotarizationUser == 'true' }}
+          codesignUser: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
+          codesignPass: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
 
       - name: Collect and verify 🔎
         shell: bash
         env:
           OS: ${{ matrix.os }}
+          TARGET: ${{ matrix.target }}
           VERSION: ${{ needs.check.outputs.version }}
-          CRATE: ${{ needs.check.outputs.crate }}
         run: |
           set -euo pipefail
           mkdir -p pkg
           case "$OS" in
             linux) found=(build_ubuntu/obs-studio-*-x86_64-ubuntu-gnu.deb) ;;
-            macos) found=(build_macos/obs-studio-*-macos-apple.dmg) ;;
-            windows) found=(build_x64/obs-studio-*-windows-x64.zip) ;;
+            macos) [ "$TARGET" = x86_64 ] && kind=intel || kind=apple
+              found=(build_macos/obs-studio-*-macos-$kind.dmg) ;;
+            windows) found=(build_${TARGET}/obs-studio-*-windows-${TARGET}.zip) ;;
           esac
           src=${found[0]}
           [ -f "$src" ] || { echo "::error::no $OS package found"; exit 1; }
           ext=${src##*.}
           cp "$src" "pkg/OBS-Studio-Rust-$VERSION-$OS-${{ matrix.target }}.$ext"
 
+          # Package-Windows separates PDBs from the application ZIP. Publish
+          # the matching archive too, rather than leaving it in build_*.
+          if [ "$OS" = windows ]; then
+            symbols="${src%.zip}-symbols.zip"
+            [ -f "$symbols" ] || { echo '::error::Windows symbols package is missing'; exit 1; }
+            cp "$symbols" "pkg/OBS-Studio-Rust-$VERSION-windows-$TARGET-symbols.zip"
+          fi
+
           # Rust must actually be linked into libobs.
           lib=$(find build_* \( -name obs.dll -o -name 'libobs.so*' -o -path '*libobs.framework/Versions/A/libobs' \) -type f | head -1)
           echo "libobs: $lib"
           grep -a -q '/rustc/' "$lib" || { echo "::error::no Rust code in $lib"; exit 1; }
 
-          # The Linux build must name itself OBS-Studio-Rust <version> (#112).
+          # The build must name itself OBS-Studio-Rust <full release version> (#112, #631).
+          want="OBS-Studio-Rust $VERSION (based on OBS "
           if [ "$OS" = linux ]; then
+            uv run --no-project ci/app_identity_check.py deb "$src"
             prefix=build_ubuntu/install/RelWithDebInfo
-            v=$(LD_LIBRARY_PATH="$prefix/lib:$prefix/lib/x86_64-linux-gnu" "$prefix/bin/obs" --version)
+            v=$(LD_LIBRARY_PATH="$prefix/lib:$prefix/lib/x86_64-linux-gnu" "$prefix/bin/obs-studio-rust-gui" --version)
             echo "$v"
-            [[ "$v" == "OBS-Studio-Rust $CRATE"* ]] || { echo "::error::unexpected --version: $v"; exit 1; }
+            [[ "$v" == "$want"* ]] || { echo "::error::unexpected --version: $v (want $want...)"; exit 1; }
+          fi
+
+          # macOS: open the DMG as a user would and check the app's version
+          # strings, the volume name and --version. The x86_64 app cannot run
+          # on the arm64 runner, so it gets the bundle checks only.
+          if [ "$OS" = macos ]; then
+            mnt=$(mktemp -d)
+            hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$src"
+            trap 'hdiutil detach "$mnt" -force >/dev/null 2>&1 || true' EXIT
+            app="$mnt/OBS-Studio-Rust.app"
+            uv run --no-project ci/app_identity_check.py bundle "$app"
+            for key in CFBundleShortVersionString CFBundleVersion; do
+              got=$(/usr/libexec/PlistBuddy -c "Print :$key" "$app/Contents/Info.plist")
+              echo "$key=$got"
+              [[ "$got" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "::error::$key is not numeric: $got"; exit 1; }
+            done
+            got=$(/usr/libexec/PlistBuddy -c "Print :OBSStudioRustVersion" "$app/Contents/Info.plist")
+            [ "$got" = "$VERSION" ] || { echo "::error::Rust bundle version is '$got', want '$VERSION'"; exit 1; }
+            # PlistBuddy requires a regular file; reading standard input
+            # reports "Cannot parse a NULL or zero-length data" on macOS.
+            disk_info="$RUNNER_TEMP/obs-dmg-info-$TARGET.plist"
+            diskutil info -plist "$mnt" > "$disk_info"
+            vol=$(/usr/libexec/PlistBuddy -c "Print :VolumeName" "$disk_info")
+            echo "volume: $vol"
+            [[ "$vol" == "OBS-Studio-Rust $VERSION "* ]] || { echo "::error::DMG volume is '$vol'"; exit 1; }
+            if [ "$TARGET" = arm64 ]; then
+              v=$("$app/Contents/MacOS/OBS-Studio-Rust" --version)
+              echo "$v"
+              [[ "$v" == "$want"* ]] || { echo "::error::unexpected --version: $v (want $want...)"; exit 1; }
+            fi
           fi
           ls -la pkg
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: obs-studio-rust-${{ matrix.os }}
+          name: obs-studio-rust-${{ matrix.os }}-${{ matrix.target }}
           path: pkg/
           retention-days: 14
 
@@ -169,6 +276,9 @@ jobs:
     uses: ./.github/workflows/appimage.yaml
     with:
       ref: ${{ needs.check.outputs.sha }}
+      publish_continuous: true
+      rust_version: ${{ needs.check.outputs.version }}
+      rust_libobs: true
     # A called workflow may not ask for more than its caller grants, and
     # appimage.yaml's release job asks for contents: write (it only runs on a
     # push, never from here). Granting less made GitHub refuse to start this
@@ -176,60 +286,286 @@ jobs:
     permissions:
       contents: write
 
+  windows_arm64_smoke:
+    name: Launch packaged Windows ${{ matrix.target }} 🧪
+    needs: [check, build]
+    if: always() && needs.check.result == 'success' && needs.check.outputs.skip != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: arm64
+            runner: windows-11-vs2026-arm
+          - target: x64
+            runner: windows-2025-vs2026
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: obs-studio-rust-windows-${{ matrix.target }}
+          path: windows-package
+      - name: Reload saved capture profile and reject a missing camera plugin
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $Zip = Get-ChildItem "windows-package/*-windows-$env:TARGET.zip" | Select-Object -First 1
+          if ( -not $Zip ) { throw 'Windows release package is missing' }
+          uv run --no-project ci/windows_zip_check.py check $Zip.FullName --run --expect-version $env:VERSION
+          if ( $LASTEXITCODE -ne 0 ) { exit $LASTEXITCODE }
+
+          # Hosted Windows has the redistributable installed. Remove the
+          # packaged runtime from an actual ZIP and require the package gate
+          # to reject it even when the runner could supply a system copy.
+          $BrokenZip = Join-Path $env:RUNNER_TEMP "obs-$env:TARGET-missing-runtime.zip"
+          Copy-Item -LiteralPath $Zip.FullName -Destination $BrokenZip
+          $Archive = [System.IO.Compression.ZipFile]::Open($BrokenZip, 'Update')
+          try {
+            $RuntimeEntries = @($Archive.Entries | Where-Object { $_.Name -ieq 'vcruntime140.dll' })
+            if ( $RuntimeEntries.Count -eq 0 ) { throw 'Expected packaged vcruntime140.dll for mutation' }
+            foreach ( $Entry in $RuntimeEntries ) { $Entry.Delete() }
+          } finally { $Archive.Dispose() }
+          $RuntimeFailure = uv run --no-project ci/windows_zip_check.py check $BrokenZip --run --expect-version $env:VERSION 2>&1
+          $RuntimeExit = $LASTEXITCODE
+          $RuntimeFailure | Write-Output
+          if ( $RuntimeExit -eq 0 -or "$RuntimeFailure" -notmatch 'imports vcruntime140.dll' ) {
+            throw 'Windows package check did not reject the missing runtime DLL'
+          }
+          $global:LASTEXITCODE = 0
+          $PackageRoot = Join-Path $env:RUNNER_TEMP "obs-$env:TARGET-package"
+          Expand-Archive -LiteralPath $Zip.FullName -DestinationPath $PackageRoot
+          $App = Join-Path $PackageRoot 'bin/64bit/obs64.exe'
+          $Config = Join-Path $env:APPDATA 'obs-studio-rust'
+          foreach ( $Mode in @('fresh', 'migrate-default', 'migrate-custom', 'existing') ) {
+            uv run --no-project test/packaged-startup.py --app $App --config-dir $Config --platform windows --expect-arch $env:TARGET --config-mode $Mode
+            if ( $LASTEXITCODE -ne 0 ) { exit $LASTEXITCODE }
+          }
+
+          # Prove this check detects a capture module removed from the real
+          # package, not merely that an empty frontend can start.
+          $CameraDll = Get-ChildItem (Join-Path $PackageRoot 'core') -Recurse -Filter 'win-dshow.dll'
+          if ( @($CameraDll).Count -ne 1 ) { throw 'Expected one packaged DirectShow camera module' }
+          Move-Item -LiteralPath $CameraDll.FullName -Destination "$($CameraDll.FullName).removed-for-test"
+          $Failure = uv run --no-project test/packaged-startup.py --app $App --config-dir $Config --platform windows --expect-arch $env:TARGET 2>&1
+          $FailedExit = $LASTEXITCODE
+          $Failure | Write-Output
+          if ( $FailedExit -eq 0 -or "$Failure" -notmatch 'capture plugins are missing.*dshow_input' ) {
+            throw 'Packaged startup check did not detect the missing camera module'
+          }
+          # The expected failure was verified; clear its native exit status for
+          # the Actions PowerShell wrapper.
+          $global:LASTEXITCODE = 0
+
+  macos_smoke:
+    name: Native macOS ${{ matrix.target }} DMG startup 🧪
+    needs: [check, build]
+    if: always() && needs.check.result == 'success' && needs.check.outputs.skip != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: arm64
+            runner: macos-26
+          - target: x86_64
+            runner: macos-26-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: obs-studio-rust-macos-${{ matrix.target }}
+          path: macos-package
+      - name: Install the DMG and reload a saved capture profile
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          [ "$(uname -m)" = "$TARGET" ] || { echo '::error::runtime runner is not the package architecture'; exit 1; }
+          Dmg="macos-package/OBS-Studio-Rust-$VERSION-macos-$TARGET.dmg"
+          Root="$RUNNER_TEMP/obs-macos-$TARGET"
+          Mount="$RUNNER_TEMP/obs-macos-mount-$TARGET"
+          mkdir "$Root" "$Mount"
+          hdiutil attach -nobrowse -readonly -mountpoint "$Mount" "$Dmg"
+          trap 'hdiutil detach "$Mount" -force >/dev/null 2>&1 || true' EXIT
+          App="$Root/OBS-Studio-Rust.app"
+          ditto "$Mount/OBS-Studio-Rust.app" "$App"
+          lipo "$App/Contents/MacOS/OBS-Studio-Rust" -verify_arch "$TARGET"
+          codesign --verify --deep --strict "$App"
+          codesign -dvv "$App" 2>&1
+          Plist="$App/Contents/Info.plist"
+          uv run --no-project ci/app_identity_check.py bundle "$App"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$Plist")" = "${VERSION%%-*}" ]
+          Stamp="${VERSION##*.}"
+          Build="${Stamp:0:4}.$((10#${Stamp:4:2})).$((10#${Stamp:6:2}))"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$Plist")" = "$Build" ]
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :OBSStudioRustVersion' "$Plist")" = "$VERSION" ]
+          # Exercise the documented targeted quarantine removal on a copy of
+          # the actual packaged app. This does not assert notarization or grant
+          # camera/microphone/screen permissions on the hosted machine.
+          printf -v Quarantine '0083;%x;Safari;%s' "$(date +%s)" "$(uuidgen)"
+          xattr -w com.apple.quarantine "$Quarantine" "$App"
+          xattr -p com.apple.quarantine "$App"
+          xattr -dr com.apple.quarantine "$App"
+          if xattr -p com.apple.quarantine "$App" >/dev/null 2>&1; then
+            echo '::error::documented quarantine removal did not clear the app attribute'; exit 1
+          fi
+          for mode in fresh migrate-default migrate-custom existing; do
+            uv run --no-project test/packaged-startup.py --app "$App" \
+              --config-dir "$HOME/Library/Application Support/obs-studio-rust" --platform macos --config-mode "$mode"
+          done
+
+  # The release gate: every job the dev cycle skips (#436), at this commit.
+  gate:
+    name: Release gate 🚦
+    needs: check
+    if: needs.check.outputs.skip != 'true'
+    uses: ./.github/workflows/build-project.yaml
+    with:
+      full: true
+    secrets: inherit
+    permissions:
+      contents: read
+
   release:
     name: Publish pre-release 🚀
-    needs: [check, build, appimage]
-    # Ship whatever platforms built.
-    if: always() && needs.check.result == 'success' && needs.check.outputs.skip != 'true'
+    needs: [check, gate, build, appimage, windows_arm64_smoke, macos_smoke]
+    # Only a complete release: the full gate and every platform build (and the
+    # AppImage with its tests) must have succeeded (#622). Nothing ships partially.
+    if: >-
+      always() && needs.check.result == 'success' && needs.check.outputs.skip != 'true'
+      && needs.check.outputs.verify_only != 'true'
+      && needs.gate.result == 'success' && needs.build.result == 'success'
+      && needs.appimage.result == 'success'
+      && needs.windows_arm64_smoke.result == 'success'
+      && needs.macos_smoke.result == 'success'
     runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: obs-studio-rust-*
           path: dist
           merge-multiple: true
-        continue-on-error: true
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: obs-studio-appimage
           path: appimage
-        continue-on-error: true
 
-      - name: Create release 🛫
+      - name: Create or repair release 🛫
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.check.outputs.tag }}
           SHA: ${{ needs.check.outputs.sha }}
           VERSION: ${{ needs.check.outputs.version }}
+          REPAIR: ${{ needs.check.outputs.repair }}
+          VERIFY_ONLY: ${{ needs.check.outputs.verify_only }}
+          GATE: ${{ needs.gate.result }}
+          BUILD: ${{ needs.build.result }}
+          APPIMAGE: ${{ needs.appimage.result }}
         run: |
           set -euo pipefail
-          mkdir -p dist
-          # The AppImage joins the packages under the release's naming scheme. (Only
-          # a missing artifact is tolerated, like a platform that did not build.)
-          for f in appimage/OBS_Studio-*-x86_64.AppImage; do
-            [ -f "$f" ] && mv "$f" "dist/OBS-Studio-Rust-$VERSION-linux-x86_64.AppImage"
-          done
-          cd dist
-          shopt -s nullglob
-          files=(OBS-Studio-Rust-*)
-          if [ ${#files[@]} = 0 ]; then
-            echo "::error::no platform built; nothing to release"
+          uv run --no-project ci/release_decision.py publish --gate "$GATE" --build "$BUILD" --appimage "$APPIMAGE" --verify-only "$VERIFY_ONLY"
+          # Re-check the tag: another run may have released since `check` (#623).
+          exists=false
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then exists=true; fi
+          if [ "$exists" = true ] && [ "$REPAIR" != true ]; then
+            echo "::error::$TAG appeared while this run was building; not overwriting it"
             exit 1
           fi
+          # Preserve the name and zsync metadata generated from the executable.
+          # Copy both so the same artifacts remain available to continuous.
+          cp appimage/OBS-Studio-Rust-*-linux-x86_64.AppImage* dist/
+          uv run --no-project ci/release_decision.py assets --version "$VERSION" dist
+          cd dist
+          files=(OBS-Studio-Rust-*)
           sha256sum "${files[@]}" >SHA256SUMS
           cat SHA256SUMS
           cat >notes.md <<EOF
           Daily beta of OBS-Studio-Rust $VERSION: OBS Studio built with \`ENABLE_RUST_LIBOBS=ON\`, so the ported libobs internals run from Rust. Built from [\`${SHA:0:9}\`](https://github.com/$GITHUB_REPOSITORY/commit/$SHA).
 
-          **Pre-release, unsigned.** macOS: right-click → Open the first time. Windows: SmartScreen will warn. Linux: \`sudo apt install ./OBS-Studio-Rust-$VERSION-linux-x86_64.deb\` (Ubuntu 26.04), or the AppImage for any distribution: \`chmod +x OBS-Studio-Rust-$VERSION-linux-x86_64.AppImage\` and run it.
+          **Daily beta.** macOS packages are signed and notarized when the project's release credentials are configured. For an unnotarized download, copy OBS-Studio-Rust.app to Applications and try opening it, then choose **System Settings → Privacy & Security → Open Anyway**. For a download you trust, the Terminal alternative is \`xattr -dr com.apple.quarantine /Applications/OBS-Studio-Rust.app\`; it removes quarantine from that app only. See [Apple's guidance](https://support.apple.com/102445).
 
-          Platforms in this build: $(printf '%s ' "${files[@]}" | sed -E 's/OBS-Studio-Rust-[^ ]*-(linux|macos|windows)-[^ .]*\.([A-Za-z]+)/\1 (\2)/g'). A platform missing from the list didn't build or verify today; see the workflow run.
+          Windows: SmartScreen will warn. Linux: \`sudo apt install ./OBS-Studio-Rust-$VERSION-linux-x86_64.deb\` (Ubuntu 26.04), or the AppImage for any distribution: \`chmod +x OBS-Studio-Rust-$VERSION-linux-x86_64.AppImage\` and run it.
+
+          **Separate settings and app identity.** This beta uses \`obs-studio-rust\` inside your OS's usual config directory. On first launch it copies upstream OBS settings, profiles, scenes and plugin settings without changing the originals. Existing Rust settings are kept. Custom configuration, profile, scene and plugin storage locations stay selected, with a separate \`obs-studio-rust\` directory in each location. Later upstream changes are not imported automatically.
+
+          Linux installs the GUI as \`obs-studio-rust-gui\`; \`obs-studio-rust\` remains the websocket command-line client. macOS installs \`OBS-Studio-Rust.app\`. Windows and macOS use a separate app identity; the OS may ask for capture permissions again. Imported websocket settings retain their port, so close upstream OBS before connecting to the beta on that port.
 
           Checksums: \`SHA256SUMS\`.
           EOF
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" --prerelease \
-            --title "OBS-Studio-Rust v$VERSION" --notes-file notes.md \
-            "${files[@]}" SHA256SUMS
+          if [ "$exists" = true ]; then
+            # Repair: move the tag to this commit and replace the assets in place.
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$SHA" -F force=true >/dev/null
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}" SHA256SUMS
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest \
+                --title "OBS-Studio-Rust v$VERSION" --notes-file notes.md
+            else
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+                --title "OBS-Studio-Rust v$VERSION" --notes-file notes.md "${files[@]}" SHA256SUMS
+            fi
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" --latest \
+              --title "OBS-Studio-Rust v$VERSION" --notes-file notes.md \
+              "${files[@]}" SHA256SUMS
+          fi
+
+      # The rolling continuous AppImage moves only here, after the gate and every
+      # build passed (#624), and in place: upload the new files over the old
+      # (--clobber), then move the tag. The release and its URLs never disappear.
+      # Daily and continuous releases use the same names and updater metadata.
+      - name: Move the continuous build 🔄
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          set -euo pipefail
+          cd appimage
+          ls -l
+          cat >notes.md <<EOF
+          Rolling build of OBS-Studio-Rust from \`master\`, currently [\`${SHA:0:9}\`](https://github.com/$GITHUB_REPOSITORY/commit/$SHA). Replaced daily by the release build, once the release gate passes and the AppImage passes its tests on Debian, Ubuntu and Fedora, including a saved profile that records a PipeWire screen capture, camera and microphone.
+
+          **Pre-release.** \`chmod +x OBS-Studio-Rust-*-linux-x86_64.AppImage && ./OBS-Studio-Rust-*-linux-x86_64.AppImage\`. AppRun selects the host runtime on newer systems and uses the bundled runtime on older systems; GPU drivers come from the host. The \`.zsync\` file lets AppImageUpdate fetch the next build as a delta. Limits and troubleshooting: \`build-aux/appimage/README.md\`.
+          EOF
+          if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload continuous --repo "$GITHUB_REPOSITORY" --clobber \
+              OBS-Studio-Rust-*-linux-x86_64.AppImage OBS-Studio-Rust-*-linux-x86_64.AppImage.zsync
+            # Versioned names leave the previous build's files. Prune only
+            # superseded AppImage pairs after upload; preserve other attachments.
+            keep=" $(printf '%s ' OBS-Studio-Rust-*-linux-x86_64.AppImage OBS-Studio-Rust-*-linux-x86_64.AppImage.zsync)"
+            gh release view continuous --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
+              while read -r name; do
+                case "$name" in
+                  OBS_Studio-*-x86_64.AppImage | OBS_Studio-*-x86_64.AppImage.zsync | \
+                  OBS-Studio-Rust-*-linux-x86_64.AppImage | OBS-Studio-Rust-*-linux-x86_64.AppImage.zsync)
+                    case "$keep" in *" $name "*) ;; *) gh release delete-asset continuous "$name" --repo "$GITHUB_REPOSITORY" --yes ;; esac
+                    ;;
+                esac
+              done
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/continuous" -f sha="$SHA" -F force=true >/dev/null
+            gh release edit continuous --repo "$GITHUB_REPOSITORY" --prerelease \
+              --title "OBS-Studio-Rust continuous build" --notes-file notes.md
+          else
+            gh release create continuous --repo "$GITHUB_REPOSITORY" --target "$SHA" --prerelease \
+              --title "OBS-Studio-Rust continuous build" --notes-file notes.md \
+              OBS-Studio-Rust-*-linux-x86_64.AppImage OBS-Studio-Rust-*-linux-x86_64.AppImage.zsync
+          fi

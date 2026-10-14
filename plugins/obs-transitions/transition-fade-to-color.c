@@ -1,5 +1,7 @@
 #include <obs-module.h>
 
+#include "fade-to-color-mix.h"
+
 #define S_COLOR "color"
 #define S_SWITCH_POINT "switch_point"
 
@@ -18,26 +20,6 @@ struct fade_to_color_info {
 	struct vec4 color_srgb;
 	float switch_point;
 };
-
-static inline float lerp(float a, float b, float x)
-{
-	return (1.0f - x) * a + x * b;
-}
-
-static inline float clamp(float x, float min, float max)
-{
-	if (x < min)
-		return min;
-	else if (x > max)
-		return max;
-	return x;
-}
-
-static inline float smoothstep(float min, float max, float x)
-{
-	x = clamp((x - min) / (max - min), 0.0f, 1.0f);
-	return x * x * (3 - 2 * x);
-}
 
 static const char *fade_to_color_get_name(void *type_data)
 {
@@ -100,8 +82,8 @@ static void fade_to_color_callback(void *data, gs_texture_t *a, gs_texture_t *b,
 {
 	struct fade_to_color_info *fade_to_color = data;
 
-	float sa = smoothstep(0.0f, fade_to_color->switch_point, t);
-	float sb = smoothstep(fade_to_color->switch_point, 1.0f, t);
+	float sa = ftc_smoothstep(0.0f, fade_to_color->switch_point, t);
+	float sb = ftc_smoothstep(fade_to_color->switch_point, 1.0f, t);
 
 	float swp = t < fade_to_color->switch_point ? sa : 1.0f - sb;
 
@@ -143,17 +125,13 @@ static void fade_to_color_video_render(void *data, gs_effect_t *effect)
 static float mix_a(void *data, float t)
 {
 	struct fade_to_color_info *fade_to_color = data;
-	float sp = fade_to_color->switch_point;
-
-	return lerp(1.0f - t, 0.0f, smoothstep(0.0f, sp, t));
+	return ftc_mix_a(fade_to_color->switch_point, t);
 }
 
 static float mix_b(void *data, float t)
 {
 	struct fade_to_color_info *fade_to_color = data;
-	float sp = fade_to_color->switch_point;
-
-	return lerp(0.0f, t, smoothstep(sp, 1.0f, t));
+	return ftc_mix_b(fade_to_color->switch_point, t);
 }
 
 static bool fade_to_color_audio_render(void *data, uint64_t *ts_out, struct obs_source_audio_mix *audio,

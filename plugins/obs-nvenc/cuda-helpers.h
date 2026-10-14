@@ -46,6 +46,8 @@ typedef struct CudaFunctions {
 extern CudaFunctions *cu;
 
 bool init_cuda(obs_encoder_t *encoder);
+/* Defined in cuda-load.c; called by init_cuda() with its mutex held. */
+bool init_cuda_internal(obs_encoder_t *encoder);
 bool cuda_get_error_desc(CUresult res, const char **name, const char **desc);
 
 struct nvenc_data;

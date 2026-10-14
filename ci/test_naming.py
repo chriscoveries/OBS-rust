@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Rust crate names follow docs/rust-port/naming.md (#320).
 
-    python3 -m unittest ci/test_naming.py
+    uv run python -m unittest ci/test_naming.py
 """
 
 from __future__ import annotations

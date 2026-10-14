@@ -20,7 +20,7 @@ target_sources(
     obs-cocoa.m
     util/apple/cfstring-utils.h
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/pipe-posix.c>
-    util/platform-cocoa.m
+    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/platform-cocoa.m>
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/platform-nix.c>
     $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/threading-posix.c>
     util/threading-posix.h

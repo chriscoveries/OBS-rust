@@ -9,6 +9,19 @@
 
 #include "util/array-serializer.c"
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_serializer_size(void);
+size_t oracle_serializer_align(void);
+size_t oracle_serializer_offset_data(void);
+size_t oracle_serializer_offset_read(void);
+size_t oracle_serializer_offset_write(void);
+size_t oracle_serializer_offset_seek(void);
+size_t oracle_serializer_offset_get_pos(void);
+size_t oracle_array_output_data_size(void);
+size_t oracle_array_output_data_align(void);
+size_t oracle_array_output_data_offset_bytes(void);
+size_t oracle_array_output_data_offset_cur_pos(void);
+
 /* Layout of struct serializer as the C compiler sees the real header. */
 size_t oracle_serializer_size(void)
 {

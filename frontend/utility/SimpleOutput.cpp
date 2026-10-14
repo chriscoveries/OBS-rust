@@ -1,6 +1,7 @@
 #include "SimpleOutput.hpp"
 
 #include <utility/audio-encoders.hpp>
+#include <utility/replay-buffer-naming.h>
 #include <utility/StartMultiTrackVideoStreamingGuard.hpp>
 #include <widgets/OBSBasic.hpp>
 
@@ -832,6 +833,24 @@ void SimpleOutput::UpdateRecording()
 	recordingConfigured = true;
 }
 
+void SimpleOutput::UpdateReplayBufferNaming()
+{
+	if (!replayBuffer) {
+		return;
+	}
+
+	const char *path = config_get_string(main->Config(), "SimpleOutput", "FilePath");
+	const char *format = config_get_string(main->Config(), "SimpleOutput", "RecFormat2");
+	bool noSpace = config_get_bool(main->Config(), "SimpleOutput", "FileNameWithoutSpace");
+	const char *filenameFormat = config_get_string(main->Config(), "Output", "FilenameFormatting");
+	const char *rbPrefix = config_get_string(main->Config(), "SimpleOutput", "RecRBPrefix");
+	const char *rbSuffix = config_get_string(main->Config(), "SimpleOutput", "RecRBSuffix");
+
+	string ext = GetFormatExt(format);
+	struct replay_buffer_naming naming = {path, filenameFormat, rbPrefix, rbSuffix, ext.c_str(), !noSpace};
+	replay_buffer_naming_refresh(replayBuffer, &naming);
+}
+
 bool SimpleOutput::ConfigureRecording(bool updateReplayBuffer)
 {
 	const char *path = config_get_string(main->Config(), "SimpleOutput", "FilePath");
@@ -853,12 +872,9 @@ bool SimpleOutput::ConfigureRecording(bool updateReplayBuffer)
 
 	OBSDataAutoRelease settings = obs_data_create();
 	if (updateReplayBuffer) {
-		f = GetFormatString(filenameFormat, rbPrefix, rbSuffix);
 		string ext = GetFormatExt(format);
-		obs_data_set_string(settings, "directory", path);
-		obs_data_set_string(settings, "format", f.c_str());
-		obs_data_set_string(settings, "extension", ext.c_str());
-		obs_data_set_bool(settings, "allow_spaces", !noSpace);
+		struct replay_buffer_naming naming = {path, filenameFormat, rbPrefix, rbSuffix, ext.c_str(), !noSpace};
+		replay_buffer_naming_set(settings, &naming);
 		obs_data_set_int(settings, "max_time_sec", rbTime);
 		obs_data_set_int(settings, "max_size_mb", usingRecordingPreset ? rbSize : 0);
 	} else {

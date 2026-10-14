@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Every `git describe --tags` that names an OBS version must only consider
 OBS version tags.
 
-    python3 -m unittest ci/test_describe_match.py
+    uv run python -m unittest ci/test_describe_match.py
 
 The repository also carries obs-studio-rust-v* tags (and the retired obs-stream-rust-v0.1.0).
 #220 filtered cmake/common/versionconfig.cmake; the packaging scripts kept
@@ -17,8 +17,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCAN = (".github/scripts", ".github/actions", "cmake")
-DESCRIBE = re.compile(r"git\s+describe\b[^\n]*--tags[^\n]*")
+SCAN = (".github/scripts", ".github/actions", "cmake", "rust/tools")
+DESCRIBE = re.compile(r"\bgit\b(?:\s+-C\s+\S+|\s+--?[\w-]+(?:=\S+)?)*\s+describe\b[^\n]*--tags[^\n]*")
 
 
 class DescribeMatchTest(unittest.TestCase):

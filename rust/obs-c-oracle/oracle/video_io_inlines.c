@@ -8,6 +8,45 @@
 
 #include "media-io/video-io.h"
 
+/* Test-only exports called from Rust over FFI. */
+bool oracle_format_is_yuv(int format);
+const char *oracle_get_video_format_name(int format);
+const char *oracle_get_video_colorspace_name(int cs);
+int oracle_resolve_video_range(int format, int range);
+const char *oracle_get_video_range_name(int format, int range);
+size_t oracle_video_trc_size(void);
+size_t oracle_video_trc_align(void);
+size_t oracle_video_trc_count(void);
+int oracle_video_trc_value(size_t i);
+size_t oracle_video_scale_type_size(void);
+size_t oracle_video_scale_type_align(void);
+size_t oracle_video_scale_type_count(void);
+int oracle_video_scale_type_value(size_t i);
+size_t oracle_video_data_size(void);
+size_t oracle_video_data_align(void);
+size_t oracle_video_data_planes(void);
+size_t oracle_video_data_offset_data(void);
+size_t oracle_video_data_offset_linesize(void);
+size_t oracle_video_data_offset_timestamp(void);
+size_t oracle_video_output_info_size(void);
+size_t oracle_video_output_info_align(void);
+size_t oracle_video_output_info_offset_name(void);
+size_t oracle_video_output_info_offset_format(void);
+size_t oracle_video_output_info_offset_fps_num(void);
+size_t oracle_video_output_info_offset_fps_den(void);
+size_t oracle_video_output_info_offset_width(void);
+size_t oracle_video_output_info_offset_height(void);
+size_t oracle_video_output_info_offset_cache_size(void);
+size_t oracle_video_output_info_offset_colorspace(void);
+size_t oracle_video_output_info_offset_range(void);
+size_t oracle_video_scale_info_size(void);
+size_t oracle_video_scale_info_align(void);
+size_t oracle_video_scale_info_offset_format(void);
+size_t oracle_video_scale_info_offset_width(void);
+size_t oracle_video_scale_info_offset_height(void);
+size_t oracle_video_scale_info_offset_range(void);
+size_t oracle_video_scale_info_offset_colorspace(void);
+
 bool oracle_format_is_yuv(int format)
 {
 	return format_is_yuv((enum video_format)format);

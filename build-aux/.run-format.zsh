@@ -53,7 +53,7 @@ invoke_formatter() {
         log_warning "clang-format is more recent than version 22.1.3 (found ${formatter_version[-1]})."
       fi
 
-      if (( ! #source_files )) source_files=((libobs|libobs-*|frontend|plugins|deps|shared|test)/**/*.(c|cpp|h|hpp|m|mm)(.N))
+      if (( ! #source_files )) source_files=((libobs|libobs-*|frontend|plugins|deps|shared|test|rust)/**/*.(c|cpp|h|hpp|m|mm)(.N))
 
       source_files=(${source_files:#*/(obs-websocket/deps|decklink/*/decklink-sdk|mac-syphon/syphon-framework|libdshowcapture)/*})
 

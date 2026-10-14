@@ -38,6 +38,7 @@
 #include "media-io/audio-io.h"
 
 #include "obs.h"
+#include "obs-video-stats.h"
 
 #include <obsversion.h>
 #include <caption/caption.h>
@@ -390,11 +391,16 @@ struct obs_core_video_mix {
 	gs_stagesurf_t *mapped_surfaces[NUM_CHANNELS];
 	int cur_texture;
 	volatile long raw_active;
+	/* Also pins this mix while GPU encoder starts wait on pool teardown. */
 	volatile long gpu_encoder_active;
 	bool gpu_was_active;
 	bool raw_was_active;
 	bool was_active;
 	pthread_mutex_t gpu_encoder_mutex;
+	/* Protects teardown state; creation lock order is lifecycle -> graphics -> gpu_encoder_mutex. */
+	pthread_mutex_t gpu_encoder_lifecycle_mutex;
+	pthread_cond_t gpu_encoder_teardown_cond;
+	bool gpu_encoder_tearing_down;
 	struct deque gpu_encoder_queue;
 	struct deque gpu_encoder_avail_queue;
 	DARRAY(obs_encoder_t *) gpu_encoders;
@@ -442,11 +448,8 @@ struct obs_core_video {
 	uint64_t video_time;
 	uint64_t video_frame_interval_ns;
 	uint64_t video_half_frame_interval_ns;
-	uint64_t video_avg_frame_time_ns;
-	double video_fps;
 	pthread_t video_thread;
-	uint32_t total_frames;
-	uint32_t lagged_frames;
+	struct obs_video_stats stats;
 	bool thread_initialized;
 
 	gs_texture_t *transparent_texture;
@@ -552,6 +555,7 @@ struct obs_core_hotkeys {
 
 	pthread_t hotkey_thread;
 	bool hotkey_thread_initialized;
+	os_event_t *ready_event;
 	os_event_t *stop_event;
 	bool thread_disable_press;
 	bool strict_modifiers;
@@ -892,6 +896,8 @@ struct obs_source {
 	volatile bool timing_set;
 	volatile uint64_t timing_adjust;
 	uint64_t resample_offset;
+	/* where the next packet into the resampler continues the last one */
+	uint64_t next_resample_in_ts;
 	uint64_t next_audio_ts_min;
 	uint64_t next_audio_sys_ts_min;
 	uint64_t last_frame_ts;
