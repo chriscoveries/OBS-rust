@@ -180,6 +180,9 @@ static int mp_media_next_packet(mp_media_t *media)
 	if (ret < 0) {
 		if (ret != AVERROR_EOF && ret != AVERROR_EXIT)
 			blog(LOG_WARNING, "MP: av_read_frame failed: %s (%d)", av_err2str(ret), ret);
+		/* Back to the pool: it was taken (or allocated) above, and a failed
+		 * read (timeout, EOF, abort) leaves it unused. */
+		mp_media_free_packet(media, pkt);
 		return ret;
 	}
 
@@ -236,15 +239,21 @@ static inline int get_sws_range(enum AVColorRange r)
 
 #define FIXED_1_0 (1 << 16)
 
-static bool mp_media_init_scaling(mp_media_t *m)
+static void mp_media_free_scaling(mp_media_t *m)
 {
-	int space = get_sws_colorspace(m->v.frame->colorspace);
-	int range = get_sws_range(m->v.frame->color_range);
+	sws_freeContext(m->swscale);
+	m->swscale = NULL;
+	av_freep(&m->scale_pic[0]);
+}
+
+static bool mp_media_init_scaling(mp_media_t *m, const AVFrame *f)
+{
+	int space = get_sws_colorspace(f->colorspace);
+	int range = get_sws_range(f->color_range);
 	const int *coeff = sws_getCoefficients(space);
 
-	m->swscale = sws_getCachedContext(NULL, m->v.frame->width, m->v.frame->height, m->v.frame->format,
-					  m->v.frame->width, m->v.frame->height, m->scale_format, SWS_POINT, NULL, NULL,
-					  NULL);
+	m->swscale = sws_getCachedContext(NULL, f->width, f->height, f->format, f->width, f->height, m->scale_format,
+					  SWS_POINT, NULL, NULL, NULL);
 	if (!m->swscale) {
 		blog(LOG_WARNING, "MP: Failed to initialize scaler");
 		return false;
@@ -252,14 +261,60 @@ static bool mp_media_init_scaling(mp_media_t *m)
 
 	sws_setColorspaceDetails(m->swscale, coeff, range, coeff, range, 0, FIXED_1_0, FIXED_1_0);
 
-	int ret = av_image_alloc(m->scale_pic, m->scale_linesizes, m->v.frame->width, m->v.frame->height,
-				 m->scale_format, 32);
+	int ret = av_image_alloc(m->scale_pic, m->scale_linesizes, f->width, f->height, m->scale_format, 32);
 	if (ret < 0) {
 		blog(LOG_WARNING, "MP: Failed to create scale pic data");
+		mp_media_free_scaling(m);
 		return false;
 	}
 
+	m->scale_src_format = f->format;
+	m->scale_src_width = f->width;
+	m->scale_src_height = f->height;
+	m->scale_space = space;
+	m->scale_range = range;
 	return true;
+}
+
+/* A seek starts decoding at the keyframe before the seek position; the
+ * frames before the position are decoded (later frames need them) but not
+ * shown or played. */
+static inline void mp_media_drop_before_seek_target(mp_media_t *m, struct mp_decode *d)
+{
+	if (d->frame_ready && d->next_pts <= m->seek_target_ns)
+		d->frame_ready = false;
+}
+
+/* The size, pixel format and colour details of a stream can change from
+ * one frame to the next (adaptive streams, files assembled from parts), so
+ * check every frame against the scaler and rebuild it, or drop it once the
+ * frames no longer need conversion. */
+static bool mp_media_check_scaling(mp_media_t *m)
+{
+	const AVFrame *f = m->v.frame;
+
+	m->scale_format = closest_format(f->format);
+	if (m->scale_format == f->format) {
+		if (m->swscale)
+			mp_media_free_scaling(m);
+		return true;
+	}
+
+	if (m->swscale && f->format == m->scale_src_format && f->width == m->scale_src_width &&
+	    f->height == m->scale_src_height) {
+		int space = get_sws_colorspace(f->colorspace);
+		int range = get_sws_range(f->color_range);
+		if (space != m->scale_space || range != m->scale_range) {
+			const int *coeff = sws_getCoefficients(space);
+			sws_setColorspaceDetails(m->swscale, coeff, range, coeff, range, 0, FIXED_1_0, FIXED_1_0);
+			m->scale_space = space;
+			m->scale_range = range;
+		}
+		return true;
+	}
+
+	mp_media_free_scaling(m);
+	return mp_media_init_scaling(m, f);
 }
 
 bool mp_media_prepare_frames(mp_media_t *m)
@@ -292,16 +347,20 @@ bool mp_media_prepare_frames(mp_media_t *m)
 			return false;
 		if (m->has_audio && !mp_decode_frame(&m->a))
 			return false;
-	}
 
-	if (m->has_video && m->v.frame_ready && !m->swscale) {
-		m->scale_format = closest_format(m->v.frame->format);
-		if (m->scale_format != m->v.frame->format) {
-			if (!mp_media_init_scaling(m)) {
-				return false;
-			}
+		if (m->seek_exact) {
+			if (m->has_video)
+				mp_media_drop_before_seek_target(m, &m->v);
+			if (m->has_audio)
+				mp_media_drop_before_seek_target(m, &m->a);
 		}
 	}
+
+	if (mp_media_ready_to_start(m))
+		m->seek_exact = false;
+
+	if (m->has_video && m->v.frame_ready && !mp_media_check_scaling(m))
+		return false;
 
 	return true;
 }
@@ -524,7 +583,9 @@ static void mp_media_calc_next_ns(mp_media_t *m)
 	m->next_pts_ns = min_next_ns;
 }
 
-static void seek_to(mp_media_t *m, int64_t pos)
+/* pos is in microseconds. exact: play from pos itself, not from the keyframe
+ * before it (a seek the user asked for, not a restart). */
+static void seek_to(mp_media_t *m, int64_t pos, bool exact)
 {
 	AVStream *stream = m->fmt->streams[0];
 	int64_t seek_pos = pos;
@@ -553,6 +614,12 @@ static void seek_to(mp_media_t *m, int64_t pos)
 		 * the end of the file at once. Without this, playback ended
 		 * right after a seek and started over. */
 		m->eof = false;
+
+		/* A backward seek lands on the keyframe at or before pos:
+		 * decode from there and drop the frames before pos. Decoded
+		 * pts are in nanoseconds and scaled by the speed. */
+		m->seek_exact = exact && seek_flags == AVSEEK_FLAG_BACKWARD && ret >= 0;
+		m->seek_target_ns = av_rescale_q(pos * 1000, (AVRational){1, m->speed}, (AVRational){1, 100});
 	}
 
 	if (m->has_video && m->is_local_file) {
@@ -575,11 +642,18 @@ bool mp_media_reset(mp_media_t *m)
 	if (start_time == AV_NOPTS_VALUE)
 		start_time = 0;
 
+	/* The time stamps sent so far are counted from start_ts, so they end
+	 * at base_ts + next_ts - start_ts: go on from there. Adding next_ts
+	 * alone started every loop late by the start time of the file (the
+	 * decoder delay of an .mp3, or more). start_ts is INT64_MAX when no
+	 * frame was ready. */
+	int64_t played_from = m->start_ts <= next_ts ? m->start_ts : 0;
+
 	m->eof = false;
-	m->base_ts += next_ts;
+	m->base_ts += next_ts - played_from;
 	m->seek_next_ts = false;
 
-	seek_to(m, start_time);
+	seek_to(m, start_time, false);
 
 	pthread_mutex_lock(&m->mutex);
 	stopping = m->stopping;
@@ -918,7 +992,7 @@ static inline bool mp_media_thread(mp_media_t *m)
 
 		if (seek) {
 			m->seek_next_ts = true;
-			seek_to(m, seek_pos);
+			seek_to(m, seek_pos, true);
 			continue;
 		}
 
@@ -1005,7 +1079,7 @@ bool mp_media_init(mp_media_t *media, const struct mp_media_info *info)
 	media->v_cb = info->v_cb;
 	media->a_cb = info->a_cb;
 	media->stop_cb = info->stop_cb;
-	media->ffmpeg_options = info->ffmpeg_options;
+	media->ffmpeg_options = info->ffmpeg_options ? bstrdup(info->ffmpeg_options) : NULL;
 	media->v_seek_cb = info->v_seek_cb;
 	media->v_preload_cb = info->v_preload_cb;
 	media->force_range = info->force_range;
@@ -1070,6 +1144,7 @@ void mp_media_free(mp_media_t *media)
 	av_freep(&media->scale_pic[0]);
 	bfree(media->path);
 	bfree(media->format_name);
+	bfree(media->ffmpeg_options);
 	memset(media, 0, sizeof(*media));
 	pthread_mutex_init_value(&media->mutex);
 }
@@ -1081,6 +1156,9 @@ void mp_media_play(mp_media_t *m, bool loop, bool reconnecting)
 	if (m->active)
 		m->reset = true;
 
+	/* A stop the thread has not handled yet still resets the media, but
+	 * playback starts again, so it must not report that it stopped. */
+	m->stopping = false;
 	m->looping = loop;
 	m->active = true;
 	m->reconnecting = reconnecting;

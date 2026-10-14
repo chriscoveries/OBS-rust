@@ -26,7 +26,7 @@
 
 static inline bool has_utf8_bom(const char *in_char)
 {
-	uint8_t *in = (uint8_t *)in_char;
+	const uint8_t *in = (const uint8_t *)in_char;
 	return (in && in[0] == 0xef && in[1] == 0xbb && in[2] == 0xbf);
 }
 
@@ -131,7 +131,7 @@ static int utf8_forbidden(unsigned char octet)
  */
 size_t utf8_to_wchar(const char *in, size_t insize, wchar_t *out, size_t outsize, int flags)
 {
-	unsigned char *p, *lim;
+	const unsigned char *p, *lim;
 	wchar_t *wlim, high;
 	size_t n, total, i, n_bits;
 	size_t in_len;
@@ -152,7 +152,7 @@ size_t utf8_to_wchar(const char *in, size_t insize, wchar_t *out, size_t outsize
 		in_len = strlen(in);
 
 	total = 0;
-	p = (unsigned char *)in;
+	p = (const unsigned char *)in;
 	lim = p + in_len;
 	wlim = out == NULL ? NULL : out + outsize;
 
@@ -272,7 +272,8 @@ size_t utf8_to_wchar(const char *in, size_t insize, wchar_t *out, size_t outsize
  */
 size_t wchar_to_utf8(const wchar_t *in, size_t insize, char *out, size_t outsize, int flags)
 {
-	wchar_t *w, *wlim, ch = 0;
+	const wchar_t *w, *wlim;
+	wchar_t ch = 0;
 	unsigned char *p, *lim, *oc;
 	size_t total, n;
 	size_t in_len;
@@ -287,7 +288,7 @@ size_t wchar_to_utf8(const wchar_t *in, size_t insize, char *out, size_t outsize
 	if (in_len == 0)
 		return 0;
 
-	w = (wchar_t *)in;
+	w = (const wchar_t *)in;
 	wlim = w + in_len;
 	p = (unsigned char *)out;
 	lim = out == NULL ? NULL : p + outsize;

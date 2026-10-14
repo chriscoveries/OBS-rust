@@ -454,7 +454,7 @@ static void obs_python_tick_callback(void *priv, float seconds)
 
 	lock_callback(cb);
 
-	PyObject *args = Py_BuildValue("(f)", seconds);
+	PyObject *args = Py_BuildValue("(f)", (double)seconds);
 	PyObject *py_ret = PyObject_CallObject(cb->func, args);
 	py_error();
 	Py_XDECREF(py_ret);
@@ -1503,7 +1503,7 @@ static void python_tick(void *param, float seconds)
 	if (valid) {
 		lock_python();
 
-		PyObject *args = Py_BuildValue("(f)", seconds);
+		PyObject *args = Py_BuildValue("(f)", (double)seconds);
 
 		pthread_mutex_lock(&tick_mutex);
 		data = first_tick_script;

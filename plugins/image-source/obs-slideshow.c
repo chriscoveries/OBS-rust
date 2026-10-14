@@ -490,7 +490,7 @@ static void ss_update(void *data, obs_data_t *settings)
 		double new_aspect = (double)cx_in / (double)cy_in;
 
 		if (aspect_only) {
-			if (fabs(old_aspect - new_aspect) > EPSILON) {
+			if (fabs(old_aspect - new_aspect) > (double)EPSILON) {
 				if (new_aspect > old_aspect)
 					cx = (uint32_t)(cy_f * new_aspect);
 				else
@@ -1062,8 +1062,9 @@ static obs_missing_files_t *ss_missingfiles(void *data)
 
 		if (strcmp(path, "") != 0) {
 			if (!os_file_exists(path)) {
-				obs_missing_file_t *file = obs_missing_file_create(
-					path, missing_file_callback, OBS_MISSING_FILE_SOURCE, source, (void *)path);
+				obs_missing_file_t *file = obs_missing_file_create(path, missing_file_callback,
+										   OBS_MISSING_FILE_SOURCE, source,
+										   (void *)(uintptr_t)path);
 
 				obs_missing_files_add_file(missing_files, file);
 			}

@@ -202,6 +202,20 @@ fn run_both(ops: &[Op]) -> (Vec<Compared>, Vec<Compared>, usize) {
     }
 }
 
+/// obs-rust/obs-studio#441. On windows-gnu, libgcc emutls calls
+/// `pthread_getspecific` with a 32-bit `pthread_key_t`. The oracle's
+/// w32-pthreads key is a pointer. Sharing that symbol truncates it and the
+/// process exits `0xC0000005`. MSVC has no libgcc, so this is a normal start.
+#[test]
+fn oracle_profiler_survives_process_tls() {
+    let _guard = PARITY_LOCK.lock().unwrap();
+    unsafe {
+        oracle_profiler_reset();
+        oracle_profiler_start();
+        oracle_profiler_stop();
+    }
+}
+
 fn assert_match(ops: &[Op]) {
     let (oracle, rust, c_roots) = run_both(ops);
     assert_eq!(oracle, rust, "{ops:?}");

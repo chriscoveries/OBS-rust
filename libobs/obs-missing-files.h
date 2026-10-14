@@ -32,7 +32,7 @@ typedef struct obs_missing_files obs_missing_files_t;
 
 enum obs_missing_file_src { OBS_MISSING_FILE_SOURCE, OBS_MISSING_FILE_SCRIPT };
 
-EXPORT obs_missing_files_t *obs_missing_files_create();
+EXPORT obs_missing_files_t *obs_missing_files_create(void);
 EXPORT obs_missing_file_t *obs_missing_file_create(const char *path, obs_missing_file_cb callback, int src_type,
 						   void *src, void *data);
 

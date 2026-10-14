@@ -79,7 +79,7 @@ static void serialize_avc_data(struct serializer *s, const uint8_t *data, size_t
 		*priority = compute_avc_keyframe_priority(nal_start, is_keyframe, *priority);
 
 		const uint8_t *const nal_end = obs_nal_find_startcode(nal_start, end);
-		const size_t nal_size = nal_end - nal_start;
+		const size_t nal_size = (size_t)(nal_end - nal_start);
 		s_wb32(s, (uint32_t)nal_size);
 		s_write(s, nal_start, nal_size);
 		nal_start = nal_end;
@@ -154,10 +154,10 @@ static void get_sps_pps(const uint8_t *data, size_t size, const uint8_t **sps, s
 		type = nal_start[0] & 0x1F;
 		if (type == OBS_NAL_SPS) {
 			*sps = nal_start;
-			*sps_size = nal_end - nal_start;
+			*sps_size = (size_t)(nal_end - nal_start);
 		} else if (type == OBS_NAL_PPS) {
 			*pps = nal_start;
-			*pps_size = nal_end - nal_start;
+			*pps_size = (size_t)(nal_end - nal_start);
 		}
 
 		nal_start = nal_end;
@@ -307,12 +307,12 @@ void obs_extract_avc_headers(const uint8_t *packet, size_t size, uint8_t **new_p
 			nal_end = end;
 
 		if (type == OBS_NAL_SPS || type == OBS_NAL_PPS) {
-			da_push_back_array(header, nal_codestart, nal_end - nal_codestart);
+			da_push_back_array(header, nal_codestart, (size_t)(nal_end - nal_codestart));
 		} else if (type == OBS_NAL_SEI) {
-			da_push_back_array(sei, nal_codestart, nal_end - nal_codestart);
+			da_push_back_array(sei, nal_codestart, (size_t)(nal_end - nal_codestart));
 
 		} else {
-			da_push_back_array(new_packet, nal_codestart, nal_end - nal_codestart);
+			da_push_back_array(new_packet, nal_codestart, (size_t)(nal_end - nal_codestart));
 		}
 
 		nal_start = nal_end;

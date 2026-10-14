@@ -32,21 +32,21 @@
 
 #ifdef __APPLE__
 #define SO_EXT "so"
-#elif _WIN32
+#elif defined(_WIN32)
 #include <windows.h>
 #define SO_EXT "dll"
 #else
 #define SO_EXT "so"
 #endif
 
-static const char *startup_script_template = "\
+static const char startup_script_template[] = "\
 for val in pairs(package.preload) do\n\
 	package.preload[val] = nil\n\
 end\n\
 %s\
 require \"obslua\"\n";
 
-static const char *get_script_path_func = "\
+static const char get_script_path_func[] = "\
 function script_path()\n\
 	 return \"%s\"\n\
 end\n\
@@ -136,9 +136,9 @@ static bool load_lua_script(struct obs_lua_script *data)
 
 	ret = lua_gettop(script);
 	if (ret == 1 && lua_isboolean(script, -1)) {
-		bool success = lua_toboolean(script, -1);
+		bool script_success = lua_toboolean(script, -1);
 
-		if (!success) {
+		if (!script_success) {
 			goto fail;
 		}
 	}
@@ -1324,7 +1324,7 @@ void obs_lua_load(void)
 	/* ---------------------------------------------- */
 	/* Initialize Lua startup script                  */
 
-#if _WIN32
+#if defined(_WIN32)
 #define PATH_MAX MAX_PATH
 #endif
 

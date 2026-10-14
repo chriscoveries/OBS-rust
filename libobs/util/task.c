@@ -133,7 +133,7 @@ static void *tiny_tubular_task_thread(void *param)
 	struct os_task_queue *tq = param;
 	thread_id = tq->id;
 
-	os_set_thread_name(__FUNCTION__);
+	os_set_thread_name(__func__);
 
 	while (!exit_thread && os_sem_wait(tq->sem) == 0) {
 		struct os_task_info ti;

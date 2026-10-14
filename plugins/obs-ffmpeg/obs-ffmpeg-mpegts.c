@@ -268,7 +268,7 @@ static inline bool init_streams(struct ffmpeg_output *stream, struct ffmpeg_data
 
 int ff_network_init(void)
 {
-#if HAVE_WINSOCK2_H
+#if defined(HAVE_WINSOCK2_H) && HAVE_WINSOCK2_H
 	WSADATA wsaData;
 
 	if (WSAStartup(MAKEWORD(1, 1), &wsaData))
@@ -293,7 +293,7 @@ static inline int connect_mpegts_url(struct ffmpeg_output *stream, bool is_rist)
 		goto fail;
 	}
 
-	uc->url = (char *)url;
+	uc->url = (char *)(uintptr_t)url;
 	uc->max_packet_size = is_rist ? RIST_MAX_PAYLOAD_SIZE : SRT_LIVE_DEFAULT_PAYLOAD_SIZE;
 
 	if (stream->ff_data.config.srt_pkt_size)
@@ -365,7 +365,7 @@ fail:
 	}
 
 	av_freep(&uc);
-#if HAVE_WINSOCK2_H
+#if defined(HAVE_WINSOCK2_H) && HAVE_WINSOCK2_H
 	WSACleanup();
 #endif
 	return err;

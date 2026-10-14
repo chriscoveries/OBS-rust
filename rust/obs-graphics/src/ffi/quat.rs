@@ -50,29 +50,15 @@ impl From<Quat> for quat {
 /// # Safety
 ///
 /// `q1` and `q2` must be readable `quat`s and `dst` writable. They may overlap.
-/// As in C, the vector is stored (which clears `w`) before the scalar reads
-/// `q1->w` and `q2->w`, so an aliased `dst` contributes 0 to that product.
+/// Both quaternions are read before `dst` is written.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quat_mul(dst: *mut quat, q1: *const quat, q2: *const quat) {
-    // SAFETY: the caller guarantees both sources are readable. The axes are
-    // copied before `dst` is written, as `quat_vec3` does.
+    // SAFETY: the caller guarantees both sources are readable. Read them
+    // before writing `dst`, including when `dst` is `q1` or `q2`.
     let (a, b) = unsafe { (ptr::read(q1), ptr::read(q2)) };
     let product = Quat::from(a).mul(b.into());
-    // SAFETY: the caller guarantees `dst` is writable. `w` is cleared before
-    // the scalar load so an overlapping `q1` or `q2` observes that store.
-    unsafe {
-        ptr::write(
-            dst,
-            quat {
-                x: product.x,
-                y: product.y,
-                z: product.z,
-                w: 0.0,
-            },
-        );
-        let w = (*q1).w * (*q2).w - Vec3::new(a.x, a.y, a.z).dot(Vec3::new(b.x, b.y, b.z));
-        (*dst).w = w;
-    }
+    // SAFETY: the caller guarantees `dst` is writable.
+    unsafe { ptr::write(dst, product.into()) };
 }
 
 /// Writes the quaternion of the axis-angle `*aa` to `*dst`.

@@ -21,6 +21,7 @@
 #include <wayland-egl.h>
 
 #include "gl-egl-common.h"
+#include "gl-egl-errors.h"
 
 #include <glad/glad_egl.h>
 
@@ -185,7 +186,7 @@ static struct gl_platform *gl_wayland_egl_platform_create(gs_device_t *device, u
 	const EGLAttrib plat_attribs[] = {EGL_NONE};
 	plat->display = eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_EXT, plat->wl_display, plat_attribs);
 	if (plat->display == EGL_NO_DISPLAY) {
-		blog(LOG_ERROR, "eglGetDisplay failed");
+		gl_egl_log_init_error("eglGetPlatformDisplay");
 		goto fail_display_init;
 	}
 
@@ -193,7 +194,7 @@ static struct gl_platform *gl_wayland_egl_platform_create(gs_device_t *device, u
 	EGLint minor;
 
 	if (eglInitialize(plat->display, &major, &minor) == EGL_FALSE) {
-		blog(LOG_ERROR, "eglInitialize failed");
+		gl_egl_log_init_error("eglInitialize");
 		goto fail_display_init;
 	}
 

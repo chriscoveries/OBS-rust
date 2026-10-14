@@ -1,5 +1,12 @@
 /* Drivers for the base parity test. They build a real va_list in C and call
  * either the Rust-backed adapter (blog / blogva) or the original oracle. */
+/* The parity tests choose the format string at run time (they drive blog
+ * with arbitrary formats), so these test entry points forward non-literal
+ * formats by design (obs-rust/obs-studio#516). */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+#endif
+
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -11,6 +18,21 @@ struct base_test_rec {
 	char message[256];
 };
 
+/* Test-only exports called from Rust over FFI. */
+void base_test_record(int log_level, const char *format, va_list args, void *param);
+log_handler_t base_test_record_ptr(void);
+void base_test_flush(void);
+void base_test_rust_blog_i(int level, const char *fmt, int v);
+void base_test_oracle_blog_i(int level, const char *fmt, int v);
+void base_test_rust_blog_s(int level, const char *fmt, const char *s);
+void base_test_oracle_blog_s(int level, const char *fmt, const char *s);
+void base_test_rust_blog_ss(int level, const char *fmt, const char *a, const char *b);
+void base_test_oracle_blog_ss(int level, const char *fmt, const char *a, const char *b);
+void base_test_rust_blog_0(int level, const char *fmt);
+void base_test_oracle_blog_0(int level, const char *fmt);
+void base_test_rust_blogva_si(int level, const char *fmt, const char *s, int v);
+void base_test_oracle_blogva_si(int level, const char *fmt, const char *s, int v);
+
 void base_test_record(int log_level, const char *format, va_list args, void *param)
 {
 	struct base_test_rec *rec = param;
@@ -20,9 +42,9 @@ void base_test_record(int log_level, const char *format, va_list args, void *par
 	vsnprintf(rec->message, sizeof(rec->message), format, args);
 }
 
-void *base_test_record_ptr(void)
+log_handler_t base_test_record_ptr(void)
 {
-	return (void *)base_test_record;
+	return base_test_record;
 }
 
 void base_test_flush(void)

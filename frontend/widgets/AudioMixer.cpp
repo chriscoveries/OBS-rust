@@ -20,6 +20,7 @@
 #include <components/MenuCheckBox.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <utility/item-widget-helpers.hpp>
+#include <utility/preview-audio-sources.hpp>
 #include <widgets/OBSBasic.hpp>
 
 #include <Idian/Utils.hpp>
@@ -420,44 +421,7 @@ void AudioMixer::updatePreviewSources()
 			return;
 		}
 
-		if (!previewScene) {
-			return;
-		}
-
-		auto getPreviewSources = [this](obs_scene_t *, obs_sceneitem_t *item) {
-			if (!obs_sceneitem_visible(item)) {
-				return true;
-			}
-
-			obs_source_t *source = obs_sceneitem_get_source(item);
-			if (!source) {
-				return true;
-			}
-
-			uint32_t flags = obs_source_get_output_flags(source);
-			if ((flags & OBS_SOURCE_AUDIO) == 0) {
-				return true;
-			}
-
-			if (!obs_source_audio_active(source)) {
-				return true;
-			}
-
-			auto uuidPointer = obs_source_get_uuid(source);
-			if (uuidPointer && *uuidPointer) {
-				previewSources.insert(QString::fromUtf8(uuidPointer));
-			}
-
-			return true;
-		};
-
-		using getPreviewSources_t = decltype(getPreviewSources);
-
-		auto previewEnum = [](obs_scene_t *scene, obs_sceneitem_t *item, void *data) -> bool {
-			return (*static_cast<getPreviewSources_t *>(data))(scene, item);
-		};
-
-		obs_scene_enum_items(previewScene, previewEnum, &getPreviewSources);
+		CollectPreviewAudioSources(previewScene, previewSources);
 	}
 }
 

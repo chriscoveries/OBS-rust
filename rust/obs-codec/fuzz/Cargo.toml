@@ -38,3 +38,17 @@ path = "fuzz_targets/avc_diff.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "nal_diff"
+path = "fuzz_targets/nal_diff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_ini_diff"
+path = "fuzz_targets/config_ini_diff.rs"
+test = false
+doc = false
+bench = false

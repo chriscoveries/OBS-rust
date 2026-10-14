@@ -74,15 +74,17 @@ static struct buf nested_ecma_arrays(size_t depth)
 	return b;
 }
 
-/* AMF3 inside AMF0: dynamic objects, each holding the next as "a". The
- * nested object's marker is read twice, as type and as object header. */
+/* AMF3 inside AMF0: dynamic objects, each holding the next as "a". */
 static struct buf nested_amf3_objects(size_t depth)
 {
 	struct buf b = {0};
 	PUT(&b, AMF_AVMPLUS);
 	for (size_t i = 0; i < depth; i++)
 		/* object, inline dynamic traits, empty class name, "a" */
-		PUT(&b, AMF3_OBJECT, 0x0b, 0x01, 0x03, 'a', AMF3_OBJECT);
+		PUT(&b, AMF3_OBJECT, 0x0b, 0x01, 0x03, 'a');
+	PUT(&b, AMF3_INTEGER, 0x00);
+	for (size_t i = 0; i < depth; i++)
+		PUT(&b, 0x01);
 	return b;
 }
 
@@ -147,6 +149,9 @@ static void test_depth_limit(void **state)
 	b = nested_ecma_arrays(MAX_DEPTH + 1);
 	assert_int_equal(decode(&b), -1);
 
+	b = nested_amf3_objects(MAX_DEPTH);
+	len = b.len;
+	assert_int_equal(decode(&b), (int)len);
 	b = nested_amf3_objects(MAX_DEPTH + 1);
 	assert_int_equal(decode(&b), -1);
 }

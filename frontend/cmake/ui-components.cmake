@@ -97,6 +97,7 @@ target_sources(
     components/VolumeControl.hpp
     components/VolumeMeter.cpp
     components/VolumeMeter.hpp
+    components/VolumeMeterSnapshot.hpp
     components/VolumeName.cpp
     components/VolumeName.hpp
     components/VolumeSlider.cpp

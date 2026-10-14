@@ -147,14 +147,14 @@ static EGLDisplay get_egl_display(struct gl_platform *plat)
 
 	egl_client_extensions = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
 
-	PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT =
+	PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display_ext =
 		(PFNEGLGETPLATFORMDISPLAYEXTPROC)(strstr(egl_client_extensions, "EGL_EXT_platform_base")
 							  ? eglGetProcAddress("eglGetPlatformDisplayEXT")
 							  : NULL);
 
-	if (eglGetPlatformDisplayEXT) {
+	if (get_platform_display_ext) {
 		const EGLint plat_attribs[] = {EGL_NONE};
-		edisplay = eglGetPlatformDisplayEXT(EGL_PLATFORM_X11_EXT, display, plat_attribs);
+		edisplay = get_platform_display_ext(EGL_PLATFORM_X11_EXT, display, plat_attribs);
 		if (EGL_NO_DISPLAY == edisplay)
 			blog(LOG_ERROR, "Failed to get EGL/X11 display");
 	}

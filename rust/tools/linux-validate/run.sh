@@ -26,7 +26,7 @@ for sub in plugins/obs-browser plugins/obs-websocket; do
   fi
 done
 if [ -f "$repo/.git" ]; then
-  env=(-e "OBS_VERSION_OVERRIDE=$(git -C "$repo" describe --always --tags)")
+  env=(-e "OBS_VERSION_OVERRIDE=$(git -C "$repo" describe --always --tags --match "[0-9]*.[0-9]*.[0-9]*")")
 fi
 # The build volume is per checkout: a shared one let a run link another
 # branch's stale objects or Rust staticlib (obs-rust/obs-studio#135).
@@ -45,6 +45,16 @@ if [ -n "${OBS_CCACHE_DIR:-}" ]; then
   env+=(-v "$OBS_CCACHE_DIR:/ccache" -e CCACHE_DIR=/ccache)
 else
   env+=(-v obs-rust-linux-validate-ccache:/ccache -e CCACHE_DIR=/ccache)
+fi
+# OBS_EXTRA_CFLAGS: extra C/C++ compiler flags for the CMake builds, e.g. to
+# measure a stricter warning set (obs-rust/obs-studio#516).
+if [ -n "${OBS_EXTRA_CFLAGS:-}" ]; then
+  env+=(-e "OBS_EXTRA_CFLAGS=$OBS_EXTRA_CFLAGS")
+fi
+# OBS_EXTRA_CMAKE_ARGS: extra CMake configure arguments, space-separated, e.g.
+# -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF to collect every warning in one run.
+if [ -n "${OBS_EXTRA_CMAKE_ARGS:-}" ]; then
+  env+=(-e "OBS_EXTRA_CMAKE_ARGS=$OBS_EXTRA_CMAKE_ARGS")
 fi
 # Bake the toolchain pinned in rust-toolchain.toml into the image.
 rust_toolchain=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$repo/rust-toolchain.toml")

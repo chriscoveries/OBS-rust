@@ -13,7 +13,13 @@ if(OS_LINUX AND TARGET OBS::libobs-opengl)
     test_encoder_error_stop
     PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg"
   )
-  target_link_libraries(test_encoder_error_stop PRIVATE OBS::libobs FFmpeg::avformat FFmpeg::avutil ${CMOCKA_LIBRARIES})
+  target_link_libraries(
+    test_encoder_error_stop
+    PRIVATE OBS::libobs OBS::caption FFmpeg::avformat FFmpeg::avutil ${CMOCKA_LIBRARIES} ${CMAKE_DL_LIBS}
+  )
+  # Export the executable's pthread_cond_wait interposer so it observes the
+  # per-mix GPU encoder teardown wait inside libobs without a production test hook.
+  set_target_properties(test_encoder_error_stop PROPERTIES ENABLE_EXPORTS ON)
   add_dependencies(test_encoder_error_stop libobs-opengl)
   add_dependencies(cmocka-tests test_encoder_error_stop)
   # libobs finds its effect files relative to the working directory.

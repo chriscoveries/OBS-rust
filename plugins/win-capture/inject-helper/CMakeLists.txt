@@ -31,6 +31,7 @@ if(OBS_PARENT_ARCHITECTURE STREQUAL CMAKE_VS_PLATFORM_NAME)
       COMMAND "${CMAKE_COMMAND}" --build ${CMAKE_SOURCE_DIR}/build_x86 --config $<CONFIG> -t inject-helper
       COMMENT "Build x86 inject-helper"
     )
+    obs_serialize_x86_build(inject-helper)
   endif()
 
   add_dependencies(win-capture inject-helper)

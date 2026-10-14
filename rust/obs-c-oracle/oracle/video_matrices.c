@@ -21,6 +21,16 @@
 #pragma GCC diagnostic pop
 #endif
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_video_colorspace_size(void);
+size_t oracle_video_colorspace_align(void);
+size_t oracle_video_colorspace_count(void);
+int oracle_video_colorspace_value(size_t i);
+size_t oracle_video_range_type_size(void);
+size_t oracle_video_range_type_align(void);
+size_t oracle_video_range_type_count(void);
+int oracle_video_range_type_value(size_t i);
+
 /* Layout of enum video_colorspace. */
 size_t oracle_video_colorspace_size(void)
 {

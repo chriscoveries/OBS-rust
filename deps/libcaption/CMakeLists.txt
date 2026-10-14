@@ -34,6 +34,7 @@ target_compile_options(
   PRIVATE
     $<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang,GNU>:-Wno-unused-but-set-parameter>
     $<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang,GNU>:-Wno-strict-prototypes>
+    $<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang,GNU>:-Wno-cast-qual>
     $<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang>:-Wno-comma>
 )
 

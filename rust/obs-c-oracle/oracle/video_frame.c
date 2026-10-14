@@ -14,6 +14,17 @@
 
 #include "media-io/video-frame.c"
 
+/* Test-only exports called from Rust over FFI. */
+void oracle_video_frame_free(struct video_frame *frame);
+struct video_frame *oracle_video_frame_create(int format, uint32_t width, uint32_t height);
+void oracle_video_frame_destroy(struct video_frame *frame);
+size_t oracle_video_frame_size(void);
+size_t oracle_video_frame_align(void);
+size_t oracle_video_frame_planes(void);
+size_t oracle_video_frame_linesize_planes(void);
+size_t oracle_video_frame_offset_data(void);
+size_t oracle_video_frame_offset_linesize(void);
+
 /* The video-frame.h inlines; video_frame_create calls oracle_video_frame_init. */
 void oracle_video_frame_free(struct video_frame *frame)
 {

@@ -16,8 +16,12 @@ pub mod lexer;
 pub mod native_sem;
 pub mod path_extension;
 pub mod pipe;
+#[cfg(target_os = "macos")]
+pub mod platform_cocoa;
 #[cfg(unix)]
 pub mod platform_nix;
+#[cfg(windows)]
+pub mod platform_windows;
 pub mod profiler;
 pub mod profiler_snapshot;
 pub mod task;

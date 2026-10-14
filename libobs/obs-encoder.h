@@ -348,6 +348,22 @@ struct obs_encoder_info {
 
 	/** Audio encoder only: Returns padding, in samples, that must be skipped at the start of the stream. */
 	uint32_t (*get_priming_samples)(void *data);
+
+	/**
+	 * Video encoder only (optional): Asks the encoder to make its next
+	 * frame a keyframe.
+	 *
+	 * libobs calls it when an output starts on an encoder that is already
+	 * running for another output (a recording started while the replay
+	 * buffer runs): the new output gets no packet before a keyframe, so
+	 * without one it would wait for the encoder's next scheduled keyframe.
+	 * Called from the thread starting the output while the encoder may be
+	 * encoding on its own thread: just set a flag that the next encode
+	 * call acts on.
+	 *
+	 * @param  data  Data returned from create
+	 */
+	void (*request_keyframe)(void *data);
 };
 
 EXPORT void obs_register_encoder_s(const struct obs_encoder_info *info, size_t size);

@@ -10,10 +10,6 @@
 //! src:dst rate ratio), so a rate-differing conversion exercises the real
 //! resample path on both sides.
 //!
-//! Unix-first: the port is `#[cfg(unix)]`; Windows keeps media-io/audio-io.c.
-
-#![cfg(unix)]
-
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 use std::sync::Mutex;

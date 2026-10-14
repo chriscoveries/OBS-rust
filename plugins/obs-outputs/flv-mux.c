@@ -549,58 +549,58 @@ void flv_packet_metadata(enum video_id_t codec_id, uint8_t **output, size_t *siz
 
 	// metadata data array
 	{
-		struct serializer s;
-		array_output_serializer_init(&s, &metadata);
+		struct serializer ms;
+		array_output_serializer_init(&ms, &metadata);
 
-		s_w8(&s, DATA_TYPE_STRING);
-		s_wstring(&s, "colorInfo");
-		s_w8(&s, DATA_TYPE_OBJECT);
+		s_w8(&ms, DATA_TYPE_STRING);
+		s_wstring(&ms, "colorInfo");
+		s_w8(&ms, DATA_TYPE_OBJECT);
 		{
 			// colorConfig:
-			s_wstring(&s, "colorConfig");
-			s_w8(&s, DATA_TYPE_OBJECT);
+			s_wstring(&ms, "colorConfig");
+			s_w8(&ms, DATA_TYPE_OBJECT);
 			{
-				s_wstring(&s, "bitDepth");
-				s_w8(&s, DATA_TYPE_NUMBER);
-				s_wbd(&s, bits_per_raw_sample);
+				s_wstring(&ms, "bitDepth");
+				s_w8(&ms, DATA_TYPE_NUMBER);
+				s_wbd(&ms, bits_per_raw_sample);
 
-				s_wstring(&s, "colorPrimaries");
-				s_w8(&s, DATA_TYPE_NUMBER);
-				s_wbd(&s, color_primaries);
+				s_wstring(&ms, "colorPrimaries");
+				s_w8(&ms, DATA_TYPE_NUMBER);
+				s_wbd(&ms, color_primaries);
 
-				s_wstring(&s, "transferCharacteristics");
-				s_w8(&s, DATA_TYPE_NUMBER);
-				s_wbd(&s, color_trc);
+				s_wstring(&ms, "transferCharacteristics");
+				s_w8(&ms, DATA_TYPE_NUMBER);
+				s_wbd(&ms, color_trc);
 
-				s_wstring(&s, "matrixCoefficients");
-				s_w8(&s, DATA_TYPE_NUMBER);
-				s_wbd(&s, color_space);
+				s_wstring(&ms, "matrixCoefficients");
+				s_w8(&ms, DATA_TYPE_NUMBER);
+				s_wbd(&ms, color_space);
 			}
-			s_w8(&s, 0);
-			s_w8(&s, 0);
-			s_w8(&s, DATA_TYPE_OBJECT_END);
+			s_w8(&ms, 0);
+			s_w8(&ms, 0);
+			s_w8(&ms, DATA_TYPE_OBJECT_END);
 
 			if (max_luminance != 0) {
 				// hdrMdcv
-				s_wstring(&s, "hdrMdcv");
-				s_w8(&s, DATA_TYPE_OBJECT);
+				s_wstring(&ms, "hdrMdcv");
+				s_w8(&ms, DATA_TYPE_OBJECT);
 				{
-					s_wstring(&s, "maxLuminance");
-					s_w8(&s, DATA_TYPE_NUMBER);
-					s_wbd(&s, max_luminance);
+					s_wstring(&ms, "maxLuminance");
+					s_w8(&ms, DATA_TYPE_NUMBER);
+					s_wbd(&ms, max_luminance);
 
-					s_wstring(&s, "minLuminance");
-					s_w8(&s, DATA_TYPE_NUMBER);
-					s_wbd(&s, min_luminance);
+					s_wstring(&ms, "minLuminance");
+					s_w8(&ms, DATA_TYPE_NUMBER);
+					s_wbd(&ms, min_luminance);
 				}
-				s_w8(&s, 0);
-				s_w8(&s, 0);
-				s_w8(&s, DATA_TYPE_OBJECT_END);
+				s_w8(&ms, 0);
+				s_w8(&ms, 0);
+				s_w8(&ms, DATA_TYPE_OBJECT_END);
 			}
 		}
-		s_w8(&s, 0);
-		s_w8(&s, 0);
-		s_w8(&s, DATA_TYPE_OBJECT_END);
+		s_w8(&ms, 0);
+		s_w8(&ms, 0);
+		s_w8(&ms, DATA_TYPE_OBJECT_END);
 	}
 
 	bool is_multitrack = idx > 0;

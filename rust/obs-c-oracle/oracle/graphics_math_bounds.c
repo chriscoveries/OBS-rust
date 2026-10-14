@@ -6,6 +6,12 @@
 
 #include <stddef.h>
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_bounds_size(void);
+size_t oracle_bounds_align(void);
+size_t oracle_bounds_offset_min(void);
+size_t oracle_bounds_offset_max(void);
+
 /* Layout of struct bounds. Not part of bounds.c. */
 size_t oracle_bounds_size(void)
 {

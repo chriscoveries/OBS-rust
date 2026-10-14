@@ -1,20 +1,21 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Local gate for obs-rust/obs-studio (zackees/ci.yml GATE-001..010).
 
 One entry point for everything CI's lint and unit-test jobs check, split into
 lanes that `ci-lint local-gate run` caches on their inputs and attests in the
 commit message (see local-gate.toml and ci-attestations.yml).
 
-    python3 ci/local_gate.py                 # every lane
-    python3 ci/local_gate.py --lane lint     # one lane
-    python3 ci/local_gate.py --lane lint --fix
+    uv run ci/local_gate.py                 # every lane
+    uv run ci/local_gate.py --lane lint     # one lane
+    uv run ci/local_gate.py --lane lint --fix
 
 Lanes:
   lint         clang-format 22.1.3 and gersemi 0.25.0 over the same files as
                build-aux/run-clang-format and run-gersemi, plus rustfmt,
                clippy -D warnings and the repo Dylints (dylints/*). Formatters are pinned through uvx, so no
                brew/zsh install is needed.
-  rust-test    soldr cargo test --workspace --locked (Tiers 1-3).
+  rust-test    soldr cargo test --workspace --locked (Tiers 1-3), plus a
+               --no-run build of the tests for x86_64-pc-windows-gnu.
 
 Cargo runs with SOLDR_RUSTC_WRAPPER=none (soldr's zccache has replayed stale
 rustc output; #134). Set OBS_GATE_ZCCACHE=1 to keep the cache locally.
@@ -27,6 +28,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import os
+import re
 import subprocess
 import sys
 import time
@@ -38,7 +40,7 @@ CLANG_FORMAT = "clang-format==22.1.3"
 GERSEMI = "gersemi==0.25.0"
 
 # build-aux/run-clang-format
-CLANG_DIRS = ("libobs", "libobs-*", "frontend", "plugins", "deps", "shared", "test")
+CLANG_DIRS = ("libobs", "libobs-*", "frontend", "plugins", "deps", "shared", "test", "rust")
 CLANG_EXTS = (".c", ".cpp", ".h", ".hpp", ".m", ".mm")
 CLANG_EXCLUDE = (
     "*/obs-websocket/deps/*",
@@ -59,12 +61,57 @@ GERSEMI_EXCLUDE = (
 )
 
 
+TROUBLESHOOTING = "docs/rust-port/troubleshooting.md"
+# Environment failures that look like code failures (#694): output pattern ->
+# a one-line hint. Each one has a section in TROUBLESHOOTING.
+HINTS = (
+    (
+        re.compile(r"soldr: .*Permission denied"),
+        "soldr cannot write its cache or target directory; fix the ownership of ~/.soldr and target/",
+    ),
+    (
+        re.compile(r"soldr: (command )?not found|soldr: No such file"),
+        "soldr is not on PATH; install it with `uv tool install --upgrade soldr`",
+    ),
+    (re.compile(r"soldr: .*disk space is low"), "less than 10 GiB free; run `soldr gc` or free disk space"),
+    (
+        re.compile(r"Could NOT find FFmpeg|FFmpeg.*Required is at least version"),
+        "Tier 2 found the host's FFmpeg; run it in Docker with ./unittest instead of against host packages",
+    ),
+    (
+        re.compile(r"Cannot connect to the Docker daemon|docker: (command )?not found|permission denied.*docker\.sock"),
+        "Tier 2 needs a running Docker you can use without sudo",
+    ),
+)
+
+
+def hints_for(text: str) -> list[str]:
+    """One hint per known environment failure in `text`, in HINTS order."""
+    return [
+        f"hint: {hint} ({TROUBLESHOOTING}); or open the PR and let CI run."
+        for pattern, hint in HINTS
+        if pattern.search(text)
+    ]
+
+
 def run(cmd: list[str], **kw) -> None:
+    """Run `cmd`, streaming its output, and print hints for known environment failures."""
     print("+", " ".join(cmd), flush=True)
-    subprocess.run(cmd, cwd=ROOT, check=True, **kw)
+    seen = []
+    with subprocess.Popen(
+        cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", **kw
+    ) as proc:
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            if "soldr" in line or "FFmpeg" in line or "ocker" in line:
+                seen.append(line)
+    for hint in hints_for("".join(seen)):
+        print(hint, flush=True)
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
-def soldr_cargo(args: list[str]) -> None:
+def soldr_cargo(args: list[str], extra_env: dict[str, str] | None = None) -> None:
     """Run `soldr cargo ...` with soldr's zccache rustc wrapper disabled.
 
     The wrapper has replayed stale rustc output (old diagnostics, and green
@@ -75,7 +122,18 @@ def soldr_cargo(args: list[str]) -> None:
     env = dict(os.environ)
     if env.get("OBS_GATE_ZCCACHE") != "1":
         env["SOLDR_RUSTC_WRAPPER"] = "none"
+    env.update(extra_env or {})
     run(["soldr", "cargo", *args], env=env)
+
+
+def toolchain_gcc_ld() -> str:
+    """The pinned toolchain's lld wrappers (rustlib/<host>/bin/gcc-ld)."""
+    def rustc(*a: str) -> str:
+        return subprocess.run(["soldr", "rustc", *a], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+
+    sysroot = rustc("--print", "sysroot").strip().splitlines()[-1]
+    host = next(line.split()[1] for line in rustc("-vV").splitlines() if line.startswith("host:"))
+    return os.path.join(sysroot, "lib", "rustlib", host, "bin", "gcc-ld")
 
 
 def self_test() -> None:
@@ -131,7 +189,7 @@ def clang_format(files: list[str], fix: bool) -> None:
     for r in failed:
         sys.stderr.write(r.stderr)
     if failed:
-        sys.exit("local_gate: clang-format check failed (fix with: python3 ci/local_gate.py --lane lint --fix)")
+        sys.exit("local_gate: clang-format check failed (fix with: uv run ci/local_gate.py --lane lint --fix)")
 
 
 def gersemi(files: list[str], fix: bool) -> None:
@@ -162,15 +220,49 @@ def lane_lint(fix: bool) -> None:
     soldr_cargo(["dylint", "--all", "--", "--workspace", "--lib", "--bins"])
 
 
+# Every shipped Rust target, linted from this host (#472): soldr provides
+# the Windows SDK (xwin) and the macOS SDK for cross-compiling.
+CROSS_TARGETS = ("x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin")
+
+
+def lane_cross(fix: bool) -> None:
+    # obs-c-oracle is a dev-only crate of C built for the host's tests; it
+    # never ships and its C doesn't cross-compile to every target.
+    scope = ["--workspace", "--exclude", "obs-c-oracle", "--lib", "--bins"]
+    for target in CROSS_TARGETS:
+        run(["soldr", "rustup", "target", "add", target])
+        soldr_cargo(["clippy", *scope, "--locked", "--target", target, "--", "-D", "warnings"])
+        soldr_cargo(["dylint", "--all", "--", *scope, "--target", target])
+        # Every test target, C oracle included, must also compile for the
+        # target (#516): check runs the build scripts, so cc compiles all the
+        # oracle's C. Not linked: soldr's LLVM bundle links lld-link/ld64.lld
+        # against the host's libxml2.so.2, which ubuntu-26.04 doesn't have.
+        # Linking is covered for x86_64-pc-windows-gnu in rust-test.
+        soldr_cargo(["check", "--workspace", "--tests", "--locked", "--target", target])
+
+
 def lane_rust_test(fix: bool) -> None:
     soldr_cargo(["test", "--workspace", "--locked"])
+    # Every test binary, C oracle included, must also link for a GCC-based
+    # Windows target (obs-rust/obs-studio#291). soldr provides the
+    # mingw-w64 cross toolchain; nothing runs, so no Wine is needed.
+    # The target is added here, not in rust-toolchain.toml: listing it there
+    # made soldr on a Windows host build and run every test as windows-gnu.
+    run(["soldr", "rustup", "target", "add", "x86_64-pc-windows-gnu"])
+    # Link through lld: GNU ld scans archives once, in order, and rustc can
+    # place the oracle's rlib before the crates that call into it.
+    gcc_ld = toolchain_gcc_ld()
+    soldr_cargo(
+        ["test", "--workspace", "--locked", "--no-run", "--target", "x86_64-pc-windows-gnu"],
+        {"CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS": f"-C link-arg=-B{gcc_ld} -C link-arg=-fuse-ld=lld"},
+    )
 
 
 def lane_tier2_linux(fix: bool) -> None:
     run(["bash", "rust/tools/linux-validate/run.sh"])
 
 
-LANES = {"lint": lane_lint, "rust-test": lane_rust_test, "tier2-linux": lane_tier2_linux}
+LANES = {"lint": lane_lint, "rust-test": lane_rust_test, "cross": lane_cross, "tier2-linux": lane_tier2_linux}
 
 
 def main() -> int:
@@ -185,6 +277,13 @@ def main() -> int:
             LANES[name](args.fix)
         except subprocess.CalledProcessError as e:
             print(f"== lane {name}: FAILED ({e.returncode})", flush=True)
+            return 1
+        except FileNotFoundError as e:
+            print(f"local_gate: {e.filename or e}: command not found", flush=True)
+            if e.filename == "soldr":
+                print(f"hint: soldr is not on PATH; install it with `uv tool install --upgrade soldr` ({TROUBLESHOOTING}); "
+                      "or open the PR and let CI run.", flush=True)
+            print(f"== lane {name}: FAILED (127)", flush=True)
             return 1
         print(f"== lane {name}: ok ({time.monotonic() - start:.1f}s)", flush=True)
     return 0

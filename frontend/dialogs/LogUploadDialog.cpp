@@ -63,7 +63,7 @@ LogUploadDialog::LogUploadDialog(QWidget *parent, LogFileType uploadType)
 	connect(app, &OBSApp::logUploadFinished, this, &LogUploadDialog::handleUploadSuccess);
 	connect(app, &OBSApp::logUploadFailed, this, &LogUploadDialog::handleUploadFailure);
 
-	installEventFilter(CreateShortcutFilter());
+	installEventFilter(CreateShortcutFilter(this));
 
 	LogFileState uploadState = app->getLogFileState(uploadType);
 	switch (uploadState) {

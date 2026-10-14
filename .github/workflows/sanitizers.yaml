@@ -3,7 +3,7 @@ run-name: Sanitizers (${{ inputs.tools || 'all' }}) 🧪
 # ASan+UBSan, TSan and valgrind over the cmocka tests and a timed headless OBS
 # launch, via rust/tools/sanitize/. Run it from the Actions tab or with
 #   gh workflow run sanitizers.yaml -f tools=tsan -f launch_seconds=90
-# PRs that change the harness run it too, so changes to it are checked before merge.
+# Runs nightly; PRs that change the harness dispatch it on their branch (#491).
 on:
   workflow_dispatch:
     inputs:
@@ -28,10 +28,11 @@ on:
         description: Fail the job when triage finds an OBS finding
         type: boolean
         default: false
-  pull_request:
-    paths:
-      - rust/tools/sanitize/**
-      - .github/workflows/sanitizers.yaml
+  # Nightly, all passes (#491): ~20 min, so never on PR or push CI
+  # (zackees/ci.yml GATE-012). A PR that changes the harness dispatches it
+  # on its own branch: gh workflow run sanitizers.yaml --ref <branch>
+  schedule:
+    - cron: '41 6 * * *'
 permissions:
   contents: read
 concurrency:
@@ -81,6 +82,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Set Up uv 🐍
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
       - name: Install dependencies 📦
         run: rust/tools/sanitize/install-ubuntu-deps.sh
 
@@ -110,7 +114,7 @@ jobs:
           FAIL: ${{ inputs.fail_on_findings && '--fail-on-findings' || '' }}
         run: |
           [ -d "$SAN_OUT/${{ matrix.tool }}" ] || { echo "No results (build failed?)" >>"$GITHUB_STEP_SUMMARY"; exit 1; }
-          python3 rust/tools/sanitize/triage.py "$SAN_OUT/${{ matrix.tool }}" ${FAIL:+"$FAIL"} | tee -a "$GITHUB_STEP_SUMMARY"
+          uv run rust/tools/sanitize/triage.py "$SAN_OUT/${{ matrix.tool }}" ${FAIL:+"$FAIL"} | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload logs 📤
         if: always()

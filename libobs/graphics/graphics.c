@@ -945,7 +945,7 @@ gs_texture_t *gs_texture_create_from_file(const char *file)
 	gs_texture_t *tex = NULL;
 
 	if (data) {
-		tex = gs_texture_create(cx, cy, format, 1, (const uint8_t **)&data, 0);
+		tex = gs_texture_create(cx, cy, format, 1, (const uint8_t **)(uintptr_t)&data, 0);
 		bfree(data);
 	}
 
@@ -1655,7 +1655,7 @@ gs_indexbuffer_t *gs_indexbuffer_create(enum gs_index_type type, void *indices, 
 	return graphics->exports.device_indexbuffer_create(graphics->device, type, indices, num, flags);
 }
 
-gs_timer_t *gs_timer_create()
+gs_timer_t *gs_timer_create(void)
 {
 	graphics_t *graphics = thread_graphics;
 
@@ -1665,7 +1665,7 @@ gs_timer_t *gs_timer_create()
 	return graphics->exports.device_timer_create(graphics->device);
 }
 
-gs_timer_range_t *gs_timer_range_create()
+gs_timer_range_t *gs_timer_range_create(void)
 {
 	graphics_t *graphics = thread_graphics;
 
@@ -3040,7 +3040,7 @@ gs_texture_t *gs_texture_open_shared(uint32_t handle)
 	return NULL;
 }
 
-#elif _WIN32
+#elif defined(_WIN32)
 
 bool gs_gdi_texture_available(void)
 {

@@ -29,7 +29,7 @@
 
 NameDialog::NameDialog(QWidget *parent) : QDialog(parent)
 {
-	installEventFilter(CreateShortcutFilter());
+	installEventFilter(CreateShortcutFilter(this));
 	setModal(true);
 	setWindowModality(Qt::WindowModality::WindowModal);
 	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);

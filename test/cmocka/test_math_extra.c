@@ -178,9 +178,8 @@ static void test_calc_torque_moves_and_snaps(void **state)
 	assert_vec(&dst, 0.0f, 0.0f, 0.0f, 4.0f);
 }
 
-/* On the move path vec3_add reads v1 after vec3_mulf has written dst.
- * When dst is v1, that second read sees the scaled direction.
- * Characterized, not endorsed. */
+/* dst may be v1. The move is the same as a call on separate storage:
+ * half of (10, 0, 0) toward the origin, and w cleared by vec3_add. */
 static void test_calc_torque_dst_aliases_v1(void **state)
 {
 	struct vec3 v1, v2;
@@ -189,7 +188,7 @@ static void test_calc_torque_dst_aliases_v1(void **state)
 	set_vec(&v1, 10.0f, 0.0f, 0.0f, 9.0f);
 	set_vec(&v2, 0.0f, 0.0f, 0.0f, 4.0f);
 	calc_torque(&v1, &v1, &v2, 0.5f, 0.1f, 1.0f);
-	assert_vec(&v1, -10.0f, 0.0f, 0.0f, 0.0f);
+	assert_vec(&v1, 5.0f, 0.0f, 0.0f, 0.0f);
 }
 
 /* Same seed, same first draw. Any non-zero positive_only flag takes the

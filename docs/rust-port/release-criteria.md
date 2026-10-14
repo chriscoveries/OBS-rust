@@ -39,6 +39,110 @@ If a platform cannot yet meet these gates, the default remains OFF for that
 platform. State the platform-specific exception and its evidence in the
 default-flip PR; do not infer success from another platform's runs.
 
+## Record C/Rust benchmark evidence (#142)
+
+The Criterion suite lives in the test-only `obs-c-oracle` crate. It compares
+production C ABI shims with the original C sources, compiled in the same
+optimized benchmark executable. Run the fixture and ownership checks first:
+
+```sh
+soldr cargo bench -p obs-c-oracle --bench port_comparison -- --test
+```
+
+Record five complete runs and their median times, run-to-run ranges, and
+per-run confidence intervals:
+
+```sh
+uv run rust/tools/benchmarks/record.py --cpu 7 --output baseline.json
+```
+
+`--cpu` pins the runner on Linux; omit it on systems without that affinity
+API. The report records the CPU, affinity, OS, Rust/LLVM and C compiler
+versions, relevant environment flags, command, and a SHA-256 fingerprint of
+the benchmark and implementation sources. The recorder refuses incomplete
+paired measurements and source changes during measurement. Criterion's raw
+samples remain under `target/criterion/<benchmark>/<baseline>/`.
+
+The suite covers all exported bmem and vec2/3/4 shims, CRC at 64/4096/65536
+bytes, dstr concatenation/safe formatting/replacement at 128/4096 bytes,
+and the AVC/HEVC/AV1 parser entry points on structured synthetic packets.
+AVC start-code cases scan a 256/16384-byte prefix. Packet comparisons include
+the allocation's reference-count prefix and metadata. Allocating batches
+hold at most 64 live outputs; allocation/free and reallocation have separate
+timings. Setup and output cleanup for batched string/reallocation operations
+are excluded, while codec timings include output cleanup.
+
+Variadic `dstr_printf` remains C in both OFF and ON. Its two control cases
+are labeled `printf_control` and excluded from Rust regression decisions.
+The C string and codec oracles use the shared libobs allocator; bmem cases
+compare the independent original C allocator with the Rust allocator. The
+standalone oracle uses Cargo's optimized C build, without the full OBS C IPO
+configuration. These measurements describe shim costs and synthetic inputs;
+they do not establish full-application performance or caller inlining.
+
+The report flags medians above the existing **1.10 Rust/C time ratio**. That
+classification is descriptive, not a claim of statistical significance.
+Inspect confidence intervals and run-to-run variation, and reproduce on
+release hardware before making a default-flip decision. The 5% recording
+workload bound and the other release gates above still apply.
+
+### Recorded baseline
+
+The [2026-10-14 baseline](benchmarks/baseline-2026-10-14.json) records five
+runs of 70 paired comparisons on a Ryzen 7 3700X, pinned to CPU 7, using
+Rust 1.98.1 and GCC 15.2.0. Twenty-one measured medians exceed the 10%
+bound. The largest is `dstr/safe_printf/4096`: 59.47 times the C median,
+with paired run ratios from 57.96 to 67.83. These results identify work
+needed before the default flip; they do not satisfy its performance gate.
+
+### Cross-language LTO investigation
+
+The Linux x86_64 ON probe used Rust 1.98.1 (LLVM 22.1.8), Clang/LLD
+22.1.2, ThinLTO on C/C++, and Rust linker-plugin LTO. This follows the
+[rustc cross-language LTO instructions](https://doc.rust-lang.org/rustc/linker-plugin-lto.html).
+With the usual OBS Linux build dependencies installed, reproduce with:
+
+```sh
+printf '#!/bin/sh\nexec soldr cargo "$@"\n' > /tmp/obs-cargo-soldr
+chmod +x /tmp/obs-cargo-soldr
+export RUSTUP_TOOLCHAIN=1.98.1
+export RUSTFLAGS='-Clinker-plugin-lto -Crelocation-model=pic'
+cmake -S . -B build-lto -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang-22 -DCMAKE_CXX_COMPILER=clang++-22 \
+  -DCMAKE_C_FLAGS=-flto=thin -DCMAKE_CXX_FLAGS=-flto=thin \
+  -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld-22 \
+  -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld-22 \
+  -DRust_CARGO=/tmp/obs-cargo-soldr \
+  -DENABLE_RUST_LIBOBS=ON -DENABLE_FRONTEND=OFF -DENABLE_UNIT_TESTS=ON \
+  -DENABLE_BROWSER=OFF -DENABLE_WEBSOCKET=OFF -DENABLE_AJA=OFF \
+  -DENABLE_WEBRTC=OFF -DENABLE_NVENC=OFF -DENABLE_FFMPEG_NVENC=OFF \
+  -DENABLE_QSV11=OFF -DENABLE_VST=OFF -DENABLE_SCRIPTING=OFF \
+  -DENABLE_VLC=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF
+cmake --build build-lto --target libobs -j4
+```
+
+The stock configuration stops on Clang warnings treated as errors:
+double promotion in `obs-data.c` and a missing format attribute in
+`graphics.c`. To investigate the linker independently, the experiment
+added `-Wno-error=double-promotion -Wno-error=missing-format-attribute` to
+both C/C++ flag strings. This reached the shared-library link, which failed:
+
+```text
+ld.lld: error: relocation R_X86_64_TPOFF32 against thread_graphics
+cannot be used with -shared
+```
+
+The linker command included `-fPIC` and `-shared`; inspected C and Rust
+bitcode both recorded PIC level 2. Repeating with
+`--target=x86_64-unknown-linux-gnu` in both C/C++ flag strings to match
+Rust's target triple produced the same relocation failure. Its cause is
+unresolved. Cross-language LTO is therefore not enabled by this change,
+and no LTO performance improvement or successful full ON build is claimed.
+The warning downgrades were confined to the probe. A future LTO change
+must resolve the build failures and pass the normal compatibility gates
+before its performance can be compared with this baseline.
+
 ## Retire the C implementation of a unit
 
 Keep the original C file while the global OFF configuration still needs it.

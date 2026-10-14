@@ -166,8 +166,8 @@ fn arb_vec3(elem: impl Strategy<Value = f32> + Clone) -> impl Strategy<Value = V
         .prop_map(|(x, y, z, w)| Vec3::with_w(x, y, z, w))
 }
 
-/// `test_calc_torque_dst_aliases_v1` from the cmocka file. The safe core
-/// cannot see the alias; the shim must.
+/// `test_calc_torque_dst_aliases_v1` from the cmocka file. The aliased call
+/// matches the separate-storage result.
 #[test]
 fn calc_torque_dst_aliases_v1_matches_c() {
     let v1 = Vec3::with_w(10.0, 0.0, 0.0, 9.0);
@@ -182,7 +182,7 @@ fn calc_torque_dst_aliases_v1_matches_c() {
         c::oracle_calc_torque(&mut cd, &cd, &cb, 0.5, 0.1, 1.0);
     }
     assert!(same3(rd, cd), "aliased calc_torque {rd:?} != C {cd:?}");
-    assert_eq!((rd.x, rd.y, rd.z, rd.w), (-10.0, 0.0, 0.0, 0.0));
+    assert_eq!((rd.x, rd.y, rd.z, rd.w), (5.0, 0.0, 0.0, 0.0));
 }
 
 /// `rand_float` draws the C library `rand`. Seed the same sequence for each

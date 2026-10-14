@@ -113,7 +113,7 @@ void bounds_transform(struct bounds *dst, const struct bounds *b, const struct m
 
 	for (i = 0; i < 8; i++) {
 		struct vec3 p;
-		bounds_get_point(&p, b, i);
+		bounds_get_point(&p, b, (unsigned int)i);
 		vec3_transform(&p, &p, m);
 
 		if (!b_init) {
@@ -151,7 +151,7 @@ void bounds_transform3x4(struct bounds *dst, const struct bounds *b, const struc
 
 	for (i = 0; i < 8; i++) {
 		struct vec3 p;
-		bounds_get_point(&p, b, i);
+		bounds_get_point(&p, b, (unsigned int)i);
 		vec3_transform3x4(&p, &p, m);
 
 		if (!b_init) {

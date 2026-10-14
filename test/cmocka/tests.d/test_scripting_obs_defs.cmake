@@ -38,7 +38,7 @@ if(OS_LINUX OR OS_FREEBSD OR OS_OPENBSD)
     target_compile_definitions(test_scripting_obs_defs_lua PRIVATE SWIG_TYPE_TABLE=obslua SWIG_LUA_INTERPRETER_NO_DEBUG)
     target_compile_options(
       test_scripting_obs_defs_lua
-      PRIVATE -Wno-unused-parameter $<$<COMPILE_LANG_AND_ID:C,Clang>:-Wno-shorten-64-to-32>
+      PRIVATE -Wno-unused-parameter -Wno-undef $<$<COMPILE_LANG_AND_ID:C,Clang>:-Wno-shorten-64-to-32>
     )
     target_link_libraries(test_scripting_obs_defs_lua PUBLIC OBS::libobs Luajit::Luajit m)
 
@@ -57,7 +57,11 @@ if(OS_LINUX OR OS_FREEBSD OR OS_OPENBSD)
     )
     target_compile_options(
       test_scripting_obs_defs_python
-      PRIVATE -Wno-unused-parameter $<$<COMPILE_LANG_AND_ID:C,Clang>:-Wno-macro-redefined -Wno-unreachable-code>
+      PRIVATE
+        -Wno-unused-parameter
+        -Wno-undef
+        $<$<COMPILE_LANG_AND_ID:C,Clang>:-Wno-macro-redefined
+        -Wno-unreachable-code>
     )
     target_link_libraries(test_scripting_obs_defs_python PUBLIC OBS::libobs Python::Python m)
 

@@ -45,7 +45,7 @@
 #define OBS_EXTERNAL_DEPRECATED OBS_DEPRECATED
 #endif
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__MINGW32__)
 #define EXPORT __declspec(dllexport)
 #else
 #define EXPORT __attribute__((visibility("default")))

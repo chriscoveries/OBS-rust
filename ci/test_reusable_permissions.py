@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """A job that calls a reusable workflow must grant every permission the
 called workflow's jobs ask for.
 
-    python3 -m unittest ci/test_reusable_permissions.py
+    uv run python -m unittest ci/test_reusable_permissions.py
 
 GitHub checks this when it loads the caller, before any `if:` runs, and
 refuses to start the whole workflow (startup_failure, no jobs) when a called

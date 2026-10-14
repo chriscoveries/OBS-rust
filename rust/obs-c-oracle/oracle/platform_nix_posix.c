@@ -50,9 +50,6 @@
 #define os_get_free_space oracle_os_get_free_space
 #define os_request_high_performance oracle_os_request_high_performance
 #define os_end_high_performance oracle_os_end_high_performance
-#define os_inhibit_sleep_create oracle_os_inhibit_sleep_create
-#define os_inhibit_sleep_set_active oracle_os_inhibit_sleep_set_active
-#define os_inhibit_sleep_destroy oracle_os_inhibit_sleep_destroy
 #define os_get_physical_cores oracle_os_get_physical_cores
 #define os_get_logical_cores oracle_os_get_logical_cores
 #define os_get_sys_free_size oracle_os_get_sys_free_size
@@ -67,23 +64,29 @@
 #define dstr_catf oracle_dstr_catf
 
 /* sleepto calls os_gettime_ns. On macOS that function lives in
- * platform-cocoa.m, so this file has to provide the renamed symbol.
- * The name is written out in full so the macro above does not rewrite it.
+ * platform-cocoa.m. oracle/platform_cocoa.m provides oracle_os_gettime_ns.
+ * The rename above still rewrites the calls in this file.
  */
-#ifdef __APPLE__
-#include <stdint.h>
-#include <time.h>
-/* The header redeclares this with visibility("default") after the
- * rename macro. Put the attribute on the definition so that redeclaration
- * does not warn.
- */
-__attribute__((visibility("default"))) uint64_t oracle_os_gettime_ns(void)
-{
-	return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-}
-#endif
 
 #include "util/platform-nix.c"
+
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_os_dirent_size(void);
+size_t oracle_os_dirent_align(void);
+size_t oracle_os_dirent_offset_d_name(void);
+size_t oracle_os_dirent_offset_directory(void);
+size_t oracle_os_globent_size(void);
+size_t oracle_os_globent_align(void);
+size_t oracle_os_globent_offset_path(void);
+size_t oracle_os_globent_offset_directory(void);
+size_t oracle_os_glob_info_size(void);
+size_t oracle_os_glob_info_align(void);
+size_t oracle_os_glob_info_offset_gl_pathc(void);
+size_t oracle_os_glob_info_offset_gl_pathv(void);
+size_t oracle_os_proc_memory_usage_size(void);
+size_t oracle_os_proc_memory_usage_align(void);
+size_t oracle_os_proc_memory_usage_offset_resident_size(void);
+size_t oracle_os_proc_memory_usage_offset_virtual_size(void);
 
 size_t oracle_os_dirent_size(void)
 {

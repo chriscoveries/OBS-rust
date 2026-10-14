@@ -457,7 +457,7 @@ size_t obs_parse_av1_header(uint8_t **header, const uint8_t *data, size_t size)
 	int nb_seq = 0, seq_size = 0, meta_size = 0;
 	const uint8_t *seq = 0, *meta = 0;
 
-	uint8_t *buf = (uint8_t *)data;
+	uint8_t *buf = (uint8_t *)(uintptr_t)data;
 	while (size > 0) {
 		int64_t obu_size;
 		int start_pos, type, temporal_id, spatial_id;
@@ -555,8 +555,8 @@ static void compute_av1_keyframe_priority(const uint8_t *buf, bool *is_keyframe,
 
 static void serialize_av1_data(struct serializer *s, const uint8_t *data, size_t size, bool *is_keyframe, int *priority)
 {
-	uint8_t *buf = (uint8_t *)data;
-	uint8_t *end = (uint8_t *)data + size;
+	uint8_t *buf = (uint8_t *)(uintptr_t)data;
+	uint8_t *end = (uint8_t *)(uintptr_t)data + size;
 
 	while (buf < end) {
 		int64_t obu_size;

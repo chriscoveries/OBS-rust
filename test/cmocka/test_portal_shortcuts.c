@@ -545,6 +545,10 @@ static int teardown(void **state)
 	pthread_join(hotkey_thread, NULL);
 	os_event_destroy(hotkey_test_obs->hotkeys.stop_event);
 	obs_hotkeys_free();
+	/* What obs_free_hotkeys() (obs.c, not built here) frees after it (#464). */
+	obs_hotkeys_background_clear_shortcuts(&hotkey_test_obs->hotkeys.background);
+	da_free(hotkey_test_obs->hotkeys.background.shortcuts);
+	bfree(hotkey_test_obs->hotkeys.background.error);
 	obs_nix_hotkey_state_free(&key_state);
 	signal_handler_destroy(hotkey_test_obs->hotkeys.signals);
 	pthread_mutex_destroy(&hotkey_test_obs->hotkeys.mutex);

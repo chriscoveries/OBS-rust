@@ -48,7 +48,7 @@ static inline size_t s_read(struct serializer *s, void *data, size_t size)
 static inline size_t s_write(struct serializer *s, const void *data, size_t size)
 {
 	if (s && s->write && data && size)
-		return s->write(s->data, (void *)data, size);
+		return s->write(s->data, data, size);
 	return 0;
 }
 

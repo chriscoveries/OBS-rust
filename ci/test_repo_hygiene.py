@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Generated files stay out of the repository.
 
-    python3 -m unittest ci/test_repo_hygiene.py
+    uv run python -m unittest ci/test_repo_hygiene.py
 
 ./lint runs the ci/ tests, which leaves CPython bytecode in ci/__pycache__.
 """

@@ -8,6 +8,12 @@
 
 #include "media-io/video-fourcc.c"
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_video_format_size(void);
+size_t oracle_video_format_align(void);
+size_t oracle_video_format_count(void);
+int oracle_video_format_value(size_t i);
+
 /* Layout of enum video_format. */
 size_t oracle_video_format_size(void)
 {

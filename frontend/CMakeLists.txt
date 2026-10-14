@@ -34,6 +34,18 @@ add_executable(OBS::studio ALIAS obs-studio)
 if(ENABLE_UNIT_TESTS)
   add_executable(test_virtual_cam_shutdown tests/test_virtual_cam_shutdown.cpp)
   add_test(NAME test_virtual_cam_shutdown COMMAND test_virtual_cam_shutdown)
+  add_executable(test_config_migration tests/test_config_migration.cpp)
+  target_include_directories(test_config_migration PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  foreach(
+    mode
+    IN
+    ITEMS first existing absent custom empty-custom failure
+  )
+    add_test(
+      NAME test_config_migration_${mode}
+      COMMAND test_config_migration "${CMAKE_CURRENT_BINARY_DIR}/config-migration-${mode}" ${mode}
+    )
+  endforeach()
 endif()
 
 target_link_libraries(
@@ -81,6 +93,22 @@ target_sources(
   PRIVATE obs-main.cpp OBSStudioAPI.cpp OBSStudioAPI.hpp OBSApp.cpp OBSApp.hpp OBSApp_Themes.cpp ui-config.h
 )
 
+# The Rust build names itself OBS-Studio-Rust and shows its own version, read from
+# the libobs-rust crate, next to the upstream OBS version it is based on.
+if(ENABLE_RUST_LIBOBS)
+  file(STRINGS "${CMAKE_SOURCE_DIR}/rust/libobs-rust/Cargo.toml" _obs_rust_version_line REGEX "^version = \"[^\"]+\"")
+  string(REGEX REPLACE "^version = \"([^\"]+)\"" "\\1" OBS_RUST_VERSION "${_obs_rust_version_line}")
+  # CI release builds embed the full release string instead (#631).
+  if(OBS_RUST_RELEASE_VERSION)
+    set(OBS_RUST_VERSION "${OBS_RUST_RELEASE_VERSION}")
+  endif()
+  if(NOT OBS_RUST_VERSION)
+    message(FATAL_ERROR "Could not read the version from rust/libobs-rust/Cargo.toml")
+  endif()
+  message(STATUS "OBS-Studio-Rust version: ${OBS_RUST_VERSION}")
+  target_compile_definitions(obs-studio PRIVATE OBS_RUST_VERSION="${OBS_RUST_VERSION}")
+endif()
+
 if(OS_WINDOWS)
   include(cmake/os-windows.cmake)
 elseif(OS_MACOS)
@@ -104,18 +132,6 @@ foreach(graphics_library IN ITEMS opengl metal d3d11)
   endif()
 endforeach()
 
-# The Rust build names itself OBS-Studio-Rust and shows its own version, read from
-# the libobs-rust crate, next to the upstream OBS version it is based on.
-if(ENABLE_RUST_LIBOBS)
-  file(STRINGS "${CMAKE_SOURCE_DIR}/rust/libobs-rust/Cargo.toml" _obs_rust_version_line REGEX "^version = \"[^\"]+\"")
-  string(REGEX REPLACE "^version = \"([^\"]+)\"" "\\1" OBS_RUST_VERSION "${_obs_rust_version_line}")
-  if(NOT OBS_RUST_VERSION)
-    message(FATAL_ERROR "Could not read the version from rust/libobs-rust/Cargo.toml")
-  endif()
-  message(STATUS "OBS-Studio-Rust version: ${OBS_RUST_VERSION}")
-  target_compile_definitions(obs-studio PRIVATE OBS_RUST_VERSION="${OBS_RUST_VERSION}")
-endif()
-
 get_target_property(target_sources obs-studio SOURCES)
 set(target_cpp_sources ${target_sources})
 set(target_hpp_sources ${target_sources})
@@ -130,4 +146,4 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Source Files" FILES ${ta
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Header Files" FILES ${target_hpp_sources})
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Qt Files" FILES ${target_qt_sources})
 
-set_target_properties_obs(obs-studio PROPERTIES FOLDER frontend OUTPUT_NAME "$<IF:$<PLATFORM_ID:Windows>,obs64,obs>")
+set_target_properties_obs(obs-studio PROPERTIES FOLDER frontend OUTPUT_NAME "$<IF:$<PLATFORM_ID:Windows>,obs64,${OBS_UNIX_GUI_NAME}>")

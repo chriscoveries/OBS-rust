@@ -25,8 +25,8 @@ void free_showroom_data(void)
 	for (size_t i = 0; i < cur_ingests.num; i++) {
 		struct showroom_ingest_info *info = &cur_ingests.array[i];
 		bfree(info->access_key);
-		bfree((void *)info->ingest.key);
-		bfree((void *)info->ingest.url);
+		bfree((void *)(uintptr_t)info->ingest.key);
+		bfree((void *)(uintptr_t)info->ingest.url);
 	}
 
 	da_free(cur_ingests);
@@ -76,8 +76,8 @@ static struct showroom_ingest_info *get_ingest_from_json(char *str, const char *
 		info->access_key = bstrdup(access_key);
 	}
 
-	bfree((void *)info->ingest.url);
-	bfree((void *)info->ingest.key);
+	bfree((void *)(uintptr_t)info->ingest.url);
+	bfree((void *)(uintptr_t)info->ingest.key);
 	info->ingest.url = bstrdup(url_str);
 	info->ingest.key = bstrdup(key_str);
 	info->last_time = os_gettime_ns() / SEC_TO_NSEC;

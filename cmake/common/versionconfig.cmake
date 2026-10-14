@@ -75,6 +75,22 @@ elseif(OBS_BETA GREATER 0)
   )
 endif()
 
+# OBS-Studio-Rust release string (e.g. 0.1.0-beta.20261013), set by the release
+# workflow through the OBS_RUST_VERSION environment variable or cache entry.
+# Empty for local builds, which use the libobs-rust crate version (#631).
+set(OBS_RUST_RELEASE_VERSION "")
+if(DEFINED OBS_RUST_VERSION AND NOT "${OBS_RUST_VERSION}" STREQUAL "")
+  set(OBS_RUST_RELEASE_VERSION "${OBS_RUST_VERSION}")
+elseif(NOT "$ENV{OBS_RUST_VERSION}" STREQUAL "")
+  set(OBS_RUST_RELEASE_VERSION "$ENV{OBS_RUST_VERSION}")
+endif()
+if(OBS_RUST_RELEASE_VERSION AND NOT OBS_RUST_RELEASE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.]+)?$")
+  message(
+    FATAL_ERROR
+    "Invalid OBS_RUST_VERSION '${OBS_RUST_RELEASE_VERSION}' - must be <MAJOR>.<MINOR>.<PATCH>[-<suffix>]."
+  )
+endif()
+
 unset(_obs_default_version)
 unset(_obs_version)
 unset(_obs_version_canonical)

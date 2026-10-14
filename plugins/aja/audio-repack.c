@@ -38,7 +38,7 @@ int repack_squash16(struct audio_repack *repack, const uint8_t *bsrc, uint32_t f
 		return -1;
 
 	int squash = repack->squash_count;
-	const __m128i *src = (__m128i *)bsrc;
+	const __m128i *src = (const __m128i *)bsrc;
 	const __m128i *end = src + frame_count;
 	uint16_t *dst = (uint16_t *)repack->packet_buffer;
 
@@ -71,7 +71,7 @@ int repack_squash_swap16(struct audio_repack *repack, const uint8_t *bsrc, uint3
 	if (check_buffer(repack, frame_count) < 0)
 		return -1;
 	int squash = repack->squash_count;
-	const __m128i *src = (__m128i *)bsrc;
+	const __m128i *src = (const __m128i *)bsrc;
 	const __m128i *end = src + frame_count;
 	uint16_t *dst = (uint16_t *)repack->packet_buffer;
 	while (src != end) {
@@ -93,8 +93,8 @@ int repack_squash32(struct audio_repack *repack, const uint8_t *bsrc, uint32_t f
 		return -1;
 
 	int squash = repack->squash_count;
-	const __m128i *src = (__m128i *)bsrc;
-	const __m128i *end = (__m128i *)(bsrc + (frame_count * repack->base_src_size));
+	const __m128i *src = (const __m128i *)bsrc;
+	const __m128i *end = (const __m128i *)(bsrc + (frame_count * repack->base_src_size));
 	uint32_t *dst = (uint32_t *)repack->packet_buffer;
 
 	if (squash > 0) {
@@ -121,8 +121,8 @@ int repack_squash_swap32(struct audio_repack *repack, const uint8_t *bsrc, uint3
 	if (check_buffer(repack, frame_count) < 0)
 		return -1;
 	int squash = repack->squash_count;
-	const __m128i *src = (__m128i *)bsrc;
-	const __m128i *end = (__m128i *)(bsrc + (frame_count * repack->base_src_size));
+	const __m128i *src = (const __m128i *)bsrc;
+	const __m128i *end = (const __m128i *)(bsrc + (frame_count * repack->base_src_size));
 	uint32_t *dst = (uint32_t *)repack->packet_buffer;
 	while (src != end) {
 		__m128i tgt_lo = _mm_shuffle_epi32(_mm_loadu_si128(src++), _MM_SHUFFLE(2, 3, 1, 0));

@@ -17,6 +17,25 @@ in Rust. Concretely, the following stay compatible:
 - The frontend API (`obs-frontend-api`), scripting bindings, and the
   `window.obsstudio` browser-source API.
 
+### Public and internal boundaries
+
+Public headers, exported symbols, opaque-handle behavior, and public struct
+layouts are compatibility contracts. `obs-internal.h` is a private header,
+not a public ABI contract: its layouts may change when the C users of a field
+have been ported or moved behind an internal accessor. Inventory those users
+before changing a field. Adapt remaining C callers in a separate,
+behavior-neutral commit or PR, with the existing C tests still passing;
+then port the isolated unit. Do not edit a public header or an existing C test
+to accommodate the Rust implementation.
+
+This distinction matters for Phase 6. Core files share `obs-internal.h` by
+direct field access, while `obs-data.h` exposes opaque handles whose layouts
+live only in `obs-data.c`. The first core seam is `obs-data.c`, after its C
+behavior has been characterized. Large files enter through the function
+extraction workflow below: extract a C unit verbatim and land that change
+before replacing the extracted file with Rust. The four tiers still apply to
+each resulting unit, including symbol parity and differential tests.
+
 Tests exist to prove two separate things: that the Rust code is correct, and
 that it is a drop-in replacement for the C code it replaces. One kind of test
 cannot prove both, so every ported unit carries the four tiers below.
@@ -40,8 +59,9 @@ cannot prove both, so every ported unit carries the four tiers below.
 - The Rust crate exports the original C symbols through a thin
   `#[no_mangle] pub extern "C"` shim with `#[repr(C)]` structs. The shim only
   converts types and delegates to the safe core; it contains no logic.
-- The **existing C header is the source of truth**. Do not generate a
-  replacement header and do not edit the public header as part of a port.
+- The **existing public C header is the source of truth** for the public ABI.
+  Do not generate a replacement header or edit the public header as part of a
+  port.
   Public struct layouts MUST match the C layout exactly, including any
   awkward field types (e.g. `uint8_t pos` stays `u8` at the C boundary even if
   the safe core uses `usize`).
@@ -141,6 +161,12 @@ cannot prove both, so every ported unit carries the four tiers below.
 A port is not done until all applicable tiers pass. "Tier 1 passes" alone is
 not done.
 
+PR CI on `obs-rust/obs-studio` decides whether the tiers pass for a merge.
+Open a PR (a draft is fine) once the RED commit exists and let CI run the
+tiers; running them locally first (`./lint`, `./unittest`, `local-gate run`)
+is recommended, not required. The tiers, RED then GREEN, and the ban on
+editing C tests or public headers stay mandatory.
+
 ## Extracting a function before porting it
 
 If the unit to port is one function inside a larger C file,
@@ -207,7 +233,8 @@ Tier 2 checks.
 1. `file-serializer.c` and `buffered-file-serializer.c`
 2. `config-file.c`
 3. `task.c`
-4. `profiler.c` and `source-profiler.c`
+4. `profiler.c` (`source-profiler.c` is Phase 6 core work because it accesses
+   `obs-internal.h` and source/graphics state directly)
 5. `pipe.c` / `pipe-posix.c` / `pipe-windows.c`
 6. `threading-posix.c` / `threading-windows.c`
 7. `platform.c`, then `platform-nix*.c` / `platform-windows.c`
@@ -238,7 +265,8 @@ Tier 2 checks.
    `quat.c`, `matrix3.c`, `matrix4.c`, `plane.c`, `bounds.c`, `axisang.c`,
    `math-extra.c`.
 2. `media-io` in crate `obs-media-io`.
-3. obs-websocket Tier 4 suite, then the port.
+3. obs-websocket Tier 4 suite, then the staged port described in
+   [websocket-port.md](websocket-port.md).
 
 - Tier 3 parity is exact bit equality (NaN == NaN) where the C is scalar and
   deterministic. Only where the C uses SIMD (`vec3`, `vec4`, `matrix4` via
@@ -247,6 +275,8 @@ Tier 2 checks.
 - The bitstream parsers (`obs-avc.c`, `obs-hevc.c`, `obs-av1.c`) get
   cargo-fuzz differential targets against the C oracle. Each runs at least 1
   hour with no mismatch outside documented exclusions.
+- These and the later targets (`nal_diff`, `config_ini_diff`) run nightly
+  through the local runner described in [fuzzing.md](fuzzing.md).
 - Inputs that trigger C UB are excluded and listed. The `get_ue_golomb` UB is
   already fixed in C (#11, #17).
 - obs-websocket gets a Tier 4 black-box suite covering every v5 request type,
@@ -270,6 +300,23 @@ macros is compiled into every caller, so no symbol swap is possible.
   contract), `util/serializer.h` (`struct serializer`), and the `static inline`
   helpers in `util/dstr.h` (the `struct dstr` layout is the contract).
   `util/dstr.c` itself is ported with the normal workflow.
+
+## Python runs through uv
+
+Every Python invocation in this repo goes through `uv run` (or `uvx` for a
+tool pulled from a package), never bare `python` or `python3`: `uv run
+python -m unittest ci/test_x.py`, `uv run tools/leaderboard/generate.py`,
+`uv run --with pillow python docs/images/generate-logo-assets.py SOURCE`. This
+covers shell scripts, `./lint`, `./unittest`, `local-gate.toml`, workflows and
+composite actions (which set uv up with the `astral-sh/setup-uv` step already
+pinned in `build-project.yaml`), CMake `COMMAND`s, docstring usage lines and
+Markdown code. Standalone scripts start with `#!/usr/bin/env -S uv run
+--script` (with PEP 723 inline metadata when they need packages); a
+shebang naming a bare interpreter is not allowed.
+
+`ci/test_uv_run.py` scans every tracked file and fails on a bare invocation.
+Its small, commented allowlist covers only trees we do not own (`deps/`,
+`plugins/`). Do not extend it to dodge the rule.
 
 ## Layout and naming
 

@@ -47,5 +47,5 @@ This script allows to check the formatting and/or format of the Flatpak manifest
 
 Example of use:
 ```sh
-python3 ./build-aux/format-manifest.py com.obsproject.Studio.json
+uv run ./build-aux/format-manifest.py com.obsproject.Studio.json
 ```

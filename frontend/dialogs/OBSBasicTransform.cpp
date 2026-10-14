@@ -98,7 +98,7 @@ OBSBasicTransform::OBSBasicTransform(OBSSceneItem item, OBSBasic *parent)
 	connect(ui->buttonBox->button(QDialogButtonBox::Reset), &QPushButton::clicked, main,
 		&OBSBasic::on_actionResetTransform_triggered);
 
-	installEventFilter(CreateShortcutFilter());
+	installEventFilter(CreateShortcutFilter(this));
 
 	OBSScene scene = obs_sceneitem_get_scene(item);
 	setScene(scene);

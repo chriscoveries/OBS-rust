@@ -33,7 +33,7 @@ int repack_squash(struct audio_repack *repack, const uint8_t *bsrc, uint32_t fra
 		return -1;
 
 	int squash = repack->extra_dst_size;
-	const __m128i *src = (__m128i *)bsrc;
+	const __m128i *src = (const __m128i *)bsrc;
 	const __m128i *esrc = src + frame_count;
 	uint16_t *dst = (uint16_t *)repack->packet_buffer;
 
@@ -56,7 +56,7 @@ int repack_squash_swap(struct audio_repack *repack, const uint8_t *bsrc, uint32_
 	if (check_buffer(repack, frame_count) < 0)
 		return -1;
 	int squash = repack->extra_dst_size;
-	const __m128i *src = (__m128i *)bsrc;
+	const __m128i *src = (const __m128i *)bsrc;
 	const __m128i *esrc = src + frame_count;
 	uint16_t *dst = (uint16_t *)repack->packet_buffer;
 	while (src != esrc) {

@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """cmocka tests get per-test sanitizers only through obs_test_sanitize (#159).
 
-    python3 -m unittest ci/test_cmocka_sanitize.py
+    uv run python -m unittest ci/test_cmocka_sanitize.py
 
 A raw -fsanitize= on a test target breaks any build configured with another
 sanitizer ("-fsanitize=thread is incompatible with -fsanitize=address") and

@@ -782,7 +782,7 @@ size_t obs_parse_hevc_header(uint8_t **header, const uint8_t *data, size_t size)
 		array_output_serializer_init(&array->nalUnit, &array->nalUnitData);
 	}
 
-	uint8_t *buf = (uint8_t *)start;
+	uint8_t *buf = (uint8_t *)(uintptr_t)start;
 	while (end - buf > 4) {
 		uint32_t len = rb32(buf);
 		assert((end - buf - 4) <= INT_MAX);

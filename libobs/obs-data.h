@@ -57,7 +57,7 @@ enum obs_data_number_type { OBS_DATA_NUM_INVALID, OBS_DATA_NUM_INT, OBS_DATA_NUM
 /* ------------------------------------------------------------------------- */
 /* Main usage functions */
 
-EXPORT obs_data_t *obs_data_create();
+EXPORT obs_data_t *obs_data_create(void);
 EXPORT obs_data_t *obs_data_create_from_json(const char *json_string);
 EXPORT obs_data_t *obs_data_create_from_json_file(const char *json_file);
 EXPORT obs_data_t *obs_data_create_from_json_file_safe(const char *json_file, const char *backup_ext);
@@ -139,7 +139,7 @@ OBS_DEPRECATED EXPORT obs_data_t *obs_data_get_autoselect_obj(obs_data_t *data, 
 OBS_DEPRECATED EXPORT obs_data_array_t *obs_data_get_autoselect_array(obs_data_t *data, const char *name);
 
 /* Array functions */
-EXPORT obs_data_array_t *obs_data_array_create();
+EXPORT obs_data_array_t *obs_data_array_create(void);
 EXPORT void obs_data_array_addref(obs_data_array_t *array);
 EXPORT void obs_data_array_release(obs_data_array_t *array);
 

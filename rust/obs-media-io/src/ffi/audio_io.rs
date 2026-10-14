@@ -123,14 +123,10 @@ pub const AUDIO_OUTPUT_SUCCESS: c_int = 0;
 pub const AUDIO_OUTPUT_INVALIDPARAM: c_int = -1;
 pub const AUDIO_OUTPUT_FAIL: c_int = -2;
 
-/// pthread API on Windows, so Windows keeps `media-io/audio-io.c` — these
-/// exports carry the ` unix` marker in rust-exports.txt and are not
-/// compiled there. See `crate::audio_io` for the module-level design.
-#[cfg(unix)]
-pub use unix::*;
-
-#[cfg(unix)]
-mod unix {
+// Engine shims. Compiled where `with_audio_thread_port!` expands.
+crate::platform::with_audio_thread_port! {
+    pub use engine::*;
+    mod engine {
     use super::*;
     use crate::audio_io::AudioOutput;
 
@@ -328,5 +324,6 @@ mod unix {
     pub unsafe extern "C" fn audio_output_get_sample_rate(audio: *const c_void) -> u32 {
         // SAFETY: see get_block_size.
         unsafe { (*(audio as *const AudioOutput)).shared.info.samples_per_sec }
+    }
     }
 }

@@ -79,7 +79,7 @@ struct obs_service_info {
 	const char *(*get_username)(void *data);
 	const char *(*get_password)(void *data);
 
-	bool (*deprecated_1)();
+	bool (*deprecated_1)(void);
 
 	void (*apply_encoder_settings)(void *data, obs_data_t *video_encoder_settings,
 				       obs_data_t *audio_encoder_settings);

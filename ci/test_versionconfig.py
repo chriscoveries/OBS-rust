@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """cmake/common/versionconfig.cmake derives the OBS version from git tags.
 
-    python3 -m unittest ci/test_versionconfig.py
+    uv run python -m unittest ci/test_versionconfig.py
 
 The repo also carries non-OBS tags (obs-studio-rust-v*, and the retired obs-stream-rust-v0.1.0).
 When one of them is the nearest tag, `git describe --tags` must not pick it,

@@ -409,7 +409,8 @@ void profile_end(const char *name)
 
 static int profiler_time_entry_compare(const void *first, const void *second)
 {
-	int64_t diff = ((profiler_time_entry *)second)->time_delta - ((profiler_time_entry *)first)->time_delta;
+	int64_t diff = (int64_t)(((const profiler_time_entry *)second)->time_delta -
+				 ((const profiler_time_entry *)first)->time_delta);
 	return diff < 0 ? -1 : (diff > 0 ? 1 : 0);
 }
 

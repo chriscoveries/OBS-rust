@@ -229,7 +229,7 @@ static inline bool render_display_begin(struct obs_display *display, uint32_t cx
 	return success;
 }
 
-static inline void render_display_end()
+static inline void render_display_end(void)
 {
 	gs_end_scene();
 }

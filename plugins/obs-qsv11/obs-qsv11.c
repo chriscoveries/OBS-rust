@@ -1030,7 +1030,7 @@ static void parse_packet(struct obs_qsv *obsqsv, struct encoder_packet *packet, 
 	start = obsqsv->packet_data.array;
 	end = start + obsqsv->packet_data.num;
 
-	start = (uint8_t *)obs_avc_find_startcode(start, end);
+	start = (uint8_t *)(uintptr_t)obs_avc_find_startcode(start, end);
 	while (true) {
 		while (start < end && !*(start++))
 			;
@@ -1044,7 +1044,7 @@ static void parse_packet(struct obs_qsv *obsqsv, struct encoder_packet *packet, 
 			start[0] |= priority << 5; //0 for non-ref frames and not equal to 0 for ref frames
 		}
 
-		start = (uint8_t *)obs_avc_find_startcode(start, end);
+		start = (uint8_t *)(uintptr_t)obs_avc_find_startcode(start, end);
 	}
 
 	/* ------------------------------------ */

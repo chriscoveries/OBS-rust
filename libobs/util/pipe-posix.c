@@ -33,7 +33,7 @@ struct os_process_pipe {
 	FILE *err_file;
 };
 
-os_process_pipe_t *os_process_pipe_create_internal(const char *bin, char **argv, const char *type)
+static os_process_pipe_t *os_process_pipe_create_internal(const char *bin, char **argv, const char *type)
 {
 	struct os_process_pipe process_pipe = {0};
 	struct os_process_pipe *out;
@@ -130,7 +130,8 @@ os_process_pipe_t *os_process_pipe_create(const char *cmd_line, const char *type
 	if (!cmd_line)
 		return NULL;
 
-	char *argv[4] = {"sh", "-c", (char *)cmd_line, NULL};
+	/* posix_spawn takes char *const argv[] but does not modify it. */
+	char *argv[4] = {"sh", "-c", (char *)(uintptr_t)cmd_line, NULL};
 	return os_process_pipe_create_internal("/bin/sh", argv, type);
 }
 
@@ -157,7 +158,7 @@ int os_process_pipe_destroy(os_process_pipe_t *pp)
 			ret = waitpid(pp->pid, &status, 0);
 		} while (ret == -1 && errno == EINTR);
 
-		if (WIFEXITED(status))
+		if (ret != -1 && WIFEXITED(status))
 			ret = (int)(char)WEXITSTATUS(status);
 		bfree(pp);
 	}

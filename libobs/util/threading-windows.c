@@ -198,7 +198,7 @@ void os_set_thread_name(const char *name)
 		typedef HRESULT(WINAPI * set_thread_description_t)(HANDLE, PCWSTR);
 
 		const set_thread_description_t std =
-			(set_thread_description_t)GetProcAddress(hModule, "SetThreadDescription");
+			(set_thread_description_t)(void (*)(void))GetProcAddress(hModule, "SetThreadDescription");
 		if (std) {
 			wchar_t *wname;
 			os_utf8_to_wcs_ptr(name, 0, &wname);

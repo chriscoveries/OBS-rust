@@ -642,8 +642,8 @@ EXPORT gs_shader_t *gs_pixelshader_create(const char *shader, const char *file, 
 EXPORT gs_vertbuffer_t *gs_vertexbuffer_create(struct gs_vb_data *data, uint32_t flags);
 EXPORT gs_indexbuffer_t *gs_indexbuffer_create(enum gs_index_type type, void *indices, size_t num, uint32_t flags);
 
-EXPORT gs_timer_t *gs_timer_create();
-EXPORT gs_timer_range_t *gs_timer_range_create();
+EXPORT gs_timer_t *gs_timer_create(void);
+EXPORT gs_timer_range_t *gs_timer_range_create(void);
 
 EXPORT enum gs_texture_type gs_get_texture_type(const gs_texture_t *texture);
 
@@ -825,7 +825,7 @@ EXPORT bool gs_texture_rebind_iosurface(gs_texture_t *texture, void *iosurf);
 EXPORT gs_texture_t *gs_texture_open_shared(uint32_t handle);
 EXPORT bool gs_shared_texture_available(void);
 
-#elif _WIN32
+#elif defined(_WIN32)
 
 EXPORT bool gs_gdi_texture_available(void);
 EXPORT bool gs_shared_texture_available(void);

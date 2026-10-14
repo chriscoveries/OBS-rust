@@ -109,7 +109,7 @@ char *astrstri(const char *str, const char *find)
 
 	do {
 		if (astrcmpi_n(str, find, len) == 0)
-			return (char *)str;
+			return (char *)(uintptr_t)str; /* strstr-style */
 	} while (*str++);
 
 	return NULL;
@@ -166,7 +166,7 @@ char **strlist_split(const char *str, char split_ch, bool include_empty)
 		next_str = strchr(str, split_ch);
 
 		while (next_str) {
-			size_t size = next_str - cur_str;
+			size_t size = (size_t)(next_str - cur_str);
 
 			if (size || include_empty) {
 				++count;
@@ -196,7 +196,7 @@ char **strlist_split(const char *str, char split_ch, bool include_empty)
 		cur_str = str;
 
 		while (next_str) {
-			size_t size = next_str - cur_str;
+			size_t size = (size_t)(next_str - cur_str);
 
 			if (size || include_empty) {
 				table[cur_idx++] = offset;

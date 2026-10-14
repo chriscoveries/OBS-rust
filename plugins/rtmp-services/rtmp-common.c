@@ -1004,7 +1004,7 @@ static const char **rtmp_common_get_supported_video_codecs(void *data)
 	struct rtmp_common *service = data;
 
 	if (service->video_codecs)
-		return (const char **)service->video_codecs;
+		return (const char **)(uintptr_t)service->video_codecs;
 
 	struct dstr codecs = {0};
 	json_t *root = open_services_file();
@@ -1038,7 +1038,7 @@ static const char **rtmp_common_get_supported_video_codecs(void *data)
 
 fail:
 	json_decref(root);
-	return (const char **)service->video_codecs;
+	return (const char **)(uintptr_t)service->video_codecs;
 }
 
 static const char **rtmp_common_get_supported_audio_codecs(void *data)
@@ -1046,7 +1046,7 @@ static const char **rtmp_common_get_supported_audio_codecs(void *data)
 	struct rtmp_common *service = data;
 
 	if (service->audio_codecs)
-		return (const char **)service->audio_codecs;
+		return (const char **)(uintptr_t)service->audio_codecs;
 
 	struct dstr codecs = {0};
 	json_t *root = open_services_file();
@@ -1080,7 +1080,7 @@ static const char **rtmp_common_get_supported_audio_codecs(void *data)
 
 fail:
 	json_decref(root);
-	return (const char **)service->audio_codecs;
+	return (const char **)(uintptr_t)service->audio_codecs;
 }
 
 static const char *rtmp_common_username(void *data)

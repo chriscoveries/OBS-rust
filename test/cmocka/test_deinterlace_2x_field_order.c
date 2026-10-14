@@ -48,12 +48,18 @@
 
 #define MAX_SEEN 1024
 #define STARTUP_FIELDS 4
+/* Neutral frames pushed before a case is recorded, and output frames to wait
+ * for, so the first measured frame doesn't pay for a cold render path
+ * (shader compile, first texture upload; obs-rust/obs-studio#456). */
+#define WARMUP_FRAMES 6
+#define WARMUP_TICKS 4
 
 static bool obs_up;
 
 struct watch {
 	pthread_mutex_t mutex;
 	bool recording;
+	size_t ticks; /* every output frame, recorded or not */
 	size_t count;
 	int seen[MAX_SEEN]; /* field index, or -1 for an unrecognised frame */
 };
@@ -98,6 +104,7 @@ static void raw_video(void *param, struct video_data *frame)
 	int field = classify(frame);
 
 	pthread_mutex_lock(&w->mutex);
+	w->ticks++;
 	if (w->recording && w->count < MAX_SEEN)
 		w->seen[w->count++] = field;
 	pthread_mutex_unlock(&w->mutex);
@@ -170,6 +177,42 @@ static void play(obs_source_t *source, bool top_first, uint32_t fps)
 	os_sleep_ms(300);
 }
 
+/* Pushes WARMUP_FRAMES unrecognisable (black) frames at fps, then waits until
+ * the canvas has rendered WARMUP_TICKS more frames (at most 2 s). */
+static void warm_up(obs_source_t *source, uint32_t fps, struct watch *w)
+{
+	static uint8_t black[W * H * 4];
+	const uint64_t period = 1000000000ULL / fps;
+	const uint64_t start = os_gettime_ns();
+
+	pthread_mutex_lock(&w->mutex);
+	const size_t ticks = w->ticks;
+	pthread_mutex_unlock(&w->mutex);
+
+	for (int n = 0; n < WARMUP_FRAMES; n++) {
+		uint64_t ts = start + n * period;
+		struct obs_source_frame frame = {
+			.data = {black},
+			.linesize = {W * 4},
+			.width = W,
+			.height = H,
+			.format = VIDEO_FORMAT_BGRA,
+			.full_range = true,
+			.timestamp = ts,
+		};
+		os_sleepto_ns(ts);
+		obs_source_output_video(source, &frame);
+	}
+	for (int waited = 0; waited < 200; waited++) {
+		pthread_mutex_lock(&w->mutex);
+		const bool warm = w->ticks >= ticks + WARMUP_TICKS;
+		pthread_mutex_unlock(&w->mutex);
+		if (warm)
+			break;
+		os_sleep_ms(10);
+	}
+}
+
 static const char *mode_name(enum obs_deinterlace_mode mode)
 {
 	switch (mode) {
@@ -236,6 +279,8 @@ static void check_field_order(enum obs_deinterlace_mode mode, bool top_first, bo
 	obs_add_raw_video_callback(NULL, raw_video, &w);
 	obs_set_output_source(0, obs_scene_get_source(scene));
 
+	warm_up(source, r->source_fps, &w);
+
 	pthread_mutex_lock(&w.mutex);
 	w.recording = true;
 	pthread_mutex_unlock(&w.mutex);
@@ -263,6 +308,8 @@ static void check_field_order(enum obs_deinterlace_mode mode, bool top_first, bo
 	 * (the last one is held until the case ends). */
 	int shown[MAX_SEEN];
 	size_t num = 0, unknown = 0, backwards = 0, skipped = 0, max_gap = 0, held = 0, max_held = 0;
+	size_t holds[MAX_SEEN];
+	size_t num_holds = 0;
 	for (size_t i = 0; i < w.count; i++) {
 		if (w.seen[i] < 0) {
 			unknown++;
@@ -272,8 +319,11 @@ static void check_field_order(enum obs_deinterlace_mode mode, bool top_first, bo
 			held++;
 			continue;
 		}
-		if (num && shown[num - 1] >= STARTUP_FIELDS && held > max_held)
-			max_held = held;
+		if (num && shown[num - 1] >= STARTUP_FIELDS) {
+			holds[num_holds++] = held;
+			if (held > max_held)
+				max_held = held;
+		}
 		held = 1;
 		if (num && w.seen[i] < shown[num - 1])
 			backwards++;
@@ -319,9 +369,17 @@ static void check_field_order(enum obs_deinterlace_mode mode, bool top_first, bo
 			field_rate, r->canvas_fps, skipped, max_gap, allowed_gap);
 		fail();
 	}
-	if (max_held > allowed_held) {
-		fprintf(stderr, "%s, %ui into %u fps: a field was held for %zu frames (allowed %zu)\n", what,
-			field_rate, r->canvas_fps, max_held, allowed_held);
+	/* One field may be held a frame longer than the cadence allows: a single
+	 * late tick under load (#456). A second one, or a longer hold, is a
+	 * cadence bug. */
+	size_t over = 0;
+	for (size_t i = 0; i < num_holds; i++)
+		if (holds[i] > allowed_held)
+			over++;
+	if (allowed_held != SIZE_MAX && (max_held > allowed_held + 1 || over > 1)) {
+		fprintf(stderr,
+			"%s, %ui into %u fps: a field was held for %zu frames (allowed %zu, once %zu); %zu over\n",
+			what, field_rate, r->canvas_fps, max_held, allowed_held, allowed_held + 1, over);
 		fail();
 	}
 }

@@ -278,11 +278,12 @@ void gs_image_file_ex_init_texture(gs_image_file_ex_t *image)
 
 	if (image->is_animated_gif) {
 		image->texture = gs_texture_create(image->cx, image->cy, image->format, 1,
-						   (const uint8_t **)&image->internal->gif_frame_image, GS_DYNAMIC);
+						   (const uint8_t **)(uintptr_t)&image->internal->gif_frame_image,
+						   GS_DYNAMIC);
 
 	} else {
 		image->texture = gs_texture_create(image->cx, image->cy, image->format, 1,
-						   (const uint8_t **)&image->texture_data, 0);
+						   (const uint8_t **)(uintptr_t)&image->texture_data, 0);
 		bfree(image->texture_data);
 		image->texture_data = NULL;
 	}

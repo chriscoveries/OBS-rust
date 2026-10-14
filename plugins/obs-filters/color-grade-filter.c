@@ -85,8 +85,8 @@ static gs_texture_t *make_clut_texture_png(const enum gs_color_format format, co
 		}
 	}
 
-	gs_texture_t *const texture =
-		gs_voltexture_create(LUT_WIDTH, LUT_WIDTH, LUT_WIDTH, format, 1, (const uint8_t **)&buffer, 0);
+	gs_texture_t *const texture = gs_voltexture_create(LUT_WIDTH, LUT_WIDTH, LUT_WIDTH, format, 1,
+							   (const uint8_t **)(uintptr_t)&buffer, 0);
 	bfree(buffer);
 
 	return texture;

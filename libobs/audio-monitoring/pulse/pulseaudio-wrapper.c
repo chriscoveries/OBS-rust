@@ -116,7 +116,7 @@ static void pulseaudio_context_state_changed(pa_context *c, void *userdata)
 /**
  * get the default properties
  */
-static pa_proplist *pulseaudio_properties()
+static pa_proplist *pulseaudio_properties(void)
 {
 	pa_proplist *p = pa_proplist_new();
 
@@ -130,9 +130,19 @@ static pa_proplist *pulseaudio_properties()
 /**
  * Initialize the pulse audio context with properties and callback
  */
-static void pulseaudio_init_context()
+static void pulseaudio_init_context(void)
 {
 	pulseaudio_lock();
+
+	if (pulseaudio_context) {
+		if (PA_CONTEXT_IS_GOOD(pa_context_get_state(pulseaudio_context))) {
+			pulseaudio_unlock();
+			return;
+		}
+		/* Retire the terminal context even while monitors own stream objects. */
+		pa_context_disconnect(pulseaudio_context);
+		pa_context_unref(pulseaudio_context);
+	}
 
 	pa_proplist *p = pulseaudio_properties();
 	pulseaudio_context =
@@ -149,7 +159,7 @@ static void pulseaudio_init_context()
 /**
  * wait for context to be ready
  */
-static int_fast32_t pulseaudio_context_ready()
+static int_fast32_t pulseaudio_context_ready(void)
 {
 	pulseaudio_lock();
 
@@ -165,17 +175,16 @@ static int_fast32_t pulseaudio_context_ready()
 	return 0;
 }
 
-int_fast32_t pulseaudio_init()
+int_fast32_t pulseaudio_init(void)
 {
 	pthread_mutex_lock(&pulseaudio_mutex);
 
 	if (pulseaudio_refs == 0) {
 		pulseaudio_mainloop = pa_threaded_mainloop_new();
 		pa_threaded_mainloop_start(pulseaudio_mainloop);
-
-		pulseaudio_init_context();
 	}
 
+	pulseaudio_init_context();
 	pulseaudio_refs++;
 
 	pthread_mutex_unlock(&pulseaudio_mutex);
@@ -183,7 +192,7 @@ int_fast32_t pulseaudio_init()
 	return 0;
 }
 
-void pulseaudio_unref()
+void pulseaudio_unref(void)
 {
 	pthread_mutex_lock(&pulseaudio_mutex);
 
@@ -206,17 +215,17 @@ void pulseaudio_unref()
 	pthread_mutex_unlock(&pulseaudio_mutex);
 }
 
-void pulseaudio_lock()
+void pulseaudio_lock(void)
 {
 	pa_threaded_mainloop_lock(pulseaudio_mainloop);
 }
 
-void pulseaudio_unlock()
+void pulseaudio_unlock(void)
 {
 	pa_threaded_mainloop_unlock(pulseaudio_mainloop);
 }
 
-void pulseaudio_wait()
+void pulseaudio_wait(void)
 {
 	pa_threaded_mainloop_wait(pulseaudio_mainloop);
 }
@@ -226,7 +235,7 @@ void pulseaudio_signal(int wait_for_accept)
 	pa_threaded_mainloop_signal(pulseaudio_mainloop, wait_for_accept);
 }
 
-void pulseaudio_accept()
+void pulseaudio_accept(void)
 {
 	pa_threaded_mainloop_accept(pulseaudio_mainloop);
 }

@@ -17,12 +17,12 @@ pub enum EventType {
 cfg_select! {
     unix => {
         pub mod unix;
-        pub use unix::{Event, Pipe, Sem, path_from_bytes};
+        pub use unix::{Event, Pipe, Sem, close_file, path_from_bytes};
     }
     windows => {
         #[allow(unsafe_code)] // Win32 handle and string calls; see the module docs
         pub mod windows;
-        pub use windows::{Event, Pipe, Sem, path_from_bytes};
+        pub use windows::{Event, Pipe, Sem, close_file, path_from_bytes};
     }
 }
 

@@ -130,10 +130,6 @@ void OutputTimer::StreamTimerStop()
 {
 	streamingAlreadyActive = false;
 
-	if (!isVisible() && streamingTimer->isActive() == false) {
-		return;
-	}
-
 	if (streamingTimer->isActive()) {
 		streamingTimer->stop();
 	}
@@ -151,10 +147,6 @@ void OutputTimer::StreamTimerStop()
 void OutputTimer::RecordTimerStop()
 {
 	recordingAlreadyActive = false;
-
-	if (!isVisible() && recordingTimer->isActive() == false) {
-		return;
-	}
 
 	if (recordingTimer->isActive()) {
 		recordingTimer->stop();

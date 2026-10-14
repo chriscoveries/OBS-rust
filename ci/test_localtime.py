@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """The frontend never calls the non-reentrant localtime() (#132).
 
-    python3 -m unittest ci/test_localtime.py
+    uv run python -m unittest ci/test_localtime.py
 
 blog() timestamps every log line from the audio, video, capture and UI
 threads at once, and localtime() returns a pointer to one static buffer

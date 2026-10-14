@@ -21,7 +21,7 @@
 
 static inline AVal *flv_str(AVal *out, const char *str)
 {
-	out->av_val = (char *)str;
+	out->av_val = (char *)(uintptr_t)str;
 	out->av_len = (int)strlen(str);
 	return out;
 }

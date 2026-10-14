@@ -849,9 +849,28 @@ mod windows_process {
         }
     }
 
+    /// Writes until the pipe reports broken (0) or ten seconds pass, and
+    /// returns the last count. Stderr EOF only proves the child closed its
+    /// stderr: Windows closes a dying process's handles one by one, so the
+    /// stdin read end can outlive that EOF by a moment and a write in the
+    /// gap lands in the pipe buffer and reports its full length (#192).
+    /// Spawns are all under `serial()`, so no other process holds a copy
+    /// of the read end; waiting out the teardown is enough.
+    fn write_until_broken(mut write: impl FnMut() -> usize) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let wrote = write();
+            if wrote == 0 || std::time::Instant::now() >= deadline {
+                return wrote;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// A write after the child exited fails on both sides (the broken pipe
-    /// is `ERROR_NO_DATA`). Sync is via stderr EOF, which also proves the
-    /// child is gone, so there are no sleeps.
+    /// is `ERROR_NO_DATA`). Sync is via stderr EOF, then the write is
+    /// retried until the child's stdin is really gone (see
+    /// [`write_until_broken`]).
     #[test]
     fn dead_pipe_write_matches_oracle() {
         let _serial = serial();
@@ -869,8 +888,11 @@ mod windows_process {
             assert_eq!(drain(spp, shim::os_process_pipe_read_err), b"closed\r\n");
 
             let data = [0xabu8; 64];
-            let o_wrote = oracle::oracle_os_process_pipe_write(opp, data.as_ptr(), data.len());
-            let s_wrote = shim::os_process_pipe_write(spp, data.as_ptr(), data.len());
+            let o_wrote = write_until_broken(|| {
+                oracle::oracle_os_process_pipe_write(opp, data.as_ptr(), data.len())
+            });
+            let s_wrote =
+                write_until_broken(|| shim::os_process_pipe_write(spp, data.as_ptr(), data.len()));
             assert_eq!(s_wrote, o_wrote);
             assert_eq!(s_wrote, 0);
             let o_code = oracle::oracle_os_process_pipe_destroy(opp);

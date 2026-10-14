@@ -134,7 +134,7 @@ static inline void deque_place(struct deque *dq, size_t position, const void *da
 		size_t loop_size = size - back_size;
 
 		memcpy((uint8_t *)dq->data + position, data, loop_size);
-		memcpy(dq->data, (uint8_t *)data + loop_size, back_size);
+		memcpy(dq->data, (const uint8_t *)data + loop_size, back_size);
 	} else {
 		memcpy((uint8_t *)dq->data + position, data, size);
 	}
@@ -153,7 +153,7 @@ static inline void deque_push_back(struct deque *dq, const void *data, size_t si
 
 		if (back_size)
 			memcpy((uint8_t *)dq->data + dq->end_pos, data, back_size);
-		memcpy(dq->data, (uint8_t *)data + back_size, loop_size);
+		memcpy(dq->data, (const uint8_t *)data + back_size, loop_size);
 
 		new_end_pos -= dq->capacity;
 	} else {
@@ -177,7 +177,7 @@ static inline void deque_push_front(struct deque *dq, const void *data, size_t s
 		size_t back_size = size - dq->start_pos;
 
 		if (dq->start_pos)
-			memcpy(dq->data, (uint8_t *)data + back_size, dq->start_pos);
+			memcpy(dq->data, (const uint8_t *)data + back_size, dq->start_pos);
 
 		dq->start_pos = dq->capacity - back_size;
 		memcpy((uint8_t *)dq->data + dq->start_pos, data, back_size);

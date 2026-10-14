@@ -21,6 +21,34 @@
 
 #include "util/lexer.c"
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_strref_size(void);
+size_t oracle_strref_align(void);
+size_t oracle_strref_offset_array(void);
+size_t oracle_strref_offset_len(void);
+size_t oracle_base_token_size(void);
+size_t oracle_base_token_align(void);
+size_t oracle_base_token_offset_text(void);
+size_t oracle_base_token_offset_type(void);
+size_t oracle_base_token_offset_passed_whitespace(void);
+size_t oracle_error_item_size(void);
+size_t oracle_error_item_align(void);
+size_t oracle_error_item_offset_error(void);
+size_t oracle_error_item_offset_file(void);
+size_t oracle_error_item_offset_row(void);
+size_t oracle_error_item_offset_column(void);
+size_t oracle_error_item_offset_level(void);
+size_t oracle_error_data_size(void);
+size_t oracle_error_data_align(void);
+size_t oracle_error_data_offset_errors(void);
+size_t oracle_lexer_size(void);
+size_t oracle_lexer_align(void);
+size_t oracle_lexer_offset_text(void);
+size_t oracle_lexer_offset_offset(void);
+size_t oracle_base_token_type_size(void);
+int oracle_basetoken_value(int which);
+int oracle_ignore_whitespace_value(int ignore);
+
 /* Layout of the structs as the C compiler sees the real header. */
 size_t oracle_strref_size(void)
 {

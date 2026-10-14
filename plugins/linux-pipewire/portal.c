@@ -153,11 +153,11 @@ static void on_cancelled_cb(GCancellable *cancellable, void *data)
 	portal_signal_call_free(call);
 }
 
-static void on_response_received_cb(GDBusConnection *connection, const char *sender_name, const char *object_path,
+static void on_response_received_cb(GDBusConnection *dbus_connection, const char *sender_name, const char *object_path,
 				    const char *interface_name, const char *signal_name, GVariant *parameters,
 				    void *user_data)
 {
-	UNUSED_PARAMETER(connection);
+	UNUSED_PARAMETER(dbus_connection);
 	UNUSED_PARAMETER(sender_name);
 	UNUSED_PARAMETER(object_path);
 	UNUSED_PARAMETER(interface_name);

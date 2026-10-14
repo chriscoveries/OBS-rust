@@ -36,6 +36,9 @@ if(ENABLE_SCRIPTING_PYTHON)
       swig/swigpyrun.h
   )
 
+  # The SWIG-generated swigpyrun.h casts const away (-Wcast-qual, obs-rust/obs-studio#516).
+  target_compile_options(obs-scripting PRIVATE $<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang,GNU>:-Wno-cast-qual>)
+
   target_compile_definitions(
     obs-scripting
     PRIVATE ENABLE_SCRIPTING PYTHON_LIB="$<TARGET_LINKER_FILE_NAME:Python::Python>"

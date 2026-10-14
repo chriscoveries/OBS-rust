@@ -76,3 +76,13 @@ impl Drop for RecursiveMutex {
         }
     }
 }
+
+/// Unix has no MMCSS registration. The Windows worker calls
+/// `AvSetMmThreadCharacteristicsW`; this keeps the call site host-neutral.
+pub(crate) struct AudioThreadClass;
+
+impl AudioThreadClass {
+    pub(crate) fn enter() -> Self {
+        Self
+    }
+}

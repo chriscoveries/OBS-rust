@@ -8,10 +8,9 @@
 //! [`ffi`]); the `ban_platform_cfg_outside_boundary` Dylint rejects host
 //! `cfg`s and native OS paths anywhere else.
 //!
-//! `unsafe_code` is denied for the whole crate: the safe cores have none. Two
-//! places carry their own `#[allow(unsafe_code)]` with the reason: the C ABI
-//! shims in [`ffi`], and the Windows platform module that calls Win32 directly
-//! (`platform::windows`).
+//! `unsafe_code` is denied for the whole crate. The allow sits on [`ffi`]
+//! and on the platform modules that call the OS: the Windows module, the
+//! Unix nix module, and the macOS Cocoa module.
 
 #![deny(unsafe_code)]
 

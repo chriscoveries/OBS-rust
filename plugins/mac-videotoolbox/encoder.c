@@ -650,7 +650,7 @@ static void dump_encoder_info(struct vt_encoder *enc)
 		"\tspatial_aq:            %s\n"
 		"\tprofile:               %s\n"
 		"\tcodec_type:            %.4s\n",
-		enc->vt_encoder_id, enc->rate_control, enc->bitrate, enc->quality, enc->fps_num, enc->fps_den,
+		enc->vt_encoder_id, enc->rate_control, enc->bitrate, (double)enc->quality, enc->fps_num, enc->fps_den,
 		enc->width, enc->height, enc->keyint, enc->limit_bitrate ? "on" : "off", enc->rc_max_bitrate,
 		enc->rc_max_bitrate_window, enc->hw_enc ? "on" : "off", enc->spatial_aq ? "on" : "off",
 		(enc->profile != NULL && !!strlen(enc->profile)) ? enc->profile : "default",
@@ -1267,8 +1267,8 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 	p = obs_properties_add_int(props, "max_bitrate", obs_module_text("MaxBitrate"), 50, 10000000, 50);
 	obs_property_int_set_suffix(p, " Kbps");
 
-	p = obs_properties_add_float(props, "max_bitrate_window", obs_module_text("MaxBitrateWindow"), 0.10f, 10.0f,
-				     0.25f);
+	p = obs_properties_add_float(props, "max_bitrate_window", obs_module_text("MaxBitrateWindow"), (double)0.10f,
+				     (double)10.0f, (double)0.25f);
 	obs_property_float_set_suffix(p, " s");
 
 	p = obs_properties_add_int(props, "keyint_sec", obs_module_text("KeyframeIntervalSec"), 0, 20, 1);
@@ -1380,7 +1380,7 @@ static void vt_defaults(obs_data_t *settings, void *data)
 	obs_data_set_default_int(settings, "quality", 60);
 	obs_data_set_default_bool(settings, "limit_bitrate", false);
 	obs_data_set_default_int(settings, "max_bitrate", 6000);
-	obs_data_set_default_double(settings, "max_bitrate_window", 1.5f);
+	obs_data_set_default_double(settings, "max_bitrate_window", (double)1.5f);
 	obs_data_set_default_int(settings, "keyint_sec", 2);
 	obs_data_set_default_string(settings, "profile",
 				    type_data->codec_type == kCMVideoCodecType_H264 ? "high" : "main");

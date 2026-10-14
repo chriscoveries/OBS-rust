@@ -21,9 +21,22 @@
 #include "base.h"
 #include "threading.h"
 
+/* printf-style checking at the callers of the va_list forwarders below
+ * (obs-rust/obs-studio#516). */
+#if defined(__MINGW32__)
+#define VPRINTFATTR(f) __attribute__((__format__(__gnu_printf__, f, 0)))
+#elif !defined(_MSC_VER)
+#define VPRINTFATTR(f) __attribute__((__format__(__printf__, f, 0)))
+#else
+#define VPRINTFATTR(f)
+#endif
+
 static int crashing = 0;
 static void *log_param = NULL;
 static void *crash_param = NULL;
+
+VPRINTFATTR(2)
+static void def_log_handler(int log_level, const char *format, va_list args, void *param);
 
 static void def_log_handler(int log_level, const char *format, va_list args, void *param)
 {
@@ -53,6 +66,9 @@ static void def_log_handler(int log_level, const char *format, va_list args, voi
 
 	UNUSED_PARAMETER(param);
 }
+
+VPRINTFATTR(1)
+OBS_NORETURN static void def_crash_handler(const char *format, va_list args, void *param);
 
 OBS_NORETURN static void def_crash_handler(const char *format, va_list args, void *param)
 {

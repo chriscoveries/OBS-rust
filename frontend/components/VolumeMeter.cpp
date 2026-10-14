@@ -1,4 +1,5 @@
 #include "VolumeMeter.hpp"
+#include "VolumeMeterSnapshot.hpp"
 
 #include <OBSApp.hpp>
 #include <QEvent>
@@ -505,13 +506,7 @@ inline void VolumeMeter::doLayout()
 
 inline bool VolumeMeter::detectIdle(uint64_t ts)
 {
-	double secondsSinceLastUpdate = (ts - currentLastUpdateTime) * 0.000000001;
-	if (secondsSinceLastUpdate > 0.5) {
-		resetLevels();
-		return true;
-	} else {
-		return false;
-	}
+	return resetVolumeMeterIfIdle(dataMutex, currentLastUpdateTime, ts, [this]() { resetLevels(); });
 }
 
 inline void VolumeMeter::calculateBallisticsForChannel(int channelNr, uint64_t ts, qreal timeSinceLastRedraw)
@@ -748,6 +743,8 @@ void VolumeMeter::paintEvent(QPaintEvent *)
 	qreal timeSinceLastRedraw = (ts - lastRedrawTime) * 0.000000001;
 	calculateBallistics(ts, timeSinceLastRedraw);
 	bool idle = detectIdle(ts);
+	auto channelLevels = snapshotVolumeMeterChannels(dataMutex, displayPeak, displayPeakHold, displayMagnitude,
+							 displayInputPeakHold);
 
 	QPainter painter(this);
 
@@ -776,15 +773,14 @@ void VolumeMeter::paintEvent(QPaintEvent *)
 	for (int channelNr = 0; channelNr < displayNrAudioChannels; channelNr++) {
 		int channelNrFixed = (displayNrAudioChannels == 1 && channels > 2) ? 2 : channelNr;
 
-		QMutexLocker locker(&dataMutex);
-		float peak = displayPeak[channelNrFixed];
-		float peakHold = displayPeakHold[channelNrFixed];
-		float magnitude = displayMagnitude[channelNrFixed];
+		const auto &levels = channelLevels[channelNrFixed];
+		float peak = levels.peak;
+		float peakHold = levels.peakHold;
+		float magnitude = levels.magnitude;
 
 		int peakPosition = meterLength - convertToInt(peak * scale);
 		int peakHoldPosition = meterLength - convertToInt(peakHold * scale);
 		int magnitudePosition = meterLength - convertToInt(magnitude * scale);
-		locker.unlock();
 
 		if (clipping) {
 			peakPosition = meterLength;
@@ -856,10 +852,10 @@ void VolumeMeter::paintEvent(QPaintEvent *)
 		// Draw audio input indicator
 		if (vertical) {
 			painter.fillRect(channelOffset, rect().height(), meterThickness, -INDICATOR_THICKNESS,
-					 getPeakColor(displayInputPeakHold[channelNrFixed]));
+					 getPeakColor(levels.inputPeakHold));
 		} else {
 			painter.fillRect(0, channelOffset, INDICATOR_THICKNESS, meterThickness,
-					 getPeakColor(displayInputPeakHold[channelNrFixed]));
+					 getPeakColor(levels.inputPeakHold));
 		}
 	}
 

@@ -174,9 +174,9 @@ static inline obs_hotkey_id obs_hotkey_register_internal(obs_hotkey_registerer_t
 	HASH_ADD_HKEY(obs->hotkeys.hotkeys, id, hotkey);
 
 	if (context) {
-		obs_data_array_t *data = obs_data_get_array(context->hotkey_data, name);
-		load_bindings(hotkey, data);
-		obs_data_array_release(data);
+		obs_data_array_t *binding_data = obs_data_get_array(context->hotkey_data, name);
+		load_bindings(hotkey, binding_data);
+		obs_data_array_release(binding_data);
 
 		context_add_hotkey(context, result);
 	}
@@ -1299,7 +1299,7 @@ static inline bool query_hotkey(void *data, size_t idx, obs_hotkey_binding_t *bi
 	return true;
 }
 
-static inline void query_hotkeys()
+static inline void query_hotkeys(void)
 {
 	uint32_t modifiers = 0;
 	if (is_pressed(OBS_KEY_SHIFT))
@@ -1323,13 +1323,23 @@ static inline void query_hotkeys()
 
 void *obs_hotkey_thread(void *arg)
 {
-	UNUSED_PARAMETER(arg);
+	/* arg is the event obs_init_hotkeys waits on (or NULL). */
+	os_event_t *ready = arg;
 
 	os_set_thread_name("libobs: hotkey thread");
 
 	const char *hotkey_thread_name =
 		profile_store_name(obs_get_profiler_name_store(), "obs_hotkey_thread(%g" NBSP "ms)", 25.);
 	profile_register_root(hotkey_thread_name, (uint64_t)25000000);
+
+	/* Do the first profiled pass now so every one-time allocation of this
+	 * thread happens before obs_startup() returns (bnum_allocs() must be
+	 * stable afterwards, obs-rust/obs-studio#663). */
+	profile_start(hotkey_thread_name);
+	profile_end(hotkey_thread_name);
+	profile_reenable_thread();
+	if (ready)
+		os_event_signal(ready);
 
 	while (os_event_timedwait(obs->hotkeys.stop_event, 25) == ETIMEDOUT) {
 		if (!lock())

@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """The C oracle's stand-ins for libobs functions match libobs (#145).
 
-    python3 -m unittest ci/test_oracle_standins.py
+    uv run python -m unittest ci/test_oracle_standins.py
 
 Tier 3 parity is only as good as the oracle. rust/obs-c-oracle/oracle/
 test_stubs.c and *_host.c re-implement libobs functions the oracle needs,
@@ -26,15 +26,11 @@ DEFINITION = re.compile(
 
 # Stand-ins that intentionally differ from libobs, and why.
 DIFFERENT = {
-    "os_breakpoint": "test-only empty stub (weak on Unix so the Rust shim wins)",
-    "os_oom": "test-only empty stub (weak on Unix so the Rust shim wins)",
-    "os_gettime_ns": "test-only zero clock where no Rust shim exists (macOS, Windows)",
     "os_fread_utf8": "ftell/memcmp instead of os_ftelli64/astrcmp_n: same result below 2 GiB, "
     "and test_stubs.c links without dstr",
     "os_fopen": "the libobs #ifdef _WIN32 body split into one definition per platform",
     "os_fseeki64": "the libobs #ifdef _MSC_VER body split into one definition per platform",
     "os_ftelli64": "the libobs #ifdef _MSC_VER body split into one definition per platform",
-    "os_file_exists": "platform-windows.c logic over a malloc'd wide path (config_file_host.c has no bmem)",
 }
 
 

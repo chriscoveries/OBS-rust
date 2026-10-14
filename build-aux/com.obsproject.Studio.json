@@ -49,7 +49,7 @@
                 {
                     "type": "file",
                     "dest-filename": "base.tar.xz",
-                    "url": "https://github.com/obsproject/obs-deps-buildstream/releases/download/2026-09-24/flatpak-base-x86_64-2026-09-24.tar.xz",
+                    "url": "https://github.com/obs-rust/obs-deps-buildstream/releases/download/2026-09-24/flatpak-base-x86_64-2026-09-24.tar.xz",
                     "sha256": "480a98e55b51566603b6ea0ee28dbeddaefc1e172d18fb72f16ab9d941794c79"
                 }
             ]
@@ -64,7 +64,7 @@
                 {
                     "type": "file",
                     "dest-filename": "devel.tar.xz",
-                    "url": "https://github.com/obsproject/obs-deps-buildstream/releases/download/2026-09-24/flatpak-devel-x86_64-2026-09-24.tar.xz",
+                    "url": "https://github.com/obs-rust/obs-deps-buildstream/releases/download/2026-09-24/flatpak-devel-x86_64-2026-09-24.tar.xz",
                     "sha256": "c15e10e46054150d927bd81880dfbcc71641658395b84cdaad3f572920481f4a"
                 }
             ]
@@ -82,7 +82,7 @@
                 {
                     "type": "file",
                     "dest-filename": "devtools.tar.xz",
-                    "url": "https://github.com/obsproject/obs-deps-buildstream/releases/download/2026-09-24/flatpak-devtools-x86_64-2026-09-24.tar.xz",
+                    "url": "https://github.com/obs-rust/obs-deps-buildstream/releases/download/2026-09-24/flatpak-devtools-x86_64-2026-09-24.tar.xz",
                     "sha256": "f5ba4578cade6bfd3670340e7eeb0f31876b39e29bc978b5ed47da7de03ffc70"
                 }
             ]
@@ -97,7 +97,7 @@
                 {
                     "type": "file",
                     "dest-filename": "qt.tar.xz",
-                    "url": "https://github.com/obsproject/obs-deps-buildstream/releases/download/2026-09-24/flatpak-qt-x86_64-2026-09-24.tar.xz",
+                    "url": "https://github.com/obs-rust/obs-deps-buildstream/releases/download/2026-09-24/flatpak-qt-x86_64-2026-09-24.tar.xz",
                     "sha256": "7a4060cab48798e13be0eb9aa967dd3cb6f94209c6594eacccf3223c5c91e3de"
                 }
             ]
@@ -121,7 +121,7 @@
             "sources": [
                 {
                     "type": "archive",
-                    "url": "https://cdn-fastly.obsproject.com/downloads/cef_binary_7871_linux_x86_64.tar.xz",
+                    "url": "https://github.com/obs-rust/cef/releases/download/7871/cef_binary_7871_linux_x86_64.tar.xz",
                     "sha256": "8ffc64d06ea74da613eeda7f2aa5d4e98661af6fa3ed8c68724c9a6e4e89ea8e"
                 }
             ]

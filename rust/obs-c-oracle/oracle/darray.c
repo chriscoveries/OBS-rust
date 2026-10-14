@@ -5,6 +5,21 @@
 
 #include "util/darray.h"
 
+/* Test-only exports called from Rust over FFI. */
+void oracle_darray_free(struct darray *da);
+void oracle_darray_reserve(size_t es, struct darray *da, size_t capacity);
+void oracle_darray_ensure_capacity(size_t es, struct darray *da, size_t new_size);
+void oracle_darray_resize(size_t es, struct darray *da, size_t size);
+void oracle_darray_clear(struct darray *da);
+size_t oracle_darray_push_back_array(size_t es, struct darray *da, const void *array, size_t num);
+void oracle_darray_erase(size_t es, struct darray *da, size_t idx);
+void oracle_darray_pop_back(size_t es, struct darray *da);
+size_t oracle_darray_size(void);
+size_t oracle_darray_align(void);
+size_t oracle_darray_offset_array(void);
+size_t oracle_darray_offset_num(void);
+size_t oracle_darray_offset_capacity(void);
+
 void oracle_darray_free(struct darray *da)
 {
 	darray_free(da);

@@ -114,7 +114,7 @@ void OBSStudioAPI::obs_frontend_release_tbar()
 
 void OBSStudioAPI::obs_frontend_set_tbar_position(int position)
 {
-	QMetaObject::invokeMethod(main, &OBSBasic::TBarChanged, position);
+	QMetaObject::invokeMethod(main, [this, position]() { main->SetTbarPosition(position); });
 }
 
 int OBSStudioAPI::obs_frontend_get_tbar_position()
@@ -151,7 +151,7 @@ void OBSStudioAPI::obs_frontend_set_current_scene_collection(const char *collect
 		QVariant v = action->property("file_name");
 
 		if (v.typeName() != nullptr) {
-			if (action->text() == qstrCollection) {
+			if (action->property("collection_name").toString() == qstrCollection) {
 				action->trigger();
 				break;
 			}
@@ -200,7 +200,7 @@ void OBSStudioAPI::obs_frontend_set_current_profile(const char *profile)
 		QVariant v = action->property("file_name");
 
 		if (v.typeName() != nullptr) {
-			if (action->text() == qstrProfile) {
+			if (action->property("profile_name").toString() == qstrProfile) {
 				action->trigger();
 				break;
 			}

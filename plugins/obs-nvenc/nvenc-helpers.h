@@ -73,6 +73,9 @@ extern NV_CREATE_INSTANCE_FUNC nv_create_instance;
 const char *nv_error_name(NVENCSTATUS err);
 
 bool init_nvenc(obs_encoder_t *encoder);
+/* Defined in nvenc-load.c. */
+bool load_nvenc_lib(void);
+extern void *nvenc_lib;
 bool nv_fail2(obs_encoder_t *encoder, void *session, const char *format, ...);
 bool nv_failed2(obs_encoder_t *encoder, void *session, NVENCSTATUS err, const char *func, const char *call);
 

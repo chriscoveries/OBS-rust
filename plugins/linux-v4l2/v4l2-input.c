@@ -44,7 +44,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #define FALLBACK_FRAMERATE 30
 
-#if HAVE_UDEV
+#ifdef HAVE_UDEV
 #include "v4l2-udev.h"
 #endif
 
@@ -101,6 +101,12 @@ struct v4l2_data {
 	obs_data_t *controls;
 	/* write the saved camera controls when the device opens */
 	bool restore_controls;
+	/* the device the saved controls were set on, and the open device
+	 * (card and bus info); empty when not known */
+	struct dstr controls_device;
+	struct dstr dev_identity;
+	/* the above are also used from the udev thread and on save */
+	pthread_mutex_t controls_mutex;
 };
 
 /* forward declarations */
@@ -189,7 +195,7 @@ static void *v4l2_thread(void *vptr)
 	/* Get framerate and calculate appropriate select timeout value. */
 	v4l2_unpack_tuple(&fps_num, &fps_denom, data->framerate);
 	ffps = (float)fps_denom / fps_num;
-	blog(LOG_DEBUG, "%s: framerate: %.2f fps", data->device_id, ffps);
+	blog(LOG_DEBUG, "%s: framerate: %.2f fps", data->device_id, (double)ffps);
 	/* Timeout set to 5 frame periods. */
 	timeout_usec = (1000000 * data->timeout_frames) / ffps;
 	blog(LOG_INFO, "%s: select timeout set to %" PRIu64 " (%dx frame periods)", data->device_id, timeout_usec,
@@ -632,7 +638,7 @@ static void v4l2_framerate_list(int dev, uint_fast32_t pixelformat, uint_fast32_
 			int denom;
 			v4l2_unpack_tuple(&num, &denom, *packed);
 			float fps = (float)denom / num;
-			dstr_printf(&buffer, "%.2f", fps);
+			dstr_printf(&buffer, "%.2f", (double)fps);
 			obs_property_list_add_int(prop, buffer.array, *packed);
 		}
 		break;
@@ -646,6 +652,7 @@ static void v4l2_framerate_list(int dev, uint_fast32_t pixelformat, uint_fast32_
  */
 static bool device_selected(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
 {
+	struct v4l2_data *data = obs_properties_get_param(props);
 	int dev = v4l2_open(obs_data_get_string(settings, "device_id"), O_RDWR | O_NONBLOCK | O_CLOEXEC);
 
 	v4l2_props_set_enabled(props, p, (dev == -1) ? false : true);
@@ -655,6 +662,24 @@ static bool device_selected(obs_properties_t *props, obs_property_t *p, obs_data
 
 	obs_property_t *prop = obs_properties_get(props, "input");
 	obs_properties_t *ctrl_props_new = v4l2_controls_properties();
+
+	/* The sliders show the controls saved for this device: those of
+	 * another device are put aside for it, so they are not written here.
+	 * Settings from before this was recorded belong to the device the
+	 * source first opened. */
+	struct dstr identity = {0};
+	struct dstr saved_for = {0};
+	v4l2_device_identity(dev, &identity);
+	dstr_copy(&saved_for, obs_data_get_string(settings, V4L2_CONTROLS_DEVICE));
+	if (dstr_is_empty(&saved_for) && data) {
+		pthread_mutex_lock(&data->controls_mutex);
+		dstr_copy_dstr(&saved_for, &data->controls_device);
+		pthread_mutex_unlock(&data->controls_mutex);
+	}
+	v4l2_controls_use_device(dev, settings, saved_for.array ? saved_for.array : "",
+				 identity.array ? identity.array : "");
+	dstr_free(&saved_for);
+	dstr_free(&identity);
 
 	obs_properties_remove_by_name(props, "controls");
 
@@ -772,7 +797,7 @@ static bool resolution_selected(obs_properties_t *props, obs_property_t *p, obs_
 	return true;
 }
 
-#if HAVE_UDEV
+#ifdef HAVE_UDEV
 /**
  * Device added callback
  *
@@ -824,6 +849,7 @@ static obs_properties_t *v4l2_properties(void *vptr)
 	V4L2_DATA(vptr);
 
 	obs_properties_t *props = obs_properties_create();
+	obs_properties_set_param(props, data, NULL);
 
 	obs_property_t *device_list = obs_properties_add_list(props, "device_id", obs_module_text("Device"),
 							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -908,8 +934,11 @@ static void v4l2_destroy(void *vptr)
 	if (data->device_id)
 		bfree(data->device_id);
 	obs_data_release(data->controls);
+	dstr_free(&data->controls_device);
+	dstr_free(&data->dev_identity);
+	pthread_mutex_destroy(&data->controls_mutex);
 
-#if HAVE_UDEV
+#ifdef HAVE_UDEV
 	signal_handler_t *sh = v4l2_get_udev_signalhandler();
 
 	signal_handler_disconnect(sh, "device_added", device_added, data);
@@ -919,6 +948,37 @@ static void v4l2_destroy(void *vptr)
 #endif
 
 	bfree(data);
+}
+
+/*
+ * Write the saved camera controls, if the user wants them restored and they
+ * were set on the open device. A source switched to another camera, or
+ * another camera that took the source's /dev/videoN node (the numbers follow
+ * the order the cameras are found in, after a reboot or a replug), must not
+ * get them.
+ */
+static void v4l2_restore_controls(struct v4l2_data *data)
+{
+	bool same_device;
+
+	pthread_mutex_lock(&data->controls_mutex);
+	if (dstr_is_empty(&data->dev_identity)) {
+		/* A device that cannot tell what it is: as before */
+		same_device = dstr_is_empty(&data->controls_device);
+	} else if (dstr_is_empty(&data->controls_device)) {
+		/* Settings saved before the device was recorded: they belong
+		 * to the first device opened. */
+		dstr_copy_dstr(&data->controls_device, &data->dev_identity);
+		same_device = true;
+	} else {
+		same_device = dstr_cmp(&data->controls_device, data->dev_identity.array) == 0;
+	}
+
+	if (!same_device)
+		blog(LOG_INFO, "Not restoring the camera controls, they were set on %s", data->controls_device.array);
+	else if (data->restore_controls)
+		v4l2_apply_controls(data->dev, data->controls);
+	pthread_mutex_unlock(&data->controls_mutex);
 }
 
 /**
@@ -944,6 +1004,9 @@ static void v4l2_init(struct v4l2_data *data)
 		blog(LOG_ERROR, "Unable to open device");
 		goto fail;
 	}
+	pthread_mutex_lock(&data->controls_mutex);
+	v4l2_device_identity(data->dev, &data->dev_identity);
+	pthread_mutex_unlock(&data->controls_mutex);
 
 	/* set input */
 	if (v4l2_set_input(data->dev, &data->input) < 0) {
@@ -1000,13 +1063,12 @@ static void v4l2_init(struct v4l2_data *data)
 		data->framerate = v4l2_pack_tuple(1, FALLBACK_FRAMERATE);
 	}
 	v4l2_unpack_tuple(&fps_num, &fps_denom, data->framerate);
-	blog(LOG_INFO, "Framerate: %.2f fps", (float)fps_denom / fps_num);
+	blog(LOG_INFO, "Framerate: %.2f fps", (double)((float)fps_denom / fps_num));
 
 	/* The camera starts on the driver's values when it is plugged in, and
 	 * other programs can change them: write the saved controls, unless the
 	 * user leaves them to another program (an external PTZ controller). */
-	if (data->restore_controls)
-		v4l2_apply_controls(data->dev, data->controls);
+	v4l2_restore_controls(data);
 
 	/* map buffers */
 	if (v4l2_create_mmap(data->dev, &data->buffers) < 0) {
@@ -1111,17 +1173,35 @@ static void v4l2_update(void *vptr, obs_data_t *settings)
 	bool restore_was_on = data->restore_controls;
 	data->restore_controls = obs_data_get_bool(settings, "restore_controls");
 
-	/* A copy, as a replug reopens the device from the udev thread */
+	/* A copy, as a replug reopens the device from the udev thread. Settings
+	 * that do not say which device the controls belong to keep the one the
+	 * source found when it first opened a device. */
+	pthread_mutex_lock(&data->controls_mutex);
 	obs_data_release(data->controls);
 	data->controls = obs_data_create();
 	obs_data_apply(data->controls, settings);
+	const char *controls_device = obs_data_get_string(settings, V4L2_CONTROLS_DEVICE);
+	if (*controls_device)
+		dstr_copy(&data->controls_device, controls_device);
+	pthread_mutex_unlock(&data->controls_mutex);
 
 	v4l2_update_source_flags(data, settings);
 
 	if (needs_restart)
 		v4l2_init(data);
-	else if (data->dev != -1 && data->restore_controls && restore_was_on)
-		v4l2_apply_controls(data->dev, data->controls);
+	else if (data->dev != -1 && restore_was_on)
+		v4l2_restore_controls(data);
+}
+
+/* Record the device found for settings that did not say it */
+static void v4l2_save(void *vptr, obs_data_t *settings)
+{
+	V4L2_DATA(vptr);
+
+	pthread_mutex_lock(&data->controls_mutex);
+	if (!dstr_is_empty(&data->controls_device) && !*obs_data_get_string(settings, V4L2_CONTROLS_DEVICE))
+		obs_data_set_string(settings, V4L2_CONTROLS_DEVICE, data->controls_device.array);
+	pthread_mutex_unlock(&data->controls_mutex);
 }
 
 static void *v4l2_create(obs_data_t *settings, obs_source_t *source)
@@ -1131,6 +1211,7 @@ static void *v4l2_create(obs_data_t *settings, obs_source_t *source)
 	data->source = source;
 	data->resolution_unchanged = false;
 	data->framerate_unchanged = false;
+	pthread_mutex_init(&data->controls_mutex, NULL);
 
 	/* Bitch about build problems ... */
 #ifndef V4L2_CAP_DEVICE_CAPS
@@ -1142,7 +1223,7 @@ static void *v4l2_create(obs_data_t *settings, obs_source_t *source)
 
 	v4l2_update(data, settings);
 
-#if HAVE_UDEV
+#ifdef HAVE_UDEV
 	v4l2_init_udev();
 	signal_handler_t *sh = v4l2_get_udev_signalhandler();
 
@@ -1163,6 +1244,7 @@ struct obs_source_info v4l2_input = {
 	.create = v4l2_create,
 	.destroy = v4l2_destroy,
 	.update = v4l2_update,
+	.save = v4l2_save,
 	.get_defaults = v4l2_defaults,
 	.get_properties = v4l2_properties,
 	.icon_type = OBS_ICON_TYPE_CAMERA,

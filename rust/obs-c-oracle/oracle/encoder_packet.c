@@ -4,6 +4,25 @@
 
 #include "obs.h"
 
+/* Test-only exports called from Rust over FFI. */
+size_t oracle_encoder_packet_size(void);
+size_t oracle_encoder_packet_align(void);
+size_t oracle_sizeof_long(void);
+size_t oracle_encoder_packet_offset_data(void);
+size_t oracle_encoder_packet_offset_size(void);
+size_t oracle_encoder_packet_offset_pts(void);
+size_t oracle_encoder_packet_offset_dts(void);
+size_t oracle_encoder_packet_offset_timebase_num(void);
+size_t oracle_encoder_packet_offset_timebase_den(void);
+size_t oracle_encoder_packet_offset_type(void);
+size_t oracle_encoder_packet_offset_keyframe(void);
+size_t oracle_encoder_packet_offset_dts_usec(void);
+size_t oracle_encoder_packet_offset_sys_dts_usec(void);
+size_t oracle_encoder_packet_offset_priority(void);
+size_t oracle_encoder_packet_offset_drop_priority(void);
+size_t oracle_encoder_packet_offset_track_idx(void);
+size_t oracle_encoder_packet_offset_encoder(void);
+
 size_t oracle_encoder_packet_size(void)
 {
 	return sizeof(struct encoder_packet);

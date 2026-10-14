@@ -28,7 +28,18 @@
 
 #include "base.h"
 
-#ifndef _MSC_VER
+/* printf-style checking at the callers of the va_list forwarders below
+ * (obs-rust/obs-studio#516). */
+#if defined(__MINGW32__)
+#define VPRINTFATTR(f) __attribute__((__format__(__gnu_printf__, f, 0)))
+#elif !defined(_MSC_VER)
+#define VPRINTFATTR(f) __attribute__((__format__(__printf__, f, 0)))
+#else
+#define VPRINTFATTR(f)
+#endif
+
+#if !defined(_MSC_VER) && !defined(_WIN32)
+/* Windows (MinGW included) has no ELF visibility. */
 #define BASE_HIDDEN __attribute__((visibility("hidden")))
 #else
 #define BASE_HIDDEN
@@ -37,7 +48,10 @@
 typedef void (*crash_handler_t)(const char *, va_list, void *);
 
 extern void base_get_log_handler(log_handler_t *handler, void **param);
-extern int base_begin_crash(void **handler, void **param, int *use_default);
+extern int base_begin_crash(crash_handler_t *handler, void **param, int *use_default);
+
+VPRINTFATTR(2)
+static void def_log_handler(int log_level, const char *format, va_list args, void *param);
 
 static void def_log_handler(int log_level, const char *format, va_list args, void *param)
 {
@@ -68,6 +82,9 @@ static void def_log_handler(int log_level, const char *format, va_list args, voi
 	UNUSED_PARAMETER(param);
 }
 
+VPRINTFATTR(1)
+OBS_NORETURN static void def_crash_handler(const char *format, va_list args, void *param);
+
 OBS_NORETURN static void def_crash_handler(const char *format, va_list args, void *param)
 {
 	vfprintf(stderr, format, args);
@@ -76,9 +93,13 @@ OBS_NORETURN static void def_crash_handler(const char *format, va_list args, voi
 	UNUSED_PARAMETER(param);
 }
 
-BASE_HIDDEN void *base_default_log_handler(void)
+/* Called only from the Rust core (obs-util), so no header declares them. */
+BASE_HIDDEN log_handler_t base_default_log_handler(void);
+BASE_HIDDEN void base_log_literal(log_handler_t handler, void *param, int level, const char *msg);
+
+BASE_HIDDEN log_handler_t base_default_log_handler(void)
 {
-	return (void *)def_log_handler;
+	return def_log_handler;
 }
 
 static void call_handler(log_handler_t handler, void *param, int level, const char *msg, ...)
@@ -93,9 +114,9 @@ static void call_handler(log_handler_t handler, void *param, int level, const ch
 /* `handler` is the pointer from the Rust core, already resolved to the
  * default handler when the user has not installed one. `msg` has no
  * conversions; the empty va_list exists so the user's handler can vsnprintf. */
-BASE_HIDDEN void base_log_literal(void *handler, void *param, int level, const char *msg)
+BASE_HIDDEN void base_log_literal(log_handler_t handler, void *param, int level, const char *msg)
 {
-	call_handler((log_handler_t)handler, param, level, msg);
+	call_handler(handler, param, level, msg);
 }
 
 void blogva(int log_level, const char *format, va_list args)
@@ -119,7 +140,7 @@ void blog(int log_level, const char *format, ...)
 OBS_NORETURN void bcrash(const char *format, ...)
 {
 	va_list args;
-	void *handler = NULL;
+	crash_handler_t handler = NULL;
 	void *param = NULL;
 	int use_default = 0;
 	crash_handler_t fn;
@@ -129,7 +150,7 @@ OBS_NORETURN void bcrash(const char *format, ...)
 		exit(2);
 	}
 
-	fn = use_default ? def_crash_handler : (crash_handler_t)handler;
+	fn = use_default ? def_crash_handler : handler;
 
 	va_start(args, format);
 	fn(format, args, param);

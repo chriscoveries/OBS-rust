@@ -41,10 +41,15 @@ static inline float gs_u8_to_float(uint8_t u)
 
 static inline void gs_u8x4_to_float4(float *f, const uint8_t *u)
 {
-	f[0] = gs_u8_to_float(u[0]);
-	f[1] = gs_u8_to_float(u[1]);
-	f[2] = gs_u8_to_float(u[2]);
-	f[3] = gs_u8_to_float(u[3]);
+	uint8_t b0 = u[0];
+	uint8_t b1 = u[1];
+	uint8_t b2 = u[2];
+	uint8_t b3 = u[3];
+
+	f[0] = gs_u8_to_float(b0);
+	f[1] = gs_u8_to_float(b1);
+	f[2] = gs_u8_to_float(b2);
+	f[3] = gs_u8_to_float(b3);
 }
 
 static inline uint8_t gs_float_to_u8(float f)

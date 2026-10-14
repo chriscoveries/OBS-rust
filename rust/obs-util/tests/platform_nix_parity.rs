@@ -8,7 +8,9 @@
 //!   results are freed with `os_globfree`.
 //! - `os_generate_uuid` is random on both sides and is not compared.
 //! - `os_breakpoint` and `os_oom` raise `SIGTRAP` and are not called.
-//! - Sleep inhibit is not compared. The worker is a Rust thread.
+//! - Sleep inhibit is not ported. `os_inhibit_sleep_*` stays C
+//!   (`util/platform-nix-inhibit.c`), checked by test/cmocka's
+//!   test_inhibit_sleep_dbus in both lanes.
 //! - CPU percent and process memory change between the two calls.
 //! - A missing `$HOME` still crashes in the shim. These tests keep `HOME`.
 //!
@@ -437,5 +439,98 @@ fn host_paths_and_cores_match() {
         assert!(c::oracle_os_request_high_performance(name.as_ptr()).is_null());
         rs::os_end_high_performance(std::ptr::null_mut());
         c::oracle_os_end_high_performance(std::ptr::null_mut());
+    }
+}
+
+/// A C string longer than `INT_MAX` that costs two 64 KiB pages of memory:
+/// one page of `a`s mapped over and over, then a page ending in NUL.
+#[cfg(target_os = "linux")]
+struct HugeName {
+    base: *mut libc::c_void,
+    len: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl HugeName {
+    const CHUNK: usize = 64 * 1024;
+
+    fn new() -> Self {
+        let chunks = (1usize << 31) / Self::CHUNK;
+        let len = (chunks + 1) * Self::CHUNK;
+        // SAFETY: plain mmap/memfd calls; every mapping lands inside the
+        // reserved range.
+        unsafe {
+            let base = libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+                -1,
+                0,
+            );
+            assert_ne!(base, libc::MAP_FAILED);
+            let fill = |byte_end: u8| {
+                let fd = libc::memfd_create(c"huge-name".as_ptr(), 0);
+                assert!(fd >= 0);
+                let mut page = vec![b'a'; Self::CHUNK];
+                page[Self::CHUNK - 1] = byte_end;
+                assert_eq!(
+                    libc::write(fd, page.as_ptr().cast(), page.len()),
+                    page.len() as isize
+                );
+                fd
+            };
+            let body = fill(b'a');
+            let tail = fill(0);
+            for i in 0..=chunks {
+                let fd = if i == chunks { tail } else { body };
+                let at = base.cast::<u8>().add(i * Self::CHUNK).cast();
+                let p = libc::mmap(
+                    at,
+                    Self::CHUNK,
+                    libc::PROT_READ,
+                    libc::MAP_SHARED | libc::MAP_FIXED,
+                    fd,
+                    0,
+                );
+                assert_eq!(p, at);
+            }
+            libc::close(body);
+            libc::close(tail);
+            Self { base, len }
+        }
+    }
+
+    fn as_ptr(&self) -> *const core::ffi::c_char {
+        self.base.cast()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for HugeName {
+    fn drop(&mut self) {
+        // SAFETY: the range was mapped in `new`.
+        unsafe { libc::munmap(self.base, self.len) };
+    }
+}
+
+/// obs-rust/obs-studio#566: a program data path longer than `INT_MAX` is an
+/// `snprintf` failure (-1). C used to take -1 as a `size_t` length.
+#[cfg(target_os = "linux")]
+#[test]
+fn program_data_path_longer_than_int_max_fails() {
+    let name = HugeName::new();
+    // SAFETY: `name` is a NUL-terminated string that outlives the calls.
+    unsafe {
+        assert_eq!(
+            c::oracle_os_get_program_data_path(std::ptr::null_mut(), 0, name.as_ptr()),
+            -1
+        );
+        assert_eq!(
+            rs::os_get_program_data_path(std::ptr::null_mut(), 0, name.as_ptr()),
+            -1
+        );
+        assert!(c::oracle_os_get_program_data_path_ptr(name.as_ptr()).is_null());
+        assert!(rs::os_get_program_data_path_ptr(name.as_ptr()).is_null());
     }
 }

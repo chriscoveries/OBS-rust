@@ -38,7 +38,7 @@ static bool ready_deinterlace_frames(obs_source_t *source, uint64_t sys_time)
 		}
 
 		if (source->async_frames.num == 2) {
-			bool prev_frame = true;
+			bool has_prev_frame = true;
 			if (source->async_unbuffered && source->deinterlace_offset) {
 				const uint64_t timestamp = source->async_frames.array[0]->timestamp;
 				const uint64_t after_timestamp = source->async_frames.array[1]->timestamp;
@@ -46,11 +46,11 @@ static bool ready_deinterlace_frames(obs_source_t *source, uint64_t sys_time)
 				const uint64_t frame_end = timestamp + source->deinterlace_offset + duration;
 				if (sys_time < frame_end) {
 					// Don't skip ahead prematurely.
-					prev_frame = false;
+					has_prev_frame = false;
 					source->deinterlace_frame_ts = timestamp - duration;
 				}
 			}
-			source->async_frames.array[0]->prev_frame = prev_frame;
+			source->async_frames.array[0]->prev_frame = has_prev_frame;
 		}
 		source->last_frame_ts = next_frame->timestamp;
 		return true;

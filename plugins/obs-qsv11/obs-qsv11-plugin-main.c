@@ -98,7 +98,7 @@ bool obs_module_load(void)
 		obs_register_encoder(&obs_qsv_av1_encoder_tex);
 		obs_register_encoder(&obs_qsv_av1_encoder);
 	}
-#if ENABLE_HEVC
+#ifdef ENABLE_HEVC
 	if (hevc_supported) {
 		obs_register_encoder(&obs_qsv_hevc_encoder_tex);
 		obs_register_encoder(&obs_qsv_hevc_encoder);

@@ -35,8 +35,8 @@ runs:
         echo ::group::Install Dependencies
         eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
         echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> $GITHUB_PATH
-        brew update
-        brew install --quiet zsh
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew update
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew install --quiet zsh
         echo ::endgroup::
 
     - name: Run swift-format 🔥
@@ -51,8 +51,8 @@ runs:
         if (( ${+RUNNER_DEBUG} )) setopt XTRACE
 
         print ::group::Install swift-format
-        brew update
-        brew install --quiet swift-format
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew update
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew install --quiet swift-format
         print ::endgroup::
 
         print ::group::Run swift-format

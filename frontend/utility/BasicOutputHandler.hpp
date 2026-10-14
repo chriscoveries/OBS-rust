@@ -79,6 +79,8 @@ struct BasicOutputHandler {
 	virtual bool StartStreaming(obs_service_t *service) = 0;
 	virtual bool StartRecording() = 0;
 	virtual bool StartReplayBuffer() { return false; }
+	/* Applies the current filename settings to the replay buffer before a save. */
+	virtual void UpdateReplayBufferNaming() {}
 	virtual bool StartVirtualCam();
 	virtual void StopStreaming(bool force = false) = 0;
 	virtual void StopRecording(bool force = false) = 0;

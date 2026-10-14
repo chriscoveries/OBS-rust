@@ -32,8 +32,8 @@ runs:
         echo ::group::Install Dependencies
         eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
         echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> $GITHUB_PATH
-        brew update
-        brew install --quiet zsh
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew update
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew install --quiet zsh
         echo ::endgroup::
 
     - name: Run gersemi 🎛️
@@ -45,9 +45,9 @@ runs:
         if (( ${+RUNNER_DEBUG} )) setopt XTRACE
 
         print ::group::Install gersemi
-        brew update
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew update
         brew trust obsproject/tools
-        brew install --quiet obsproject/tools/gersemi@0.25
+        "${GITHUB_WORKSPACE}/.github/scripts/retry" brew install --quiet obsproject/tools/gersemi@0.25
         print ::endgroup::
 
         print ::group::Run gersemi

@@ -5,21 +5,35 @@
 //! native OS paths (`std::os::*`, `libc::`, Win32) outside this module and
 //! [`crate::ffi`].
 
+#[allow(unsafe_code)] // the cell is touched only while this thread holds the lock
+mod re_mutex;
+pub(crate) use re_mutex::ReMutex;
+
 cfg_select! {
     unix => {
         #[allow(unsafe_code)] // pthread mutex calls; see the module docs
         mod unix;
+        pub(crate) use unix::AudioThreadClass;
         pub(crate) use unix::RecursiveMutex;
 
-        /// Expands its items only on hosts that build the `audio-io.c` port
-        /// (Unix: it needs [`RecursiveMutex`]). Windows keeps the C.
+        /// Expands its items only on hosts that build the `audio-io.c` port.
+        macro_rules! with_audio_thread_port {
+            ($($item:item)*) => { $($item)* };
+        }
+    }
+    windows => {
+        #[allow(unsafe_code)] // Win32 critical section; see the module docs
+        mod windows;
+        pub(crate) use windows::AudioThreadClass;
+        pub(crate) use windows::RecursiveMutex;
+
+        /// Expands its items only on hosts that build the `audio-io.c` port.
         macro_rules! with_audio_thread_port {
             ($($item:item)*) => { $($item)* };
         }
     }
     _ => {
-        /// Expands its items only on hosts that build the `audio-io.c` port
-        /// (Unix). This host keeps the C, so the items are dropped.
+        /// This host keeps the C file, so the items are dropped.
         macro_rules! with_audio_thread_port {
             ($($item:item)*) => {};
         }

@@ -416,6 +416,7 @@ static void ft2_source_update(void *data, obs_data_t *settings)
 	const bool aa_changed = srcdata->antialiasing != new_aa_setting;
 	if (aa_changed) {
 		srcdata->antialiasing = new_aa_setting;
+		vbuf_needs_update = true;
 		if (srcdata->texbuf != NULL) {
 			memset(srcdata->texbuf, 0, texbuf_size);
 		}
@@ -510,7 +511,7 @@ error:
 
 #ifdef _WIN32
 #define DEFAULT_FACE "Arial"
-#elif __APPLE__
+#elif defined(__APPLE__)
 #define DEFAULT_FACE "Helvetica"
 #else
 #define DEFAULT_FACE "Sans Serif"

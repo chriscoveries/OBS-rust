@@ -39,6 +39,10 @@ static size_t oracle_profiler_clock_pos;
 
 #include "util/profiler.c"
 
+/* Test-only exports called from Rust over FFI. */
+void oracle_profiler_set_clock(const uint64_t *times, size_t len);
+void oracle_profiler_reset(void);
+
 void oracle_profiler_set_clock(const uint64_t *times, size_t len)
 {
 	oracle_profiler_clock = times;

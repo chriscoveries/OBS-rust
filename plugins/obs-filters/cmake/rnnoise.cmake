@@ -39,7 +39,15 @@ if(ENABLE_RNNOISE)
 
       target_compile_definitions(obs-rnnoise PUBLIC COMPILE_OPUS)
 
-      target_compile_options(obs-rnnoise PRIVATE -Wno-newline-eof -Wno-error=null-dereference)
+      target_compile_options(
+        obs-rnnoise
+        PRIVATE
+          -Wno-newline-eof
+          -Wno-error=null-dereference
+          -Wno-double-promotion
+          -Wno-cast-qual
+          $<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang,GNU>:-Wno-shadow>
+      )
 
       set_target_properties(obs-rnnoise PROPERTIES FOLDER plugins/obs-filters/rnnoise POSITION_INDEPENDENT_CODE TRUE)
     endif()

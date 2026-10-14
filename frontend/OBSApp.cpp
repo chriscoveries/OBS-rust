@@ -24,9 +24,11 @@
 #include <dialogs/LogUploadDialog.hpp>
 #include <plugin-manager/PluginManager.hpp>
 #include <utility/CrashHandler.hpp>
+#include <utility/ConfigMigration.hpp>
 #include <utility/OBSEventFilter.hpp>
 #include <utility/OBSProxyStyle.hpp>
 #include <utility/product-name.h>
+#include <utility/platform.hpp>
 #include <utility/scene-collection-migration.hpp>
 #if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
 #include <utility/models/branches.hpp>
@@ -40,6 +42,7 @@
 
 #include <QCheckBox>
 #include <QDesktopServices>
+#include <QLockFile>
 #if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
 #include <QFile>
 #endif
@@ -182,9 +185,9 @@ QAccessibleInterface *alignmentSelectorFactory(const QString &classname, QObject
 }
 } // namespace
 
-QObject *CreateShortcutFilter()
+QObject *CreateShortcutFilter(QObject *parent)
 {
-	return new OBSEventFilter([](QObject *obj, QEvent *event) {
+	auto *filter = new OBSEventFilter([](QObject *obj, QEvent *event) {
 		auto mouse_event = [](QMouseEvent &event) {
 			if (!App()->HotkeysEnabledInFocus() && event.button() != Qt::LeftButton) {
 				return true;
@@ -305,6 +308,8 @@ QObject *CreateShortcutFilter()
 			return false;
 		}
 	});
+	filter->setParent(parent);
+	return filter;
 }
 
 string CurrentDateTimeString()
@@ -491,9 +496,9 @@ static bool MakeUserDirs()
 	return true;
 }
 
-constexpr std::string_view OBSProfileSubDirectory = "obs-studio/basic/profiles";
-constexpr std::string_view OBSScenesSubDirectory = "obs-studio/basic/scenes";
-constexpr std::string_view OBSPluginManagerSubDirectory = "obs-studio/plugin_manager";
+constexpr std::string_view OBSProfileSubDirectory = OBS_CONFIG_DIRECTORY "/basic/profiles";
+constexpr std::string_view OBSScenesSubDirectory = OBS_CONFIG_DIRECTORY "/basic/scenes";
+constexpr std::string_view OBSPluginManagerSubDirectory = OBS_CONFIG_DIRECTORY "/plugin_manager";
 
 static bool MakeUserProfileDirs()
 {
@@ -570,11 +575,76 @@ bool OBSApp::UpdatePre22MultiviewLayout(const char *layout)
 	return false;
 }
 
+bool OBSApp::MigrateRustConfiguration()
+{
+#ifdef OBS_RUST_VERSION
+	namespace fs = std::filesystem;
+	try {
+		BPtr<char> configRoot = GetAppConfigPathPtr(nullptr);
+		if (!configRoot) {
+			throw std::runtime_error("Unable to locate the configuration root");
+		}
+		const auto base = ConfigBaseDirectory(configRoot.Get());
+		const auto source = base / "obs-studio";
+		const auto destination = base / OBS_CONFIG_DIRECTORY;
+		if (fs::exists(destination) || !fs::exists(source)) {
+			return true;
+		}
+		fs::create_directories(base);
+		QLockFile lock(QString::fromStdString((base / "obs-studio-rust.migration.lock").u8string()));
+		if (!lock.tryLock(0)) {
+			throw std::runtime_error("Another Rust frontend is migrating its configuration");
+		}
+		ConfigFile upstream;
+		const auto global = source / "global.ini";
+		if (fs::exists(global) &&
+		    upstream.Open(global.u8string().c_str(), CONFIG_OPEN_EXISTING) != CONFIG_SUCCESS) {
+			throw std::runtime_error("Unable to read the original global settings");
+		}
+		auto location = [&](const char *key) {
+			if (!IsPortableMode() && fs::exists(global)) {
+				const char *value = config_get_string(upstream, "Locations", key);
+				if (value && *value && fs::is_directory(fs::u8path(value))) {
+					return fs::u8path(value);
+				}
+			}
+			return base;
+		};
+		std::vector<std::pair<const char *, fs::path>> locations;
+		std::vector<fs::path> roots;
+		for (const char *key : {"Configuration", "Profiles", "SceneCollections", "PluginManagerSettings"}) {
+			auto selected = location(key);
+			roots.push_back(selected);
+			locations.emplace_back(key, std::move(selected));
+		}
+		MigrateAppConfigLocations(base, roots, [&](const fs::path &copy) {
+			ConfigFile isolated;
+			if (isolated.Open((copy / "global.ini").u8string().c_str(), CONFIG_OPEN_ALWAYS) !=
+			    CONFIG_SUCCESS) {
+				throw std::runtime_error("Unable to open the copied global settings");
+			}
+			for (const auto &[key, root] : locations) {
+				config_set_string(isolated, "Locations", key, root.u8string().c_str());
+			}
+			config_set_string(isolated, "General", "RustConfigImportedFrom", source.u8string().c_str());
+			if (isolated.SaveSafe("tmp") != CONFIG_SUCCESS) {
+				throw std::runtime_error("Unable to save the independent settings locations");
+			}
+		});
+	} catch (const std::exception &error) {
+		OBSErrorBox(nullptr, "Rust configuration migration failed: %s. Original settings were preserved.",
+			    error.what());
+		return false;
+	}
+#endif
+	return true;
+}
+
 bool OBSApp::InitGlobalConfig()
 {
 	char path[512];
 
-	int len = GetAppConfigPath(path, sizeof(path), "obs-studio/global.ini");
+	int len = GetAppConfigPath(path, sizeof(path), OBS_CONFIG_DIRECTORY "/global.ini");
 	if (len <= 0) {
 		return false;
 	}
@@ -646,7 +716,7 @@ bool OBSApp::InitGlobalConfig()
 
 bool OBSApp::InitUserConfig(std::filesystem::path &userConfigLocation, uint32_t lastVersion)
 {
-	const std::string userConfigFile = userConfigLocation.u8string() + "/obs-studio/user.ini";
+	const std::string userConfigFile = userConfigLocation.u8string() + "/" OBS_CONFIG_DIRECTORY "/user.ini";
 
 	int errorCode = userConfig.Open(userConfigFile.c_str(), CONFIG_OPEN_ALWAYS);
 
@@ -729,8 +799,8 @@ void OBSApp::MigrateLegacySettings(const uint32_t lastVersion)
 	}
 }
 
-static constexpr string_view OBSGlobalIniPath = "/obs-studio/global.ini";
-static constexpr string_view OBSUserIniPath = "/obs-studio/user.ini";
+static constexpr string_view OBSGlobalIniPath = "/" OBS_CONFIG_DIRECTORY "/global.ini";
+static constexpr string_view OBSUserIniPath = "/" OBS_CONFIG_DIRECTORY "/user.ini";
 
 bool OBSApp::MigrateGlobalSettings()
 {
@@ -970,7 +1040,8 @@ OBSApp::OBSApp(int &argc, char **argv, profiler_name_store_t *store)
 	  profilerNameStore(store),
 	  appLaunchUUID_(QUuid::createUuid())
 {
-	installNativeEventFilter(new OBS::NativeEventFilter);
+	nativeEventFilter_ = std::make_unique<OBS::NativeEventFilter>();
+	installNativeEventFilter(nativeEventFilter_.get());
 
 	/* fix float handling */
 #if defined(Q_OS_UNIX)
@@ -1002,21 +1073,30 @@ OBSApp::OBSApp(int &argc, char **argv, profiler_name_store_t *store)
 #endif
 	connect(qApp, &QGuiApplication::commitDataRequest, this, &OBSApp::commitData, Qt::DirectConnection);
 
+#ifndef OBS_RUST_VERSION
+	InitCrashHandler();
+#endif
+
+	sleepInhibitor = os_inhibit_sleep_create("OBS Video/audio");
+
+#ifdef __APPLE__
+	InitializeMacApplicationIcon();
+#else
+	setWindowIcon(QIcon::fromTheme("obs", QIcon(":/res/images/obs.png")));
+#endif
+
+	setDesktopFileName(OBS_DESKTOP_ID);
+
+	pluginManager_ = std::make_unique<OBS::PluginManager>();
+}
+
+void OBSApp::InitCrashHandler()
+{
 	if (multi) {
 		crashHandler_ = std::make_unique<OBS::CrashHandler>();
 	} else {
 		crashHandler_ = std::make_unique<OBS::CrashHandler>(appLaunchUUID_);
 	}
-
-	sleepInhibitor = os_inhibit_sleep_create("OBS Video/audio");
-
-#ifndef __APPLE__
-	setWindowIcon(QIcon::fromTheme("obs", QIcon(":/res/images/obs.png")));
-#endif
-
-	setDesktopFileName("com.obsproject.Studio");
-
-	pluginManager_ = std::make_unique<OBS::PluginManager>();
 }
 
 OBSApp::~OBSApp()
@@ -1024,6 +1104,8 @@ OBSApp::~OBSApp()
 	if (libobs_initialized) {
 		applicationShutdown();
 	}
+	/* Before nativeEventFilter_ is freed: QCoreApplication outlives it. */
+	removeNativeEventFilter(nativeEventFilter_.get());
 };
 
 static void move_basic_to_profiles(void)
@@ -1041,7 +1123,7 @@ static void move_basic_to_profiles(void)
 	}
 
 	const std::filesystem::path profilesPath =
-		App()->userProfilesLocation / std::filesystem::u8path("obs-studio/basic/profiles");
+		App()->userProfilesLocation / std::filesystem::u8path(OBS_CONFIG_DIRECTORY "/basic/profiles");
 
 	if (std::filesystem::exists(profilesPath)) {
 		return;
@@ -1099,7 +1181,8 @@ static void move_basic_to_scene_collections(void)
 	}
 
 	migrate_basic_scene_collection(std::filesystem::u8path(path),
-				       App()->userScenesLocation / std::filesystem::u8path("obs-studio/basic/scenes"),
+				       App()->userScenesLocation /
+					       std::filesystem::u8path(OBS_CONFIG_DIRECTORY "/basic/scenes"),
 				       Str("Untitled"));
 }
 
@@ -1109,6 +1192,17 @@ void OBSApp::AppInit()
 
 	QAccessible::installFactory(alignmentSelectorFactory);
 
+#ifdef _WIN32
+	if (!InitializeAppIdentity()) {
+		throw "Failed to initialize application identity";
+	}
+#endif
+	if (!MigrateRustConfiguration()) {
+		throw "Failed to import settings into the independent Rust configuration";
+	}
+#ifdef OBS_RUST_VERSION
+	InitCrashHandler();
+#endif
 	if (!MakeUserDirs()) {
 		throw "Failed to create required user directories";
 	}
@@ -1324,11 +1418,14 @@ bool OBSApp::OBSInit()
 
 	thumbnailManager = new ThumbnailManager(this);
 
-	mainWindow = new OBSBasic();
+	// Release the partially initialized window if OBSInit throws.
+	auto initializingWindow = std::make_unique<OBSBasic>();
+	mainWindow = initializingWindow.get();
 
 	mainWindow->setAttribute(Qt::WA_DeleteOnClose, true);
 
 	mainWindow->OBSInit();
+	initializingWindow.release();
 
 	connect(OBSBasic::Get(), &OBSBasic::mainWindowClosed, crashHandler_.get(),
 		&OBS::CrashHandler::applicationShutdownHandler);
@@ -1691,6 +1788,10 @@ vector<pair<string, string>> GetLocaleNames()
 
 int GetAppConfigPath(char *path, size_t size, const char *name)
 {
+#ifdef OBS_RUST_VERSION
+	const std::string relativePath = AppConfigRelativePath(name);
+	name = relativePath.c_str();
+#endif
 #if ALLOW_PORTABLE_MODE
 	if (portable_mode) {
 		if (name && *name) {
@@ -1708,6 +1809,10 @@ int GetAppConfigPath(char *path, size_t size, const char *name)
 
 char *GetAppConfigPathPtr(const char *name)
 {
+#ifdef OBS_RUST_VERSION
+	const std::string relativePath = AppConfigRelativePath(name);
+	name = relativePath.c_str();
+#endif
 #if ALLOW_PORTABLE_MODE
 	if (portable_mode) {
 		char path[512];

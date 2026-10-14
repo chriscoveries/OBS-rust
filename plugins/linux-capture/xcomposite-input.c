@@ -71,48 +71,48 @@ struct xcompcap {
 static void xcompcap_update(void *data, obs_data_t *settings);
 static xcb_window_t convert_encoded_window_id(const char *str, char **p_wname, char **p_wcls);
 
-xcb_atom_t get_atom(xcb_connection_t *conn, const char *name)
+xcb_atom_t get_atom(xcb_connection_t *xconn, const char *name)
 {
-	xcb_intern_atom_cookie_t atom_c = xcb_intern_atom(conn, 1, strlen(name), name);
-	xcb_intern_atom_reply_t *atom_r = xcb_intern_atom_reply(conn, atom_c, NULL);
+	xcb_intern_atom_cookie_t atom_c = xcb_intern_atom(xconn, 1, strlen(name), name);
+	xcb_intern_atom_reply_t *atom_r = xcb_intern_atom_reply(xconn, atom_c, NULL);
 	xcb_atom_t a = atom_r->atom;
 	free(atom_r);
 	return a;
 }
 
-void xcomp_gather_atoms(xcb_connection_t *conn)
+void xcomp_gather_atoms(xcb_connection_t *xconn)
 {
-	ATOM_UTF8_STRING = get_atom(conn, "UTF8_STRING");
-	ATOM_STRING = get_atom(conn, "STRING");
-	ATOM_TEXT = get_atom(conn, "TEXT");
-	ATOM_COMPOUND_TEXT = get_atom(conn, "COMPOUND_TEXT");
-	ATOM_WM_NAME = get_atom(conn, "WM_NAME");
-	ATOM_WM_CLASS = get_atom(conn, "WM_CLASS");
-	ATOM__NET_WM_NAME = get_atom(conn, "_NET_WM_NAME");
-	ATOM__NET_SUPPORTING_WM_CHECK = get_atom(conn, "_NET_SUPPORTING_WM_CHECK");
-	ATOM__NET_CLIENT_LIST = get_atom(conn, "_NET_CLIENT_LIST");
+	ATOM_UTF8_STRING = get_atom(xconn, "UTF8_STRING");
+	ATOM_STRING = get_atom(xconn, "STRING");
+	ATOM_TEXT = get_atom(xconn, "TEXT");
+	ATOM_COMPOUND_TEXT = get_atom(xconn, "COMPOUND_TEXT");
+	ATOM_WM_NAME = get_atom(xconn, "WM_NAME");
+	ATOM_WM_CLASS = get_atom(xconn, "WM_CLASS");
+	ATOM__NET_WM_NAME = get_atom(xconn, "_NET_WM_NAME");
+	ATOM__NET_SUPPORTING_WM_CHECK = get_atom(xconn, "_NET_SUPPORTING_WM_CHECK");
+	ATOM__NET_CLIENT_LIST = get_atom(xconn, "_NET_CLIENT_LIST");
 }
 
-bool xcomp_window_exists(xcb_connection_t *conn, xcb_window_t win)
+bool xcomp_window_exists(xcb_connection_t *xconn, xcb_window_t win)
 {
 	xcb_generic_error_t *err = NULL;
-	xcb_get_window_attributes_cookie_t attr_cookie = xcb_get_window_attributes(conn, win);
-	xcb_get_window_attributes_reply_t *attr = xcb_get_window_attributes_reply(conn, attr_cookie, &err);
+	xcb_get_window_attributes_cookie_t attr_cookie = xcb_get_window_attributes(xconn, win);
+	xcb_get_window_attributes_reply_t *attr = xcb_get_window_attributes_reply(xconn, attr_cookie, &err);
 
 	bool exists = err == NULL && attr->map_state == XCB_MAP_STATE_VIEWABLE;
 	free(attr);
 	return exists;
 }
 
-xcb_get_property_reply_t *xcomp_property_sync(xcb_connection_t *conn, xcb_window_t win, xcb_atom_t atom)
+xcb_get_property_reply_t *xcomp_property_sync(xcb_connection_t *xconn, xcb_window_t win, xcb_atom_t atom)
 {
 	if (atom == XCB_ATOM_NONE)
 		return NULL;
 
 	xcb_generic_error_t *err = NULL;
 	// Read properties up to 4096*4 bytes
-	xcb_get_property_cookie_t prop_cookie = xcb_get_property(conn, 0, win, atom, 0, 0, 4096);
-	xcb_get_property_reply_t *prop = xcb_get_property_reply(conn, prop_cookie, &err);
+	xcb_get_property_cookie_t prop_cookie = xcb_get_property(xconn, 0, win, atom, 0, 0, 4096);
+	xcb_get_property_reply_t *prop = xcb_get_property_reply(xconn, prop_cookie, &err);
 	if (err != NULL || xcb_get_property_value_length(prop) == 0) {
 		free(prop);
 		return NULL;
@@ -123,11 +123,11 @@ xcb_get_property_reply_t *xcomp_property_sync(xcb_connection_t *conn, xcb_window
 
 // See ICCCM https://www.x.org/releases/X11R7.6/doc/xorg-docs/specs/ICCCM/icccm.html#text_properties
 // for more info on the galactic brained string types used in Xorg.
-struct dstr xcomp_window_name(xcb_connection_t *conn, Display *disp, xcb_window_t win)
+struct dstr xcomp_window_name(xcb_connection_t *xconn, Display *xdisp, xcb_window_t win)
 {
 	struct dstr ret = {0};
 
-	xcb_get_property_reply_t *name = xcomp_property_sync(conn, win, ATOM__NET_WM_NAME);
+	xcb_get_property_reply_t *name = xcomp_property_sync(xconn, win, ATOM__NET_WM_NAME);
 	if (name) {
 		// Guaranteed to be UTF8_STRING.
 		const char *data = (const char *)xcb_get_property_value(name);
@@ -136,7 +136,7 @@ struct dstr xcomp_window_name(xcb_connection_t *conn, Display *disp, xcb_window_
 		return ret;
 	}
 
-	name = xcomp_property_sync(conn, win, ATOM_WM_NAME);
+	name = xcomp_property_sync(xconn, win, ATOM_WM_NAME);
 	if (!name) {
 		goto fail;
 	}
@@ -171,7 +171,7 @@ struct dstr xcomp_window_name(xcb_connection_t *conn, Display *disp, xcb_window_
 		};
 		char **list;
 		int len = 0;
-		if (XmbTextPropertyToTextList(disp, &xname, &list, &len) < Success || !list || len < 1) {
+		if (XmbTextPropertyToTextList(xdisp, &xname, &list, &len) < Success || !list || len < 1) {
 			free(name);
 			goto fail;
 		}
@@ -192,11 +192,11 @@ fail:
 	return ret;
 }
 
-struct dstr xcomp_window_class(xcb_connection_t *conn, xcb_window_t win)
+struct dstr xcomp_window_class(xcb_connection_t *xconn, xcb_window_t win)
 {
 	struct dstr ret = {0};
 	dstr_copy(&ret, "unknown");
-	xcb_get_property_reply_t *cls = xcomp_property_sync(conn, win, ATOM_WM_CLASS);
+	xcb_get_property_reply_t *cls = xcomp_property_sync(xconn, win, ATOM_WM_CLASS);
 	if (!cls)
 		return ret;
 
@@ -209,16 +209,16 @@ struct dstr xcomp_window_class(xcb_connection_t *conn, xcb_window_t win)
 
 // Specification for checking for ewmh support at
 // http://standards.freedesktop.org/wm-spec/wm-spec-latest.html#idm140200472693600
-bool xcomp_check_ewmh(xcb_connection_t *conn, xcb_window_t root)
+bool xcomp_check_ewmh(xcb_connection_t *xconn, xcb_window_t root)
 {
-	xcb_get_property_reply_t *check = xcomp_property_sync(conn, root, ATOM__NET_SUPPORTING_WM_CHECK);
+	xcb_get_property_reply_t *check = xcomp_property_sync(xconn, root, ATOM__NET_SUPPORTING_WM_CHECK);
 	if (!check)
 		return false;
 
 	xcb_window_t ewmh_window = ((xcb_window_t *)xcb_get_property_value(check))[0];
 	free(check);
 
-	xcb_get_property_reply_t *check2 = xcomp_property_sync(conn, ewmh_window, ATOM__NET_SUPPORTING_WM_CHECK);
+	xcb_get_property_reply_t *check2 = xcomp_property_sync(xconn, ewmh_window, ATOM__NET_SUPPORTING_WM_CHECK);
 	if (!check2)
 		return false;
 	free(check2);
@@ -226,7 +226,7 @@ bool xcomp_check_ewmh(xcb_connection_t *conn, xcb_window_t root)
 	return true;
 }
 
-struct darray xcomp_top_level_windows(xcb_connection_t *conn)
+struct darray xcomp_top_level_windows(xcb_connection_t *xconn)
 {
 	DARRAY(xcb_window_t) res = {0};
 
@@ -234,13 +234,13 @@ struct darray xcomp_top_level_windows(xcb_connection_t *conn)
 	if (ATOM__NET_CLIENT_LIST == XCB_ATOM_NONE)
 		return res.da;
 
-	xcb_screen_iterator_t screen_iter = xcb_setup_roots_iterator(xcb_get_setup(conn));
+	xcb_screen_iterator_t screen_iter = xcb_setup_roots_iterator(xcb_get_setup(xconn));
 	for (; screen_iter.rem > 0; xcb_screen_next(&screen_iter)) {
 		xcb_generic_error_t *err = NULL;
 		// Read properties up to 4096*4 bytes
 		xcb_get_property_cookie_t cl_list_cookie =
-			xcb_get_property(conn, 0, screen_iter.data->root, ATOM__NET_CLIENT_LIST, 0, 0, 4096);
-		xcb_get_property_reply_t *cl_list = xcb_get_property_reply(conn, cl_list_cookie, &err);
+			xcb_get_property(xconn, 0, screen_iter.data->root, ATOM__NET_CLIENT_LIST, 0, 0, 4096);
+		xcb_get_property_reply_t *cl_list = xcb_get_property_reply(xconn, cl_list_cookie, &err);
 		if (err != NULL) {
 			goto done;
 		}
@@ -286,7 +286,7 @@ static xcb_window_t convert_encoded_window_id(const char *str, char **p_wname, c
 	return ret;
 }
 
-xcb_window_t xcomp_find_window(xcb_connection_t *conn, Display *disp, const char *str)
+xcb_window_t xcomp_find_window(xcb_connection_t *xconn, Display *xdisp, const char *str)
 {
 	xcb_window_t ret = 0;
 	char *wname = NULL;
@@ -300,7 +300,7 @@ xcb_window_t xcomp_find_window(xcb_connection_t *conn, Display *disp, const char
 	ret = convert_encoded_window_id(str, &wname, &wcls);
 
 	// first try to find a match by the window-id
-	tlw.da = xcomp_top_level_windows(conn);
+	tlw.da = xcomp_top_level_windows(xconn);
 	if (da_find(tlw, &ret, 0) != DARRAY_INVALID) {
 		goto cleanup;
 	}
@@ -309,8 +309,8 @@ xcb_window_t xcomp_find_window(xcb_connection_t *conn, Display *disp, const char
 	for (size_t i = 0; i < tlw.num; i++) {
 		xcb_window_t cwin = *(xcb_window_t *)darray_item(sizeof(xcb_window_t), &tlw.da, i);
 
-		struct dstr cwname = xcomp_window_name(conn, disp, cwin);
-		struct dstr cwcls = xcomp_window_class(conn, cwin);
+		struct dstr cwname = xcomp_window_name(xconn, xdisp, cwin);
+		struct dstr cwcls = xcomp_window_class(xconn, cwin);
 		bool found = dstr_cmp(&cwname, wname) == 0 && dstr_cmp(&cwcls, wcls) == 0;
 
 		dstr_free(&cwname);
@@ -330,7 +330,7 @@ cleanup:
 	return ret;
 }
 
-void xcomp_cleanup_pixmap(Display *disp, struct xcompcap *s)
+void xcomp_cleanup_pixmap(Display *xdisp, struct xcompcap *s)
 {
 	if (s->gltex) {
 		gs_texture_destroy(s->gltex);
@@ -338,7 +338,7 @@ void xcomp_cleanup_pixmap(Display *disp, struct xcompcap *s)
 	}
 
 	if (s->pixmap) {
-		XFreePixmap(disp, s->pixmap);
+		XFreePixmap(xdisp, s->pixmap);
 		s->pixmap = 0;
 	}
 }
@@ -351,14 +351,14 @@ static int silence_x11_errors(Display *display, XErrorEvent *err)
 	return 0;
 }
 
-void xcomp_create_pixmap(xcb_connection_t *conn, struct xcompcap *s, int log_level)
+void xcomp_create_pixmap(xcb_connection_t *xconn, struct xcompcap *s, int log_level)
 {
 	if (!s->win)
 		return;
 
 	xcb_generic_error_t *err = NULL;
-	xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(conn, s->win);
-	xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(conn, geom_cookie, &err);
+	xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(xconn, s->win);
+	xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(xconn, geom_cookie, &err);
 	if (err != NULL) {
 		return;
 	}
@@ -379,10 +379,10 @@ void xcomp_create_pixmap(xcb_connection_t *conn, struct xcompcap *s, int log_lev
 	if (vert_borders > s->height || hori_borders > s->width)
 		return;
 
-	s->pixmap = xcb_generate_id(conn);
-	xcb_void_cookie_t name_cookie = xcb_composite_name_window_pixmap_checked(conn, s->win, s->pixmap);
+	s->pixmap = xcb_generate_id(xconn);
+	xcb_void_cookie_t name_cookie = xcb_composite_name_window_pixmap_checked(xconn, s->win, s->pixmap);
 	err = NULL;
-	if ((err = xcb_request_check(conn, name_cookie)) != NULL) {
+	if ((err = xcb_request_check(xconn, name_cookie)) != NULL) {
 		blog(log_level, "xcb_composite_name_window_pixmap failed");
 		s->pixmap = 0;
 		return;
@@ -400,15 +400,15 @@ struct reg_item {
 static DARRAY(struct reg_item) watcher_registry = {0};
 static pthread_mutex_t watcher_lock = PTHREAD_MUTEX_INITIALIZER;
 
-void watcher_register(xcb_connection_t *conn, struct xcompcap *s)
+void watcher_register(xcb_connection_t *xconn, struct xcompcap *s)
 {
 	pthread_mutex_lock(&watcher_lock);
 
-	if (xcomp_window_exists(conn, s->win)) {
+	if (xcomp_window_exists(xconn, s->win)) {
 		// Subscribe to Events
 		uint32_t vals[1] = {StructureNotifyMask | ExposureMask | VisibilityChangeMask};
-		xcb_change_window_attributes(conn, s->win, XCB_CW_EVENT_MASK, vals);
-		xcb_composite_redirect_window(conn, s->win, XCB_COMPOSITE_REDIRECT_AUTOMATIC);
+		xcb_change_window_attributes(xconn, s->win, XCB_CW_EVENT_MASK, vals);
+		xcb_composite_redirect_window(xconn, s->win, XCB_COMPOSITE_REDIRECT_AUTOMATIC);
 
 		da_push_back(watcher_registry, (&(struct reg_item){s, s->win}));
 	}
@@ -416,7 +416,7 @@ void watcher_register(xcb_connection_t *conn, struct xcompcap *s)
 	pthread_mutex_unlock(&watcher_lock);
 }
 
-void watcher_unregister(xcb_connection_t *conn, struct xcompcap *s)
+void watcher_unregister(xcb_connection_t *xconn, struct xcompcap *s)
 {
 	pthread_mutex_lock(&watcher_lock);
 	size_t idx = DARRAY_INVALID;
@@ -448,10 +448,10 @@ void watcher_unregister(xcb_connection_t *conn, struct xcompcap *s)
 		}
 	}
 
-	if (!windowInUse && xcomp_window_exists(conn, s->win)) {
+	if (!windowInUse && xcomp_window_exists(xconn, s->win)) {
 		// Last source released, stop listening for events.
 		uint32_t vals[1] = {0};
-		xcb_change_window_attributes(conn, win, XCB_CW_EVENT_MASK, vals);
+		xcb_change_window_attributes(xconn, win, XCB_CW_EVENT_MASK, vals);
 	}
 
 done:
@@ -608,16 +608,16 @@ static void xcompcap_video_tick(void *data, float seconds)
 		s->window_hooked = false;
 
 		signal_handler_t *sh = obs_source_get_signal_handler(s->source);
-		calldata_t data = {0};
-		calldata_set_ptr(&data, "source", s->source);
-		signal_handler_signal(sh, "unhooked", &data);
-		calldata_free(&data);
+		calldata_t signal_data = {0};
+		calldata_set_ptr(&signal_data, "source", s->source);
+		signal_handler_signal(sh, "unhooked", &signal_data);
+		calldata_free(&signal_data);
 	}
 
 	// Reacquire window after interval or immediately if reconfigured.
 	s->window_check_time += seconds;
 	bool window_lost = !xcomp_window_exists(conn, s->win) || !s->gltex;
-	if ((window_lost && s->window_check_time > FIND_WINDOW_INTERVAL) || s->window_changed) {
+	if ((window_lost && (double)s->window_check_time > FIND_WINDOW_INTERVAL) || s->window_changed) {
 		watcher_unregister(conn, s);
 
 		s->window_changed = false;
@@ -629,16 +629,16 @@ static void xcompcap_video_tick(void *data, float seconds)
 			s->window_hooked = true;
 
 			signal_handler_t *sh = obs_source_get_signal_handler(s->source);
-			calldata_t data = {0};
-			calldata_set_ptr(&data, "source", s->source);
+			calldata_t signal_data = {0};
+			calldata_set_ptr(&signal_data, "source", s->source);
 			struct dstr wname = xcomp_window_name(conn, disp, s->win);
 			struct dstr wcls = xcomp_window_class(conn, s->win);
-			calldata_set_string(&data, "name", wname.array);
-			calldata_set_string(&data, "class", wcls.array);
-			signal_handler_signal(sh, "hooked", &data);
+			calldata_set_string(&signal_data, "name", wname.array);
+			calldata_set_string(&signal_data, "class", wcls.array);
+			signal_handler_signal(sh, "hooked", &signal_data);
 			dstr_free(&wname);
 			dstr_free(&wcls);
-			calldata_free(&data);
+			calldata_free(&signal_data);
 		}
 
 		watcher_register(conn, s);
@@ -710,8 +710,8 @@ struct WindowInfo {
 
 static int cmp_wi(const void *a, const void *b)
 {
-	struct WindowInfo *awi = (struct WindowInfo *)a;
-	struct WindowInfo *bwi = (struct WindowInfo *)b;
+	const struct WindowInfo *awi = (const struct WindowInfo *)a;
+	const struct WindowInfo *bwi = (const struct WindowInfo *)b;
 	const char *a_name = awi->name_lower.array ? awi->name_lower.array : "";
 	const char *b_name = bwi->name_lower.array ? bwi->name_lower.array : "";
 	return strcmp(a_name, b_name);
@@ -870,10 +870,10 @@ static void xcompcap_update(void *data, obs_data_t *settings)
 		s->window_hooked = false;
 
 		signal_handler_t *sh = obs_source_get_signal_handler(s->source);
-		calldata_t data = {0};
-		calldata_set_ptr(&data, "source", s->source);
-		signal_handler_signal(sh, "unhooked", &data);
-		calldata_free(&data);
+		calldata_t signal_data = {0};
+		calldata_set_ptr(&signal_data, "source", s->source);
+		signal_handler_signal(sh, "unhooked", &signal_data);
+		calldata_free(&signal_data);
 	}
 	bfree(prev_name);
 
@@ -882,16 +882,16 @@ static void xcompcap_update(void *data, obs_data_t *settings)
 		s->window_hooked = true;
 
 		signal_handler_t *sh = obs_source_get_signal_handler(s->source);
-		calldata_t data = {0};
-		calldata_set_ptr(&data, "source", s->source);
+		calldata_t signal_data = {0};
+		calldata_set_ptr(&signal_data, "source", s->source);
 		struct dstr wname = xcomp_window_name(conn, disp, s->win);
 		struct dstr wcls = xcomp_window_class(conn, s->win);
-		calldata_set_string(&data, "name", wname.array);
-		calldata_set_string(&data, "class", wcls.array);
-		signal_handler_signal(sh, "hooked", &data);
+		calldata_set_string(&signal_data, "name", wname.array);
+		calldata_set_string(&signal_data, "class", wcls.array);
+		signal_handler_signal(sh, "hooked", &signal_data);
 		dstr_free(&wname);
 		dstr_free(&wcls);
-		calldata_free(&data);
+		calldata_free(&signal_data);
 	}
 
 	if (s->win && s->windowName) {

@@ -185,7 +185,7 @@ static bool gl_shader_init(struct gs_shader *shader, struct gl_shader_parser *gl
 	if (!gl_success("glCreateShader") || !shader->obj)
 		return false;
 
-	glShaderSource(shader->obj, 1, (const GLchar **)&glsp->gl_string.array, 0);
+	glShaderSource(shader->obj, 1, (const GLchar **)(uintptr_t)&glsp->gl_string.array, 0);
 	if (!gl_success("glShaderSource"))
 		return false;
 

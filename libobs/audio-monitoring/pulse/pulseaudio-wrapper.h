@@ -41,13 +41,13 @@ bool devices_match(const char *id1, const char *id2);
 /**
  * Initialize the pulseaudio mainloop and increase the reference count
  */
-int_fast32_t pulseaudio_init();
+int_fast32_t pulseaudio_init(void);
 
 /**
  * Unreference the pulseaudio mainloop, when the reference count reaches
  * zero the mainloop will automatically be destroyed
  */
-void pulseaudio_unref();
+void pulseaudio_unref(void);
 
 /**
  * Lock the mainloop
@@ -61,21 +61,21 @@ void pulseaudio_unref();
  *
  * @warning do not use with pulseaudio_ wrapper functions
  */
-void pulseaudio_lock();
+void pulseaudio_lock(void);
 
 /**
  * Unlock the mainloop
  *
  * @see pulseaudio_lock()
  */
-void pulseaudio_unlock();
+void pulseaudio_unlock(void);
 
 /**
  * Wait for events to happen
  *
  * This function should be called when waiting for an event to happen.
  */
-void pulseaudio_wait();
+void pulseaudio_wait(void);
 
 /**
  * Wait for accept signal from calling thread
@@ -93,7 +93,7 @@ void pulseaudio_signal(int wait_for_accept);
  *
  * This function is used in conjunction with pulseaudio_signal()
  */
-void pulseaudio_accept();
+void pulseaudio_accept(void);
 
 /**
  * Request source information

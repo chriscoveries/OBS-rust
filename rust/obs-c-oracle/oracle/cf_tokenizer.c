@@ -23,7 +23,10 @@
 
 #include "util/cf-tokenizer.c"
 
+/* The declarations are part of the macros: the exports have no header. */
 #define LAYOUT(type)                          \
+	size_t oracle_##type##_size(void);    \
+	size_t oracle_##type##_align(void);   \
 	size_t oracle_##type##_size(void)     \
 	{                                     \
 		return sizeof(struct type);   \
@@ -33,6 +36,7 @@
 		return _Alignof(struct type); \
 	}
 #define OFFSET(type, field)                          \
+	size_t oracle_##type##_offset_##field(void); \
 	size_t oracle_##type##_offset_##field(void)  \
 	{                                            \
 		return offsetof(struct type, field); \
@@ -51,6 +55,9 @@ OFFSET(cf_lexer, reformatted)
 OFFSET(cf_lexer, write_offset)
 OFFSET(cf_lexer, tokens)
 OFFSET(cf_lexer, unexpected_eof)
+
+/* Test-only export called from Rust over FFI. */
+size_t oracle_cf_token_type_size(void);
 
 size_t oracle_cf_token_type_size(void)
 {

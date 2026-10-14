@@ -60,6 +60,10 @@ static inline void from_locale(char *buffer)
 		*pos = '.';
 }
 
+/* Test-only exports called from Rust over FFI. */
+double os_strtod(const char *str);
+int os_dtostr(double value, char *dst, size_t size);
+
 /* platform.c */
 double os_strtod(const char *str)
 {
@@ -122,40 +126,4 @@ int os_dtostr(double value, char *dst, size_t size)
 	return (int)length;
 }
 
-/* platform-windows.c. Unix os_file_exists is the Rust shim. */
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-
-static wchar_t *utf8_to_wide_cf(const char *path)
-{
-	int n;
-	wchar_t *wide;
-
-	if (!path)
-		return NULL;
-	n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
-	if (n <= 0)
-		return NULL;
-	wide = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
-	if (!wide)
-		return NULL;
-	if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, n) != n) {
-		free(wide);
-		return NULL;
-	}
-	return wide;
-}
-
-bool os_file_exists(const char *path)
-{
-	wchar_t *wpath = utf8_to_wide_cf(path);
-	DWORD res;
-
-	if (!wpath)
-		return false;
-	res = GetFileAttributesW(wpath);
-	free(wpath);
-	return res != INVALID_FILE_ATTRIBUTES;
-}
-#endif
+/* os_file_exists is the Rust platform shim on Unix and Windows. */

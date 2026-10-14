@@ -2518,7 +2518,7 @@ EXPORT uint64_t obs_encoder_get_pause_offset(const obs_encoder_t *encoder);
  * destroy the group until it becomes completely inactive.
  */
 EXPORT bool obs_encoder_set_group(obs_encoder_t *encoder, obs_encoder_group_t *group);
-EXPORT obs_encoder_group_t *obs_encoder_group_create();
+EXPORT obs_encoder_group_t *obs_encoder_group_create(void);
 EXPORT void obs_encoder_group_destroy(obs_encoder_group_t *group);
 
 /* ------------------------------------------------------------------------- */

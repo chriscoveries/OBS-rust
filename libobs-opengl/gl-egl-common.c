@@ -58,7 +58,7 @@ static bool find_gl_extension(const char *extension)
 
 	glGetIntegerv(GL_NUM_EXTENSIONS, &n);
 	for (i = 0; i < n; i++) {
-		const char *e = (char *)glGetStringi(GL_EXTENSIONS, i);
+		const char *e = (const char *)glGetStringi(GL_EXTENSIONS, i);
 		if (extension && strcmp(e, extension) == 0)
 			return true;
 	}

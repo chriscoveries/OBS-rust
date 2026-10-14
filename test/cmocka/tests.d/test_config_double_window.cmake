@@ -1,0 +1,7 @@
+add_executable(test_config_double_window test_config_double_window.c)
+target_include_directories(test_config_double_window PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(test_config_double_window PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
+
+add_dependencies(cmocka-tests test_config_double_window)
+add_test(NAME test_config_double_window COMMAND test_config_double_window)
+set_tests_properties(test_config_double_window PROPERTIES TIMEOUT 20)

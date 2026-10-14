@@ -490,7 +490,7 @@ void obs_encoder_destroy(obs_encoder_t *encoder)
 		pthread_mutex_destroy(&encoder->roi_mutex);
 		obs_context_data_free(&encoder->context);
 		if (encoder->owns_info_id)
-			bfree((void *)encoder->info.id);
+			bfree((void *)(uintptr_t)encoder->info.id);
 		if (encoder->last_error_message)
 			bfree(encoder->last_error_message);
 		if (encoder->fps_override)
@@ -879,7 +879,8 @@ static inline void obs_encoder_start_internal(obs_encoder_t *encoder, encoded_ca
 	first = (encoder->callbacks.num == 0);
 
 	size_t idx = get_callback_idx(encoder, new_packet, param);
-	if (idx == DARRAY_INVALID)
+	bool added = idx == DARRAY_INVALID;
+	if (added)
 		da_push_back(encoder->callbacks, &cb);
 
 	pthread_mutex_unlock(&encoder->callbacks_mutex);
@@ -890,6 +891,11 @@ static inline void obs_encoder_start_internal(obs_encoder_t *encoder, encoded_ca
 
 		encoder->cur_pts = 0;
 		add_connection(encoder);
+	} else if (added && encoder->info.type == OBS_ENCODER_VIDEO && encoder->info.request_keyframe) {
+		/* The new output gets no packet before a keyframe (see
+		 * send_first_video_packet), and the running encoder's next
+		 * scheduled one can be many seconds away. */
+		encoder->info.request_keyframe(encoder->context.data);
 	}
 }
 
@@ -2269,6 +2275,7 @@ bool obs_encoder_set_group(obs_encoder_t *encoder, obs_encoder_group_t *group)
 			return false;
 		}
 		da_erase_item(old_group->encoders, &encoder);
+		encoder->encoder_group = NULL;
 		obs_encoder_release(encoder);
 		pthread_mutex_unlock(&old_group->mutex);
 	}
@@ -2297,7 +2304,7 @@ bool obs_encoder_set_group(obs_encoder_t *encoder, obs_encoder_group_t *group)
 	return true;
 }
 
-obs_encoder_group_t *obs_encoder_group_create()
+obs_encoder_group_t *obs_encoder_group_create(void)
 {
 	struct obs_encoder_group *group = bzalloc(sizeof(struct obs_encoder_group));
 

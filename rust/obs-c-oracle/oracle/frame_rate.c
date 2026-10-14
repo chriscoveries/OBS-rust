@@ -8,6 +8,15 @@
 #include "util/c99defs.h"
 #include "media-io/frame-rate.h"
 
+/* Test-only exports called from Rust over FFI. */
+double oracle_media_frames_per_second_to_frame_interval(struct media_frames_per_second fps);
+double oracle_media_frames_per_second_to_fps(struct media_frames_per_second fps);
+bool oracle_media_frames_per_second_is_valid(struct media_frames_per_second fps);
+size_t oracle_media_frames_per_second_size(void);
+size_t oracle_media_frames_per_second_align(void);
+size_t oracle_media_frames_per_second_offset_numerator(void);
+size_t oracle_media_frames_per_second_offset_denominator(void);
+
 double oracle_media_frames_per_second_to_frame_interval(struct media_frames_per_second fps)
 {
 	return media_frames_per_second_to_frame_interval(fps);

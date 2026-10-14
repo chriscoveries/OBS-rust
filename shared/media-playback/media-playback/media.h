@@ -58,6 +58,11 @@ struct mp_media {
 	struct SwsContext *swscale;
 	int scale_linesizes[4];
 	uint8_t *scale_pic[4];
+	enum AVPixelFormat scale_src_format;
+	int scale_src_width;
+	int scale_src_height;
+	int scale_space;
+	int scale_range;
 
 	DARRAY(AVPacket *) packet_pool;
 	struct mp_decode v;
@@ -109,6 +114,12 @@ struct mp_media {
 	bool seek;
 	bool seek_next_ts;
 	int64_t seek_pos;
+
+	/* after a seek, frames that end at or before this time (in decoded
+	 * pts, nanoseconds) are dropped, so playback starts at the seek
+	 * position, not at the keyframe before it */
+	bool seek_exact;
+	int64_t seek_target_ns;
 };
 
 typedef struct mp_media mp_media_t;

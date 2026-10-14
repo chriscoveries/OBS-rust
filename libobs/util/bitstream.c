@@ -11,7 +11,7 @@ void bitstream_reader_init(struct bitstream_reader *r, uint8_t *data, size_t len
 	r->len = len;
 }
 
-uint8_t bitstream_reader_read_bit(struct bitstream_reader *r)
+static uint8_t bitstream_reader_read_bit(struct bitstream_reader *r)
 {
 	if (r->pos >= r->len)
 		return 0;

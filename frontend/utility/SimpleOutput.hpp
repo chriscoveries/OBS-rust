@@ -54,6 +54,7 @@ struct SimpleOutput : BasicOutputHandler {
 	virtual bool StartStreaming(obs_service_t *service) override;
 	virtual bool StartRecording() override;
 	virtual bool StartReplayBuffer() override;
+	virtual void UpdateReplayBufferNaming() override;
 	virtual void StopStreaming(bool force) override;
 	virtual void StopRecording(bool force) override;
 	virtual void StopReplayBuffer(bool force) override;

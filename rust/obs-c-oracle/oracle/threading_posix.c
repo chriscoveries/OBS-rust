@@ -23,6 +23,9 @@
 
 #include "util/threading-posix.c"
 
+/* Test-only exports called from Rust over FFI. */
+int oracle_os_sem_trywait(os_sem_t *sem);
+
 /* Parity-test probe only, not part of util/threading.h: a non-blocking
  * take that exposes a wrong credit count through return codes alone
  * (e.g. a post that adds two credits). */

@@ -123,7 +123,7 @@ static void free_files(media_file_array_t *files)
 
 static inline bool chroma_is(const char *chroma, const char *val)
 {
-	return *(uint32_t *)chroma == *(uint32_t *)val;
+	return *(const uint32_t *)chroma == *(const uint32_t *)val;
 }
 
 static enum video_format convert_vlc_video_format(char *chroma, bool *full)
@@ -361,7 +361,7 @@ static void vlcs_destroy(void *data)
 		libvlc_media_player_release_(c->media_player);
 	}
 
-	bfree((void *)c->audio.data[0]);
+	bfree((void *)(uintptr_t)c->audio.data[0]);
 	obs_source_frame_free(&c->frame);
 
 	free_files(&c->files);
@@ -508,12 +508,12 @@ static void vlcs_audio_play(void *data, const void *samples, unsigned count, int
 	}
 
 	if (c->audio_capacity < count) {
-		c->audio.data[0] = brealloc((void *)c->audio.data[0], size);
+		c->audio.data[0] = brealloc((void *)(uintptr_t)c->audio.data[0], size);
 		c->audio_capacity = count;
 	}
 
-	memcpy((void *)c->audio.data[0], samples, size);
-	vlc_audio_reorder((void *)c->audio.data[0], count, get_audio_channels(c->audio.speakers),
+	memcpy((void *)(uintptr_t)c->audio.data[0], samples, size);
+	vlc_audio_reorder((void *)(uintptr_t)c->audio.data[0], count, get_audio_channels(c->audio.speakers),
 			  get_audio_bytes_per_channel(c->audio.format));
 	c->audio.timestamp = (uint64_t)pts * 1000ULL - time_start;
 	c->audio.frames = count;
@@ -562,7 +562,7 @@ static int vlcs_audio_setup(void **p_data, char *format, unsigned *rate, unsigne
 		return 0;
 
 	c->audio_capacity = 0;
-	bfree((void *)c->audio.data[0]);
+	bfree((void *)(uintptr_t)c->audio.data[0]);
 
 	memset(&c->audio, 0, sizeof(c->audio));
 	c->audio.speakers = (enum speaker_layout) * channels;
@@ -759,13 +759,13 @@ static void vlcs_update(void *data, obs_data_t *settings)
 	c->shuffle = obs_data_get_bool(settings, S_SHUFFLE);
 
 	if (c->files.num > 1 && c->shuffle) {
-		media_file_array_t new_files;
+		media_file_array_t shuffled_files;
 		DARRAY(size_t) idxs;
 
-		da_init(new_files);
+		da_init(shuffled_files);
 		da_init(idxs);
 		da_resize(idxs, c->files.num);
-		da_reserve(new_files, c->files.num);
+		da_reserve(shuffled_files, c->files.num);
 
 		for (size_t i = 0; i < c->files.num; i++) {
 			idxs.array[i] = i;
@@ -773,13 +773,13 @@ static void vlcs_update(void *data, obs_data_t *settings)
 		for (size_t i = idxs.num; i > 0; i--) {
 			size_t val = rand() % i;
 			size_t idx = idxs.array[val];
-			da_push_back(new_files, &c->files.array[idx]);
+			da_push_back(shuffled_files, &c->files.array[idx]);
 			da_erase(idxs, val);
 		}
 
 		da_free(c->files);
 		da_free(idxs);
-		c->files = new_files;
+		c->files = shuffled_files;
 	}
 
 	/* ------------------------------------- */
@@ -1204,8 +1204,9 @@ static obs_missing_files_t *vlcs_missingfiles(void *data)
 
 		if (strcmp(path, "") != 0) {
 			if (!os_file_exists(path) && strstr(path, "://") == NULL) {
-				obs_missing_file_t *file = obs_missing_file_create(
-					path, missing_file_callback, OBS_MISSING_FILE_SOURCE, source, (void *)path);
+				obs_missing_file_t *file = obs_missing_file_create(path, missing_file_callback,
+										   OBS_MISSING_FILE_SOURCE, source,
+										   (void *)(uintptr_t)path);
 
 				obs_missing_files_add_file(missing_files, file);
 			}

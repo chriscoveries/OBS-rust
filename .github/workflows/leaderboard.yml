@@ -29,21 +29,18 @@ jobs:
         with:
           ref: leaderboard
           path: data
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Generate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp tools/leaderboard/site/* data/
           touch data/.nojekyll
-          python3 tools/leaderboard/generate.py --repo "${{ github.repository }}" --out data/leaderboard.json
+          uv run --python 3.12 tools/leaderboard/generate.py --repo "${{ github.repository }}" --out data/leaderboard.json
       - name: Render JPEG
         run: |
-          pip install playwright==1.49.1
-          playwright install --with-deps chromium
-          python3 tools/leaderboard/render.py data
+          uv run --python 3.12 --with playwright==1.49.1 playwright install --with-deps chromium
+          uv run --python 3.12 --with playwright==1.49.1 tools/leaderboard/render.py data
       - name: Commit to leaderboard branch
         working-directory: data
         run: |

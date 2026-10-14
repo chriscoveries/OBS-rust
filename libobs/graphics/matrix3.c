@@ -94,10 +94,16 @@ void matrix3_rotate_aa(struct matrix3 *dst, const struct matrix3 *m, const struc
 
 void matrix3_scale(struct matrix3 *dst, const struct matrix3 *m, const struct vec3 *v)
 {
-	vec3_mul(&dst->x, &m->x, v);
-	vec3_mul(&dst->y, &m->y, v);
-	vec3_mul(&dst->z, &m->z, v);
-	vec3_mul(&dst->t, &m->t, v);
+	struct matrix3 src;
+	struct vec3 scale;
+
+	matrix3_copy(&src, m);
+	vec3_copy(&scale, v);
+
+	vec3_mul(&dst->x, &src.x, &scale);
+	vec3_mul(&dst->y, &src.y, &scale);
+	vec3_mul(&dst->z, &src.z, &scale);
+	vec3_mul(&dst->t, &src.t, &scale);
 }
 
 void matrix3_transpose(struct matrix3 *dst, const struct matrix3 *m)
@@ -123,16 +129,28 @@ void matrix3_inv(struct matrix3 *dst, const struct matrix3 *m)
 
 void matrix3_mirror(struct matrix3 *dst, const struct matrix3 *m, const struct plane *p)
 {
-	vec3_mirrorv(&dst->x, &m->x, &p->dir);
-	vec3_mirrorv(&dst->y, &m->y, &p->dir);
-	vec3_mirrorv(&dst->z, &m->z, &p->dir);
-	vec3_mirror(&dst->t, &m->t, p);
+	struct matrix3 src;
+	struct plane plane;
+
+	matrix3_copy(&src, m);
+	plane_copy(&plane, p);
+
+	vec3_mirrorv(&dst->x, &src.x, &plane.dir);
+	vec3_mirrorv(&dst->y, &src.y, &plane.dir);
+	vec3_mirrorv(&dst->z, &src.z, &plane.dir);
+	vec3_mirror(&dst->t, &src.t, &plane);
 }
 
 void matrix3_mirrorv(struct matrix3 *dst, const struct matrix3 *m, const struct vec3 *v)
 {
-	vec3_mirrorv(&dst->x, &m->x, v);
-	vec3_mirrorv(&dst->y, &m->y, v);
-	vec3_mirrorv(&dst->z, &m->z, v);
-	vec3_mirrorv(&dst->t, &m->t, v);
+	struct matrix3 src;
+	struct vec3 vec;
+
+	matrix3_copy(&src, m);
+	vec3_copy(&vec, v);
+
+	vec3_mirrorv(&dst->x, &src.x, &vec);
+	vec3_mirrorv(&dst->y, &src.y, &vec);
+	vec3_mirrorv(&dst->z, &src.z, &vec);
+	vec3_mirrorv(&dst->t, &src.t, &vec);
 }

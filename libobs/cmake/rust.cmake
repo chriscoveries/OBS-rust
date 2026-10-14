@@ -2,6 +2,15 @@
 # sources they replace. See docs/rust-port/testing-policy.md.
 
 include(FetchContent)
+include("${CMAKE_CURRENT_LIST_DIR}/rust-target.cmake")
+
+# Build the staticlib for the architecture libobs targets, not the host's.
+if(NOT Rust_CARGO_TARGET)
+  obs_rust_cargo_target(_obs_rust_target "${OS_MACOS}" "${CMAKE_OSX_ARCHITECTURES}")
+  if(_obs_rust_target)
+    set(Rust_CARGO_TARGET "${_obs_rust_target}" CACHE STRING "Rust target triple for libobs-rust")
+  endif()
+endif()
 
 FetchContent_Declare(Corrosion GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git GIT_TAG v0.5.2)
 FetchContent_MakeAvailable(Corrosion)

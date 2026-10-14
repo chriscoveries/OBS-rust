@@ -77,7 +77,12 @@ EXPORT void base_set_crash_handler(void (*handler)(const char *, va_list, void *
 EXPORT void blogva(int log_level, const char *format, va_list args);
 
 #if !defined(_MSC_VER) && !defined(SWIG)
+#if defined(__MINGW32__)
+/* MinGW's printf archetype is the MS one; libobs formats are C99 (%zu). */
+#define PRINTFATTR(f, a) __attribute__((__format__(__gnu_printf__, f, a)))
+#else
 #define PRINTFATTR(f, a) __attribute__((__format__(__printf__, f, a)))
+#endif
 #else
 #define PRINTFATTR(f, a)
 #endif
