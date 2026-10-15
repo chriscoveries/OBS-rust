@@ -1066,7 +1066,7 @@ bool get_cached_pixel_buffer(struct vt_encoder *enc, CVPixelBufferRef *buf)
 	OSStatus code;
 	CVPixelBufferPoolRef pool = VTCompressionSessionGetPixelBufferPool(enc->session);
 	if (!pool)
-		return kCVReturnError;
+		return false;
 
 	CVPixelBufferRef pixbuf;
 	code = CVPixelBufferPoolCreatePixelBuffer(NULL, pool, &pixbuf);
