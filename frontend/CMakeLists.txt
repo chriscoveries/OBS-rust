@@ -98,6 +98,7 @@ if(ENABLE_UNIT_TESTS)
         OBS::frontend-api
         OBS::libobs
         OBS::properties-view
+        CURL::libcurl
     )
     add_dependencies(test_preflight_ui_render obs-preflight-rust)
     if(OS_MACOS)
