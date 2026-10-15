@@ -63,3 +63,7 @@ soldr cargo clippy --all-targets -- -D warnings: command not found (127)
 ```
 
 These are pending gates, not passes. Before upstream promotion require native OFF/ON, format/lint and attention to fork #85: its SIMD noise-gate experiment must incorporate the intentional zero-hysteresis behavioural fix into its parity oracle once accepted. Do not edit that other branch here.
+
+## Fixture refinement after source review
+
+Test correction `d7e9ff1e8cfe115b95cd4d2a3a35f045ec4faa9e` ends the 128-sample opening burst **before** sending silent frames. The earlier fixture checked `is_open` after a mixed 1,024-sample block containing silence, which could correctly close the fixed gate and create a false GREEN failure. The isolated Clang -O2 RED and GREEN reproduction was rerun with this exact block separation: RED `failures=20`, GREEN `failures=0`. Full native test execution and format checks remain outstanding.
