@@ -80,6 +80,7 @@ struct FramePair {
 class FramePairer {
 public:
 	explicit FramePairer(size_t source_capacity = 8);
+	void SetSourceCapacity(size_t source_capacity);
 	void Reset();
 	void PushSource(std::shared_ptr<const PixelFrame> source);
 	std::optional<FramePair> Match(std::shared_ptr<const PixelFrame> encoded, uint64_t tolerance_ns);

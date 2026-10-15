@@ -321,6 +321,16 @@ bool EncodedVideoDecoder::Decode(const EncodedVideoPacket &packet, std::vector<P
 
 FramePairer::FramePairer(size_t source_capacity) : source_capacity(source_capacity) {}
 
+void FramePairer::SetSourceCapacity(size_t source_capacity_)
+{
+	source_capacity = source_capacity_;
+	if (source_frames.size() > source_capacity) {
+		source_frames.erase(source_frames.begin(),
+				    source_frames.begin() +
+					    static_cast<std::ptrdiff_t>(source_frames.size() - source_capacity));
+	}
+}
+
 void FramePairer::Reset()
 {
 	source_frames.clear();
@@ -360,7 +370,6 @@ std::optional<FramePair> FramePairer::Match(std::shared_ptr<const PixelFrame> en
 		return std::nullopt;
 	}
 	FramePair pair{source_frames[best_index], std::move(encoded)};
-	source_frames.erase(source_frames.begin() + static_cast<std::ptrdiff_t>(best_index));
 	return pair;
 }
 

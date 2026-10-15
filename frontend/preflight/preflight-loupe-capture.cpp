@@ -14,6 +14,8 @@ constexpr uint32_t RAW_VIDEO_FRAME_RATE_DIVISOR = 4;
 constexpr size_t MAX_QUEUED_PACKETS = 8;
 constexpr size_t MAX_PACKET_BYTES = 8 * 1024 * 1024;
 constexpr uint64_t MAX_RAW_FRAME_BYTES = 64 * 1024 * 1024;
+constexpr size_t MAX_SOURCE_HISTORY_FRAMES = 16;
+constexpr uint64_t MAX_SOURCE_HISTORY_BYTES = 64 * 1024 * 1024;
 
 } // namespace
 
@@ -68,6 +70,10 @@ bool PreflightLoupeCapture::Start(obs_output_t *output_, obs_encoder_t *encoder)
 	source_width = video_info.output_width;
 	source_height = video_info.output_height;
 	pair_tolerance_ns = std::max<uint64_t>(obs_get_frame_interval_ns() * 2, 1);
+	const uint64_t source_frame_bytes = static_cast<uint64_t>(source_width) * source_height * 4;
+	const size_t source_history_frames = static_cast<size_t>(std::max<uint64_t>(
+		1, std::min<uint64_t>(MAX_SOURCE_HISTORY_FRAMES, MAX_SOURCE_HISTORY_BYTES / source_frame_bytes)));
+	pairer.SetSourceCapacity(source_history_frames);
 	{
 		std::lock_guard lock(mutex);
 		packets.clear();
@@ -78,6 +84,8 @@ bool PreflightLoupeCapture::Start(obs_output_t *output_, obs_encoder_t *encoder)
 		decoder_ready = false;
 		decoder_opened = false;
 		await_keyframe = false;
+		stats = {};
+		last_packet_capture_timestamp_ns = 0;
 		status = "Starting the encoded-frame decoder.";
 	}
 	worker = std::thread(&PreflightLoupeCapture::DecodeWorker, this);
@@ -153,6 +161,12 @@ std::shared_ptr<const preflight::loupe::FramePair> PreflightLoupeCapture::Latest
 	return latest_pair;
 }
 
+PreflightLoupeCaptureStats PreflightLoupeCapture::Stats() const
+{
+	std::lock_guard lock(mutex);
+	return stats;
+}
+
 std::string PreflightLoupeCapture::Status() const
 {
 	std::lock_guard lock(mutex);
@@ -169,8 +183,31 @@ void PreflightLoupeCapture::RawVideoCallback(void *param, video_data *frame)
 void PreflightLoupeCapture::PacketCallback(obs_output_t *, encoder_packet *packet, encoder_packet_time *packet_time,
 					   void *param)
 {
-	if (param && packet && packet_time && packet->type == OBS_ENCODER_VIDEO) {
-		static_cast<PreflightLoupeCapture *>(param)->QueueEncodedPacket(*packet, *packet_time);
+	if (!param) {
+		return;
+	}
+	auto *capture = static_cast<PreflightLoupeCapture *>(param);
+	{
+		std::lock_guard lock(capture->mutex);
+		++capture->stats.packet_callback_calls;
+		if (!packet) {
+			++capture->stats.packet_callbacks_null_packet;
+			return;
+		}
+		if (packet->type != OBS_ENCODER_VIDEO) {
+			++capture->stats.packet_callbacks_non_video;
+			return;
+		}
+		if (!packet_time) {
+			++capture->stats.packet_callbacks_without_timing;
+			return;
+		}
+		if (packet_time->cts == 0) {
+			++capture->stats.packet_callbacks_zero_timing;
+		}
+	}
+	if (packet_time) {
+		capture->QueueEncodedPacket(*packet, *packet_time);
 	}
 }
 
@@ -196,7 +233,12 @@ void PreflightLoupeCapture::PushSourceFrame(const video_data &frame)
 	}
 	std::lock_guard lock(mutex);
 	if (accepting) {
+		if (stats.source_frames == 0) {
+			stats.first_source_timestamp_ns = source->capture_timestamp_ns;
+		}
+		stats.last_source_timestamp_ns = source->capture_timestamp_ns;
 		pairer.PushSource(std::move(source));
+		++stats.source_frames;
 	}
 }
 
@@ -218,6 +260,16 @@ void PreflightLoupeCapture::QueueEncodedPacket(const encoder_packet &packet, con
 		if (!accepting) {
 			return;
 		}
+		if (last_packet_capture_timestamp_ns != 0 &&
+		    copy.capture_timestamp_ns < last_packet_capture_timestamp_ns) {
+			++stats.reordered_packet_timestamps;
+		}
+		if (stats.encoded_packets == 0) {
+			stats.first_packet_timestamp_ns = copy.capture_timestamp_ns;
+		}
+		stats.last_packet_timestamp_ns = copy.capture_timestamp_ns;
+		last_packet_capture_timestamp_ns = copy.capture_timestamp_ns;
+		++stats.encoded_packets;
 		if (packets.size() >= MAX_QUEUED_PACKETS) {
 			packets.clear();
 			await_keyframe = true;
@@ -235,11 +287,18 @@ void PreflightLoupeCapture::QueueEncodedPacket(const encoder_packet &packet, con
 
 void PreflightLoupeCapture::DecodeWorker()
 {
+	{
+		std::lock_guard lock(mutex);
+		stats.worker_running = true;
+	}
 	const bool opened = decoder.Open(decoder_config);
 	{
 		std::lock_guard lock(mutex);
 		decoder_ready = true;
 		decoder_opened = opened;
+		if (!opened) {
+			stats.worker_running = false;
+		}
 	}
 	condition.notify_all();
 	if (!opened) {
@@ -281,12 +340,30 @@ void PreflightLoupeCapture::DecodeWorker()
 		for (auto &decoded : decoded_frames) {
 			auto encoded = std::make_shared<preflight::loupe::PixelFrame>(std::move(decoded));
 			std::lock_guard lock(mutex);
+			++stats.decoded_frames;
+			if (encoded->width != decoder_config.width || encoded->height != decoder_config.height) {
+				++stats.wrong_size_decoded_frames;
+			}
 			const auto pair = pairer.Match(encoded, pair_tolerance_ns);
 			if (pair) {
+				++stats.paired_frames;
+				const uint64_t source_timestamp = pair->source->capture_timestamp_ns;
+				const uint64_t encoded_timestamp = pair->encoded->capture_timestamp_ns;
+				const uint64_t delta = source_timestamp > encoded_timestamp
+							       ? source_timestamp - encoded_timestamp
+							       : encoded_timestamp - source_timestamp;
+				stats.max_capture_timestamp_delta_ns =
+					std::max(stats.max_capture_timestamp_delta_ns, delta);
 				latest_pair = std::make_shared<const preflight::loupe::FramePair>(*pair);
 				status = "Showing matching source and encoded frames at 400%.";
+			} else {
+				++stats.unpaired_decoded_frames;
 			}
 		}
 	}
 	decoder.Close();
+	{
+		std::lock_guard lock(mutex);
+		stats.worker_running = false;
+	}
 }
