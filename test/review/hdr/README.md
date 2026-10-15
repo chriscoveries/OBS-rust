@@ -1,107 +1,81 @@
 # HDR recording with adjustable tone mapping
 
-Owner-review implementation handoff, based on `72c48c4ecebacfb0e7da6b8a8dbc7cee97aef258`.
-No upstream-facing branch is changed. Do not merge, post upstream, or upload a video without owner approval.
+Fork-local owner review. Upstream-facing branches and uploads remain subject to owner approval.
 
-## Delivery form
+## Current delivery state
 
-New C helpers, shader, property controls and tests are source files in this branch. `integrate.py` contains the native edits to seven existing files. It checks their exact Git blob IDs, emits a normal unified patch, and applies it only in a clean detached worktree. `run.sh --native` performs that step automatically.
+The seven native-file edits are still described by the original SHA-pinned `integrate.py`. Their generated source commit has not yet been published. The revised runner automates the remaining conversion: in a clean detached worktree it computes the exact expected output blobs, applies the original transformation unchanged, verifies all seven results, and creates an ordinary local source commit before building. It records that commit and its file hashes. The runner never moves an existing branch, pushes, dispatches CI or uploads a video.
 
-**The native patch has not been applied to a complete checkout here.** Before an upstream PR is prepared, the Mac agent must run it, retain the resulting patch, and flatten the verified native edits into ordinary commits on a new owner-review branch. This is an implementation candidate awaiting native validation.
-
-## Recording controls
-
-In Settings > Output > Advanced > Recording, select a **separate Apple HEVC recording encoder** and **Hybrid MP4**, then enable **HDR recording (10-bit HLG)**. Use a single mixed AAC audio track for the upload copy. The generic encoder properties are per encoder; leave the streaming encoder's HDR checkbox off. Controls use the existing recording-encoder settings JSON.
-
-| Control | Default | Range / behaviour |
-|---|---:|---|
-| HDR recording | Off | Isolated P010, limited-range BT.2100 HLG encoder mix |
-| Exposure | 0 EV | -4 to +4 EV in linear light |
-| Reference white | 203 nits | 80 to 400 nits; scales recorded brightness |
-| Target peak brightness | 1,000 nits | 400 to 1,000 reference nits, above reference white |
-| Highlight roll-off | Soft shoulder | Smooth compression or a hard peak limit |
-| Compression starts at | 80% | 50 to 95% of peak for the soft shoulder |
-
-These are authored starting values, not a calibration of the viewer's display. Stop recording to change them. This draft has no live recording-grade preview or waveform UI.
-
-## Native integration
-
-- Both encoder-mix reuse checks include the complete tone profile. Global video settings and existing output defaults remain unchanged.
-- P010 HLG pixels are graded in the GPU conversion shader before encoding. Shared effect uniforms are reset on every mix, including the SDR mix.
-- Apple HEVC is forced to Main 10; incompatible format/range or fps > 60 fails initialization.
-- Failed encoder creation releases its encoder-only mix. Tone changes during an active encoder are rejected.
-- The existing MP4 `hvc1`/`hvcC`/`colr` path carries the encoder's HLG colour information. The new `amve` box authors a 314 lux / D65 reference environment.
-- Inferred mastering-display/content-light measurements are omitted for this mode. The existing optional codec-specific metadata experiment stays disabled.
-
-Ambient units are 1/10000 lux and 1/50000 chromaticity. The reference is authored, not measured scene brightness or a measurement of the viewer's room.
-
-## Curve
-
-Input is display-linear BT.2020 RGB normalized so 1 = 10,000 nits. Exposure is `2^EV`. Negative components clamp to zero, then one positive gain scales all components. Let `L=max(R,G,B)`, `P=peak`, `K=P*knee_fraction`, `D=P-K`:
-
-```
-L <= K: output_level = L
-L > K:  output_level = P - D / (1 + (L-K)/D)
-```
-
-The shoulder is continuous, has unit derivative at the knee, is monotonic and approaches the peak. Hard limit uses `min(L,P)`. This is an authored low-cost curve, not a claim to implement a standardized mastering operator.
-
-The existing `linear_to_hlg` uses a fixed 1,000-nit reference for Lw <= 1,000. Capping this preset's peak at 1,000 avoids its separate >1,000-nit down-map being applied on top of the custom curve. Actual display luminance remains adaptive.
-
-Reference white scales the whole recorded scene. Genuine HDR source information can be retained; an SDR source contains only its original information. Exposure cannot recover clipped source pixels.
+A configured Git author/committer identity is required. Preparation refuses attached HEAD, unrelated changes, staged changes and unexpected source bytes. No commit hooks run and no CI attestation is asserted. Once an integrated commit contains `native-integration.json`, subsequent runs verify those committed sources instead of applying the transformation again.
 
 ## Commands
 
-From this review branch, CPU checks:
+Use a clean checkout of `review/hdr-recording-hlg-20261015`:
 
 ```sh
+# CPU mathematics, verifier and preparation-helper tests
 bash test/review/hdr/run.sh --cpu
-```
 
-On the configured Mac, with full Xcode, cmake, cmocka and soldr:
+# Create and retain an ordinary native source commit, without an OBS build
+bash test/review/hdr/run.sh --prepare
 
-```sh
+# Prepare that commit, then build and validate both native configurations
 bash test/review/hdr/run.sh --native
 ```
 
-The runner creates a detached worktree, applies the pinned native patch, builds the frontend/plugins with Rust OFF/ON, runs C tests and compares exports. It retains the patch, logs and worktree. No commits, pushes, CI dispatches or uploads occur. Read `docs/ci-tooling.md` and respect shared-machine gates first.
+`--native` requires a configured Mac with full Xcode, soldr, CMake and cmocka. Read the repository CI-tooling guide and respect shared-machine build gates. Logs include the review HEAD, generated native commit, patch, configuration, builds and CTest results. The detached worktree is retained. After inspecting its results, the owner can promote the native source commit to a review branch.
 
-Validate an actual completed recording:
+## Mac runner repairs
+
+The runner now builds `test_virtual_cam_shutdown` and `test_config_migration` in addition to the full app, encoder, muxer and cmocka targets. A local helper enumerates registered CTest executables, adds missing runtime paths including each executable's own directory, and signs those test executables ad hoc with library-validation exceptions for Homebrew cmocka. It verifies the signatures and records every touched file. The OBS application and plugins are excluded; system signing settings are unchanged.
+
+These are the setup repairs identified in the Mac agent's prior run. Their automation still needs a native rerun. Rust OFF/ON exported-symbol parity remains mandatory.
+
+## Recording controls
+
+Select Settings > Output > Advanced > Recording, a separate Apple HEVC recording encoder and Hybrid MP4. Enable HDR recording (10-bit HLG). Leave the streaming encoder's HDR checkbox off. The properties are saved in the recording encoder's settings JSON.
+
+| Control | Default | Range |
+|---|---:|---|
+| Exposure | 0 EV | -4 to +4 EV |
+| Reference white | 203 nits | 80 to 400 nits |
+| Target peak | 1,000 reference nits | 400 to 1,000, above reference white |
+| Highlight roll-off | Soft shoulder | Soft shoulder or hard limit |
+| Compression begins | 80% of peak | 50 to 95% |
+
+Stop recording before changing the grade. No live grade preview or waveform UI is included. Values are authored starting points, not display calibration.
+
+The output target is HEVC Main 10, P010 10-bit 4:2:0, limited-range BT.2020/HLG in hvc1 MP4, at most 60 fps, with one AAC mono/stereo audio track for the upload copy. This is a compatibility target that requires actual recording and device tests.
+
+## Processing contract
+
+A private immutable recording profile distinguishes differently graded encoder mixes. Both mix-reuse checks include every tone setting, and shared conversion-effect uniforms reset for every mix. P010 HLG pixels are graded before encoding. Failed encoder initialization releases its recording mix; incompatible format/range/frame rate is rejected.
+
+Input to the mapper is display-linear BT.2020 RGB with 1 representing 10,000 nits. Exposure multiplies by 2^EV. Negative components clamp to zero. A common positive gain scales RGB components from the maximum component L. For peak P, knee K and D=P-K, the soft shoulder uses L below K and P-D/(1+(L-K)/D) above it. This preserves continuity and unit slope at the knee and asymptotically approaches P. Hard limit uses min(L,P). It is an authored curve, not a standardized mastering operator.
+
+The peak cap avoids the existing HLG converter's separate above-1,000-nit mapping. Reference white scales the scene; exposure cannot recover information already clipped at capture. The existing hvc1/hvcC/colr metadata is retained, with an authored 314 lux/D65 ambient reference. Slider values are not presented as measured mastering-display or content-light metadata. The older optional codec-specific metadata experiment stays disabled.
+
+## Evidence and remaining gates
+
+The original patched tree at review head `afa7e7675` has a Mac-agent receipt on this PR: full app/plugins built OFF/ON, both 141-test CTest suites passed with the same expected SVT-AV1 skip, and 1,878 exported symbols matched. That receipt used manual runner repairs and does not cover this revised preparation/runtime automation or its eventual generated source commit.
+
+The new preparation/runtime selection helpers passed nine local tests in disposable repositories. They verify owner-branch preservation, exact source manifests, refusal of unrelated changes and selection of registered test executables. Bash syntax passes. Local helper tests do not exercise Apple signing tools or a complete OBS build.
+
+Run the new native command, preserve the ordinary source commit and repeat all build/test gates. Then launch the built application, verify shader compilation and record a real HDR acceptance scene. Check changed exposure/shoulders, SDR overlay readability, repeated start/stop/failure cleanup, differently graded encoders and simultaneous SDR output. Exercise Metal and OpenGL separately where supported.
 
 ```sh
 uv run test/review/hdr/verify_recording.py /absolute/path/recording.mp4 --report hdr-file-report.json
 ```
 
-This checks ffprobe fields, HEVC SPS/VUI, MP4 colour/ambient boxes, and 30 decoded frames. A headline HDR tag cannot hide disagreement between container and bitstream.
+The checker compares ffprobe fields, HEVC SPS/VUI and MP4 colour/ambient boxes, then decodes sample frames. Check complete-file integrity and late frames separately for long recordings.
 
-## Completed checks
-
-Host: x86-64 Linux, Clang 17, FFmpeg 7.1.5; no Mac SDK or running OBS.
-
-- C contract: **1,020,102** curve/RGB cases plus bounds, bypass and mix-key tests passed under ASan/UBSan and optimized NDEBUG. The final grid has 17 peaks from 400 to 1,000.
-- Exact effect-function source compiled as C++ arithmetic: **360,000** comparisons passed under sanitizers and optimized build. Tolerance: 0.001 nits + 2e-6 relative. This is not an OBS shader-compiler/GPU test.
-- Seven file-verifier unit tests, with subcases for all required tags, bitstream disagreement, missing ambient data and malformed containers.
-- An independently encoded one-second libx265 HLG/hvc1 fixture passed with `--allow-missing-ambient`. An earlier fixture with conflicting container tags was rejected. This is a verifier fixture, not output from this OBS implementation. Reproduce with `make-verifier-fixture.sh`.
-- Shell/Python syntax checked. An identity/no-op mapper compiled then failed the output-bound assertion at the test-first checkpoint.
-
-Native patch application, property/API tests, full app builds, Qt GUI, GPU shader execution, actual OBS HEVC recording, native OFF/ON ABI parity, iPhone playback and Meta uploads remain **NOT TESTED**. See `VALIDATION.md`.
-
-## Acceptance gates
-
-1. Retain the native diff, run formatting/lint, and pass the native property/API test and full OFF/ON suites with identical exports. Launch the built app so its actual bundled shader compiles.
-2. Record a genuine HDR source with a known highlight ramp and SDR overlay. Compare 0/+1 EV and different shoulders. Check decoded pixels follow the curve and overlays stay readable. Verify the recording grade does not change a simultaneous SDR stream.
-3. Exercise stop/start, enable/disable, failed initialization, two differently graded encoders and repeated starts without leaked mixes. Check Metal and OpenGL separately where supported. The GUI shows controls through the selected encoder's property panel.
-4. Run the file validator on the actual Hybrid MP4. Inspect late frames and complete-file integrity separately for long recordings.
-5. Transfer the original file without an SDR export to a compatible iPhone. Verify Photos HDR playback and appearance; record model, iOS version, display/accessibility settings, brightness and power state.
-6. With explicit upload approval, upload that same original separately through native Instagram and Facebook apps with highest-quality uploads enabled. After processing, check HDR playback on the target iPhone. Record app version, account and route. API/desktop uploads require separate tests; also check each app's SDR rendition.
-
-A valid HLG file cannot force HDR delivery to every device/account. Local tone controls do not select Meta's server-side SDR tone-map operator. The feature is accepted only after the actual recordings pass the device/upload gates.
+Transfer the original file to a compatible iPhone and test Photos HDR playback. With separate upload approval, upload the same original through native Instagram and Facebook apps, wait for their processing and inspect HDR and SDR renditions. Record device, OS, app, account, display settings and upload route. API/desktop routes need separate tests. File validity alone does not establish that either platform will deliver HDR for a particular playback session.
 
 ## Primary references
 
-- Meta HDR Reels upload/pipeline: https://engineering.fb.com/2023/07/17/video-engineering/hdr-video-reels-meta/
-- Apple HDR metadata and ambient environment: https://developer.apple.com/documentation/technotes/tn3145-hdr-video-metadata
-- Apple HLG/HEVC playback authoring (HLS scope): https://developer.apple.com/streaming/hls-authoring-specification-for-apple-devices.html
-- FFmpeg amve units, `mov_read_amve`: https://ffmpeg.org/doxygen/trunk/mov_8c_source.html
+- Meta HDR Reels processing: https://engineering.fb.com/2023/07/17/video-engineering/hdr-video-reels-meta/
+- Apple HDR metadata: https://developer.apple.com/documentation/technotes/tn3145-hdr-video-metadata
+- Apple HLG authoring guidance (HLS scope): https://developer.apple.com/streaming/hls-authoring-specification-for-apple-devices.html
+- FFmpeg amve units: https://ffmpeg.org/doxygen/trunk/mov_8c_source.html
 
-These inform the chosen target profile; they do not certify this native implementation or every upload route.
+See VALIDATION.md for the separate local and Mac-reported receipts. Neither iPhone playback nor Meta upload acceptance has been completed.

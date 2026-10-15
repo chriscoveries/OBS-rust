@@ -1,30 +1,37 @@
-# Local receipt, 2026-10-15
+# Validation receipts, 2026-10-15
 
-Environment: x86-64 Linux container, Clang 17, FFmpeg 7.1.5. Native OBS and Apple frameworks unavailable.
+## Original local mathematics and verifier
 
-Test-first checkpoint with identity/no-op curve stubs compiled successfully, then exited 1 at the bounded/monotonic output assertion in test_hdr_recording_profile.c, line 52. This is an observed runtime RED.
+Environment: x86-64 Linux, Clang 17, FFmpeg 7.1.5. Native OBS and Apple frameworks unavailable.
 
-Production mapper, Clang C11, -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined:
+The test-first identity/no-op curve compiled, then failed the bounded/monotonic output assertion at test_hdr_recording_profile.c:52. With the implementation, both ASan/UBSan and -O2 -DNDEBUG runs passed 1,020,102 curve/colour cases, profile limits, mix keys, continuity and bypass. These runs include the final 400-to-1,000-nit peak range.
+
+The exact effect-function source compiled as C++ arithmetic passed 360,000 comparisons in sanitized and optimized builds. This tests arithmetic, not the OBS shader compiler or GPU.
+
+Seven file-verifier tests passed. An independently encoded libx265 HLG/hvc1 MP4 with AAC stereo passed the general format check with missing ambient metadata explicitly waived. An earlier conflicting-tag fixture was rejected. This is a validator fixture, not output from the OBS implementation.
+
+## Mac-agent receipt on the original patched tree
+
+Source: fork PR62 comment 6187564373, posted 2026-10-15. Review HEAD `afa7e76755285fb317ea842874339ac3831c9d95`; `integrate.py` edits applied in a detached worktree.
+
+Reported environment: Apple Silicon, macOS 27, Xcode 27.0, macos-ci, RelWithDebInfo. CPU checks passed. The full app, mac-videotoolbox, obs-outputs and cmocka tests built with Rust OFF and ON. Each CTest run reported 141/141 with the expected test_svt_av1 skip. The 1,878 exported libobs symbols matched.
+
+The Mac used local setup repairs: ad-hoc signing and absolute runtime paths for test executables, an executable-directory rpath for test_config_close_fault, and builds of test_virtual_cam_shutdown and test_config_migration. These repairs were external to the original reviewed runner. No actual recording was made.
+
+## New preparation/runtime automation
+
+Observed in this Linux authoring container:
 
 ```
-PASS: 1020102 curve/color cases, profile bounds, mix-key isolation, knee continuity and bypass
-```
-
-Same test with -O2 -DNDEBUG: identical PASS. Tests rerun after narrowing the final output-peak grid to 400-1,000 reference nits to avoid a second HLG down-map.
-
-Exact hdr-recording.effect function compiled as C++ arithmetic, sanitized and separately -O2 -DNDEBUG:
-
-```
-PASS: 360000 exact-effect/reference comparisons and disabled bypass
-```
-
-File validator:
-
-```
-Ran 7 tests
+uv run --no-project python test/review/hdr/test_native_handoff.py
+Ran 9 tests
 OK
 ```
 
-An actual libx265 10-bit HLG/hvc1 MP4 fixture, AAC stereo, 30 fps, with frame-level colour parameters explicitly set, passed the general HLG format check. The authored amve extension was not part of this external-encoder fixture and was explicitly waived with --allow-missing-ambient. Earlier mismatched container tags were correctly rejected. Reproduce with make-verifier-fixture.sh; this fixture is not a demonstration of the OBS feature or its tone mapping.
+Disposable-repository tests confirm a successful detached commit, unchanged owner branch, an exact committed file list and hash manifest, and refusal of attached HEAD, staged/unrelated edits or unexpected content. Additional tests check source-drift detection, registered-test selection, missing-executable refusal and runtime paths containing spaces. Bash syntax passes for the revised runner.
 
-Native patch application, native C/property tests, Qt GUI, GPU shader compilation, actual OBS HEVC recording, full OFF/ON ABI parity, iPhone playback and both Meta uploads remain NOT TESTED. No speed, image-quality, completed integration or upload-compatibility result is claimed.
+The real seven-file HDR native commit has not been generated or published here. `run.sh --prepare` or `--native` now performs that work in a detached checkout before native validation. The original transformation remains unchanged. Tests of the automation use synthetic fixture repositories; their commits are not HDR implementation commits.
+
+## Outstanding
+
+The revised preparation/signing automation, generated native-source commit and native OFF/ON build require a Mac rerun. Actual GUI operation, bundled GPU shader execution, HDR recordings, lifecycle/failure behaviour, simultaneous SDR output, iPhone playback and Instagram/Facebook upload acceptance remain unverified. No completed HDR integration, end-to-end compatibility, visual-quality or speed claim is made.
