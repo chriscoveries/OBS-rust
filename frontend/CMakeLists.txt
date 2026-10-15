@@ -43,6 +43,9 @@ if(ENABLE_UNIT_TESTS)
   add_executable(test_preflight_test_mode tests/test_preflight_test_mode.cpp preflight/preflight-test-mode.cpp)
   target_include_directories(test_preflight_test_mode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
   add_test(NAME test_preflight_test_mode COMMAND test_preflight_test_mode)
+  add_executable(test_preflight_bench_data tests/test_preflight_bench_data.cpp)
+  target_include_directories(test_preflight_bench_data PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
+  add_test(NAME test_preflight_bench_data COMMAND test_preflight_bench_data)
   add_executable(
     test_preflight_cloudflare_speed_test
     tests/test_preflight_cloudflare_speed_test.cpp

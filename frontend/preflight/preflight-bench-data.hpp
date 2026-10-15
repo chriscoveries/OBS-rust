@@ -3,14 +3,17 @@
 #include "obs-preflight.h"
 #include "preflight-loupe-core.hpp"
 
-#include <obs.h>
-
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+struct obs_data;
+typedef struct obs_data obs_data_t;
+struct obs_source;
+typedef struct obs_source obs_source_t;
 
 /* Widget-free data and control surface for the Preflight bench. */
 namespace preflight::bench {
@@ -20,34 +23,20 @@ namespace preflight::bench {
 class SettingsObject {
 	obs_data_t *value = nullptr;
 
-	explicit SettingsObject(obs_data_t *value, bool take_ownership) : value(value)
-	{
-		if (this->value && !take_ownership) {
-			obs_data_addref(this->value);
-		}
-	}
+	explicit SettingsObject(obs_data_t *value, bool take_ownership);
 
 public:
 	SettingsObject() = default;
-	static SettingsObject Retain(obs_data_t *value) { return SettingsObject(value, false); }
-	static SettingsObject Take(obs_data_t *value) { return SettingsObject(value, true); }
+	static SettingsObject Retain(obs_data_t *value);
+	static SettingsObject Take(obs_data_t *value);
 
-	SettingsObject(const SettingsObject &other) : SettingsObject(other.value, false) {}
-	SettingsObject(SettingsObject &&other) noexcept : value(std::exchange(other.value, nullptr)) {}
-	SettingsObject &operator=(SettingsObject other) noexcept
-	{
-		std::swap(value, other.value);
-		return *this;
-	}
-	~SettingsObject()
-	{
-		if (value) {
-			obs_data_release(value);
-		}
-	}
+	SettingsObject(const SettingsObject &other);
+	SettingsObject(SettingsObject &&other) noexcept;
+	SettingsObject &operator=(SettingsObject other) noexcept;
+	~SettingsObject();
 
-	obs_data_t *get() const { return value; }
-	explicit operator bool() const { return value != nullptr; }
+	obs_data_t *get() const;
+	explicit operator bool() const;
 };
 
 enum class EncoderRole { Stream, Recording };
@@ -107,6 +96,18 @@ struct SettingChange {
 	std::string key;
 	std::string old_value;
 	std::string new_value;
+};
+
+class ImpactTracker {
+	std::optional<MetricWindow> latest_complete_window;
+	std::vector<ImpactEntry> entries;
+	uint64_t next_id = 1;
+
+public:
+	void RecordChanges(const std::vector<SettingChange> &changes);
+	void ObserveCompleteWindow(const MetricWindow &window);
+	const std::optional<MetricWindow> &LatestCompleteWindow() const { return latest_complete_window; }
+	const std::vector<ImpactEntry> &Entries() const { return entries; }
 };
 
 struct FeatureToggle {
