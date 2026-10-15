@@ -2,8 +2,9 @@
 //! semantics in `deps/libcaption/src/eia608.c` and `caption/eia608.h`.
 //!
 //! All produced `u16` values are complete `cc_data` pairs with odd parity
-//! applied to both bytes, identical to what libcaption's `eia608_*` helpers
-//! return (parity included, not stripped).
+//! applied to both bytes (parity included, not stripped). Position preambles
+//! intentionally correct the vendored helper's parity/indent defects; see
+//! `row_column_preamble`.
 
 /// CEA-608 grid geometry, matching `caption.h`'s `SCREEN_ROWS`/`SCREEN_COLS`.
 pub const SCREEN_ROWS: usize = 15;
@@ -35,9 +36,9 @@ pub fn parity_strip(cc_data: u16) -> u16 {
     cc_data & 0x7f7f
 }
 
-/// `eia608_is_basicna`: both bytes hold a basic North American code
-/// (0x20..=0x7f) — detectable on either paritied or stripped input because
-/// only the parity bits are masked out.
+/// `eia608_is_basicna`: the high byte holds a basic North American code
+/// (0x20..=0x7f). The low byte may be another glyph or padding. Detection
+/// works on either parity-encoded or stripped input.
 pub fn is_basicna(cc_data: u16) -> bool {
     cc_data & 0x6000 != 0
 }
@@ -121,22 +122,22 @@ pub fn control_command(cmd: u16) -> u16 {
 /// the command when the pair is a channel-1 control pair in the 0x1420..=0x142f
 /// range this crate emits.
 pub fn parse_control(cc_data: u16) -> Option<u16> {
-    let cmd = parity_strip(cc_data) & 0x167f;
+    let cmd = parity_strip(cc_data);
     (0x1420..=0x142f).contains(&cmd).then_some(cmd)
 }
 
 /// `eia608_reverse_row_map`, verbatim from `deps/libcaption/src/eia608.c`.
 const REVERSE_ROW_MAP: [u16; 16] = [2, 3, 4, 5, 10, 11, 12, 13, 14, 15, 0, 6, 7, 8, 9, 1];
 
-/// `eia608_row_column_pramble` for channel 1, no underline: positions the
-/// cursor at (`row`, `col` rounded down to a multiple of four).
+/// Channel-1 position preamble, for rows `0..15` and columns `0..32`.
+/// The column is rounded down to a multiple of four.
 ///
-/// Mirrors the C exactly, including that the column bits and underline bit
-/// are OR'ed in **after** `parity()` is applied.
+/// Unlike the vendored C helper, set the indent-selector bit and all
+/// column/underline bits before applying odd parity. Copying its expression
+/// would encode colours in place of indentation and invalidate parity.
+/// The row's low four bits are retained for compatibility; row 15 is reserved.
 pub fn row_column_preamble(row: usize, col: usize, underline: bool) -> u16 {
     let row = REVERSE_ROW_MAP[row & 0x0f];
-    let x = 0x10u16 | ((col / 4) as u16);
-    parity(0x1040 | ((row << 7) & 0x0700) | ((row << 5) & 0x0020))
-        | ((x << 1) & 0x001e)
-        | u16::from(underline)
+    let indent = (((col / 4) & 7) as u16) << 1;
+    parity(0x1050 | ((row << 7) & 0x0700) | ((row << 5) & 0x0020) | indent | u16::from(underline))
 }

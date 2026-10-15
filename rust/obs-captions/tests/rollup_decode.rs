@@ -12,6 +12,7 @@ struct Screen {
     lines: Vec<String>,
     rows: usize,
     col: usize,
+    previous: Option<u16>,
 }
 
 impl Screen {
@@ -20,12 +21,26 @@ impl Screen {
             lines: vec![String::new()],
             rows: 0,
             col: 0,
+            previous: None,
         }
     }
 
-    fn feed(&mut self, pair: u16) {
-        if let Some(cmd) = eia608::parse_control(pair) {
-            match cmd {
+    // This decoder is intentionally independent of parse_control: a bug in
+    // the production classifier must not also change the test oracle.
+    fn feed(&mut self, pair: u16) -> String {
+        assert!(eia608::parity_verify(pair), "invalid caption parity");
+        let raw = pair & 0x7f7f;
+        let mut written = String::new();
+        if pair == 0x8080 {
+            return written;
+        }
+        let is_control = (raw & 0x7f70) == 0x1420;
+        if is_control && self.previous == Some(pair) {
+            return written;
+        }
+        self.previous = Some(pair);
+        if is_control {
+            match raw {
                 control::ROLL_UP_2 => self.rows = 2,
                 control::ROLL_UP_3 => self.rows = 3,
                 control::ERASE_DISPLAY_MEMORY => {
@@ -41,23 +56,32 @@ impl Screen {
                 }
                 _ => {}
             }
-            return;
+            return written;
         }
-        // PAC: first byte 0x10..=0x17, not a control pair we know — for this
-        // stream the only PAC anchors at the bottom row, so a fresh window.
-        let stripped = eia608::parity_strip(pair);
-        if (stripped & 0x7f40) == 0x1040 {
-            self.lines = vec![String::new()];
-            self.col = 0;
-            return;
+        // A bottom-row PAC positions the cursor, without erasing the window.
+        if (raw & 0x7040) == 0x1040 {
+            self.col = if raw & 0x10 != 0 {
+                usize::from((raw & 0x0e) >> 1) * 4
+            } else {
+                0
+            };
+            return written;
         }
         let (c1, c2) = eia608::basicna_decode(pair);
         for c in [c1, c2].into_iter().flatten() {
-            if self.col < SCREEN_COLS {
-                self.lines.last_mut().unwrap().push(c);
+            if self.rows != 0 && self.col < SCREEN_COLS {
+                let line = self.lines.last_mut().unwrap();
+                let mut chars: Vec<char> = line.chars().collect();
+                if chars.len() <= self.col {
+                    chars.resize(self.col + 1, ' ');
+                }
+                chars[self.col] = c;
+                *line = chars.into_iter().collect();
                 self.col += 1;
+                written.push(c);
             }
         }
+        written
     }
 
     /// Concatenate of everything ever shown — the full transcript.
@@ -65,11 +89,7 @@ impl Screen {
         let mut screen = Screen::new();
         let mut transcript = String::new();
         for &(_, pair) in pairs {
-            screen.feed(pair);
-            let (a, b) = eia608::basicna_decode(pair);
-            for c in [a, b].into_iter().flatten() {
-                transcript.push(c);
-            }
+            transcript.push_str(&screen.feed(pair));
         }
         (screen.lines, transcript)
     }
@@ -243,4 +263,56 @@ fn every_pair_carries_odd_parity() {
         r.word(t, w).unwrap();
     }
     assert!(r.pairs().iter().all(|&(_, d)| eia608::parity_verify(d)));
+}
+
+#[test]
+fn doubled_carriage_return_preserves_previous_row() {
+    let mut r = Rollup::new(30, Rows::Two);
+    let first = "A".repeat(32);
+    r.word(0.0, &first).unwrap();
+    r.word(1.0, "B").unwrap();
+    let (window, _) = Screen::transcript(r.pairs());
+    assert_eq!(window, vec![first, "B".to_owned()]);
+}
+
+#[test]
+fn three_row_window_preserves_two_previous_rows() {
+    let mut r = Rollup::new(60, Rows::Three);
+    for (i, c) in ["A", "B", "C", "D"].iter().enumerate() {
+        r.word(i as f64, &c.repeat(32)).unwrap();
+    }
+    let (window, _) = Screen::transcript(r.pairs());
+    assert_eq!(window, vec!["B".repeat(32), "C".repeat(32), "D".repeat(32)]);
+}
+
+#[test]
+fn punctuation_pairs_stay_visible() {
+    let mut r = Rollup::new(30, Rows::Two);
+    for (i, word) in ["T,", "U-", "t.", "u!"].iter().enumerate() {
+        r.word(i as f64, word).unwrap();
+    }
+    let (window, transcript) = Screen::transcript(r.pairs());
+    assert_eq!(window, vec!["T, U- t. u!"]);
+    assert_eq!(transcript, "T, U- t. u!");
+}
+
+#[test]
+fn repeated_text_pairs_are_never_deduplicated() {
+    let mut r = Rollup::new(30, Rows::Two);
+    r.word(0.0, "AAAA").unwrap();
+    let (window, transcript) = Screen::transcript(r.pairs());
+    assert_eq!(window, vec!["AAAA"]);
+    assert_eq!(transcript, "AAAA");
+}
+
+#[test]
+fn transcript_excludes_characters_discarded_at_column_32() {
+    let mut r = Rollup::new(30, Rows::Two);
+    r.word(0.0, &"A".repeat(32)).unwrap();
+    let mut pairs = r.pairs().to_vec();
+    let next = pairs.last().unwrap().0 + 1;
+    pairs.push((next, eia608::from_basicna('X', 'X').unwrap()));
+    let (window, transcript) = Screen::transcript(&pairs);
+    assert_eq!(window, vec!["A".repeat(32)]);
+    assert_eq!(transcript, "A".repeat(32));
 }

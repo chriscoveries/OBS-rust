@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.28...3.30)
+project(obs_caption_oracle LANGUAGES C)
+get_filename_component(OBS_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+# Build the actual vendored decoder and its original dependencies, unchanged.
+add_subdirectory("${OBS_SOURCE_ROOT}/deps/libcaption" libcaption)
+add_executable(obs-caption-oracle check.c)
+target_link_libraries(obs-caption-oracle PRIVATE OBS::caption)
+set_target_properties(obs-caption-oracle PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+if(NOT MSVC)
+  target_compile_options(obs-caption-oracle PRIVATE -Wall -Wextra -Werror)
+endif()
