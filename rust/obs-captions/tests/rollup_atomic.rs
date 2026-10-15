@@ -18,8 +18,12 @@ fn rejected_word_preserves_all_subsequent_output() {
         for rows in [Rows::Two, Rows::Three] {
             let mut actual = Rollup::new(fps, rows);
             let mut expected = Rollup::new(fps, rows);
-            actual.word(1.0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456").unwrap();
-            expected.word(1.0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456").unwrap();
+            actual
+                .word(1.0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456")
+                .unwrap();
+            expected
+                .word(1.0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456")
+                .unwrap();
             assert!(actual.word(100.0, "BAD*").is_err());
             for (t, word) in [(2.0, "NEXT"), (3.0, "élÑñ"), (4.0, "END")] {
                 actual.word(t, word).unwrap();

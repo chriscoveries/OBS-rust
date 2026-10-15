@@ -56,7 +56,10 @@ impl Rollup {
     /// Starts a roll-up session: emits EDM, RU2/RU3 and the bottom-row PAC,
     /// each control repeated once (per CEA-608 practice), all due at frame 0.
     pub fn new(fps: u32, rows: Rows) -> Self {
-        assert!(fps == 30 || fps == 60, "roll-up pacing supports 30 or 60 fps");
+        assert!(
+            fps == 30 || fps == 60,
+            "roll-up pacing supports 30 or 60 fps"
+        );
         let mut r = Rollup {
             pairs: Vec::new(),
             slot: 0,
