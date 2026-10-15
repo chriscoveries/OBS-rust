@@ -251,6 +251,7 @@ pub unsafe extern "C" fn obs_preflight_engine_get_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::{CStr, CString};
     use std::mem::{align_of, offset_of, size_of};
 
     #[test]
@@ -276,5 +277,85 @@ mod tests {
         assert_eq!(offset_of!(ObsPreflightWindow, reason), 156);
         assert_eq!(size_of::<ObsPreflightWindow>(), 416);
         assert_eq!(align_of::<ObsPreflightWindow>(), 8);
+    }
+
+    #[test]
+    fn c_bakeoff_abi_preserves_matrix_order_and_advances_after_failure() {
+        let encoders = [
+            CString::new("obs_x264").unwrap(),
+            CString::new("obs_nvenc_h264").unwrap(),
+        ];
+        let encoder_ptrs = [encoders[0].as_ptr(), encoders[1].as_ptr()];
+        let modes = [
+            ObsPreflightMode {
+                width: 1920,
+                height: 1080,
+                fps_num: 60,
+                fps_den: 1,
+            },
+            ObsPreflightMode {
+                width: 1280,
+                height: 720,
+                fps_num: 30,
+                fps_den: 1,
+            },
+        ];
+        // SAFETY: the string pointers and arrays stay alive for the constructor call.
+        let mut planner = unsafe {
+            obs_preflight_bakeoff_create(
+                encoder_ptrs.as_ptr(),
+                encoder_ptrs.len(),
+                modes.as_ptr(),
+                modes.len(),
+                5000,
+            )
+        };
+        assert!(!planner.is_null());
+
+        let mut planned = std::mem::MaybeUninit::<ObsPreflightCandidatePlan>::uninit();
+        // SAFETY: `planner` is live and `planned` points to writable storage.
+        assert_eq!(
+            unsafe { obs_preflight_bakeoff_next(planner, planned.as_mut_ptr()) },
+            STATUS_OK
+        );
+        // SAFETY: the previous call initialized the output on STATUS_OK.
+        let first = unsafe { planned.assume_init() };
+        assert_eq!(first.order, 1);
+        assert_eq!(
+            CStr::from_bytes_until_nul(unsafe {
+                std::slice::from_raw_parts(first.encoder.as_ptr().cast(), first.encoder.len())
+            })
+            .unwrap()
+            .to_bytes(),
+            b"obs_x264"
+        );
+        assert_eq!(
+            (first.width, first.height, first.fps_num, first.fps_den),
+            (1920, 1080, 60, 1)
+        );
+
+        // A failed candidate is recorded; it must not terminate the planner.
+        // SAFETY: `planner` is live and has one candidate in progress.
+        assert_eq!(
+            unsafe { obs_preflight_bakeoff_complete(planner, 2) },
+            STATUS_OK
+        );
+        // SAFETY: `planner` is live and `planned` is writable.
+        assert_eq!(
+            unsafe { obs_preflight_bakeoff_next(planner, planned.as_mut_ptr()) },
+            STATUS_OK
+        );
+        // SAFETY: the previous call initialized the output on STATUS_OK.
+        let second = unsafe { planned.assume_init() };
+        assert_eq!(second.order, 2);
+        assert_eq!(
+            (second.width, second.height, second.fps_num, second.fps_den),
+            (1280, 720, 30, 1)
+        );
+
+        // SAFETY: `planner` is live; destroy consumes it.
+        unsafe { obs_preflight_bakeoff_destroy(planner) };
+        planner = ptr::null_mut();
+        assert!(planner.is_null());
     }
 }
