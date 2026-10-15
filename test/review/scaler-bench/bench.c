@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 #include <inttypes.h>
 #include <stdarg.h>
@@ -24,6 +27,9 @@ extern bool ab_after_video_scaler_scale(video_scaler_t *, uint8_t *[], const uin
 static const uint8_t *before_expected_destination;
 static const uint8_t *after_expected_destination;
 static uint64_t before_calls, before_direct_calls, after_calls, after_direct_calls;
+
+#define MIN_BATCH_NS UINT64_C(10000000)
+#define MAX_BATCH_FRAMES (1u << 20)
 
 int ab_before_sws_scale(struct SwsContext *ctx, const uint8_t *const src[], const int src_stride[], int y, int h,
 			uint8_t *const dst[], const int dst_stride[])
@@ -168,10 +174,14 @@ static bool scale_one(bool after, video_scaler_t *scaler, struct image *output, 
 
 static uint64_t now_ns(void)
 {
+#ifdef __APPLE__
+	return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#else
 	struct timespec ts;
 	if (clock_gettime(CLOCK_MONOTONIC, &ts))
 		abort();
 	return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+#endif
 }
 
 static uint64_t scale_batch(bool after, video_scaler_t *scaler, struct image *output, const struct image *input,
@@ -192,7 +202,33 @@ static uint64_t scale_batch(bool after, video_scaler_t *scaler, struct image *ou
 			after ? "after" : "before", *calls, *direct_calls, after ? frames : 0);
 		exit(1);
 	}
+	if (!elapsed) {
+		fprintf(stderr, "zero-duration timing batch: version=%s frames=%u\n", after ? "after" : "before",
+			frames);
+		exit(1);
+	}
 	return elapsed;
+}
+
+static unsigned size_timing_batch(video_scaler_t *before, video_scaler_t *after, struct image *before_output,
+				  struct image *after_output, const struct image *input, unsigned requested_frames)
+{
+	unsigned frames = requested_frames;
+	for (;;) {
+		const uint64_t before_ns = scale_batch(false, before, before_output, input, frames);
+		const uint64_t after_ns = scale_batch(true, after, after_output, input, frames);
+		compare(before_output, after_output);
+		if (before_ns >= MIN_BATCH_NS && after_ns >= MIN_BATCH_NS)
+			return frames;
+		if (frames == MAX_BATCH_FRAMES) {
+			fprintf(stderr,
+				"could not size timing batch to at least 10 ms: before=%" PRIu64 " ns after=%" PRIu64
+				" ns frames=%u\n",
+				before_ns, after_ns, frames);
+			exit(1);
+		}
+		frames = frames > MAX_BATCH_FRAMES / 2 ? MAX_BATCH_FRAMES : frames * 2;
+	}
 }
 
 static void check_calls(bool after, unsigned expected_frames)
@@ -277,6 +313,7 @@ int main(int argc, char **argv)
 	}
 	const unsigned base_width = quick || dry ? 128 : 1920;
 	const unsigned base_height = quick || dry ? 72 : 1080;
+	const unsigned requested_frames = frames;
 	for (size_t case_index = 0; case_index < sizeof(cases) / sizeof(cases[0]); ++case_index) {
 		const struct scaler_case *item = &cases[case_index];
 		struct video_scale_info src = {.format = VIDEO_FORMAT_BGRA,
@@ -319,6 +356,7 @@ int main(int argc, char **argv)
 			ab_after_video_scaler_destroy(after);
 			continue;
 		}
+		frames = size_timing_batch(before, after, &before_output, &after_output, &input, requested_frames);
 
 		/* Warm both implementations before collecting any sample. */
 		for (unsigned warmup = 0; warmup < (dry ? 1u : 3u); ++warmup) {

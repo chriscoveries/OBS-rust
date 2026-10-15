@@ -44,6 +44,14 @@ def describe(values: Sequence[float]) -> dict[str, float]:
     }
 
 
+def ns_per_frame(batch_ns: int, frames: int) -> float:
+    if batch_ns <= 0:
+        raise ValueError(f"batch duration must be > 0 ns (got {batch_ns!r})")
+    if frames <= 0:
+        raise ValueError(f"frame count must be > 0 (got {frames!r})")
+    return batch_ns / frames
+
+
 def interleaved_schedule(rounds: int) -> list[str]:
     if rounds < 1:
         raise ValueError("rounds must be positive")
@@ -188,8 +196,12 @@ def summarize_rounds(rows: Iterable[dict], *, seed: int = 743) -> list[dict]:
         groups.setdefault(row["case"], []).append(row)
     results = []
     for index, (case, samples) in enumerate(sorted(groups.items())):
-        before = [sample["before_ns"] / sample["frames"] for sample in samples]
-        after = [sample["after_ns"] / sample["frames"] for sample in samples]
+        before = [
+            ns_per_frame(sample["before_ns"], sample["frames"]) for sample in samples
+        ]
+        after = [
+            ns_per_frame(sample["after_ns"], sample["frames"]) for sample in samples
+        ]
         before_stats, after_stats = describe(before), describe(after)
         ratios = [b / a for b, a in zip(before, after) if a > 0]
         low, high = bootstrap_median_interval(ratios, seed=seed + index)
@@ -243,7 +255,8 @@ def markdown_report(
         )
         for case in cases:
             lines.append(
-                f"| {case['case']} | byte-identical | {case['smoke_before_ns']} / {case['smoke_after_ns']} |"
+                f"| {case['case']} | byte-identical | "
+                f"{case['smoke_before_ns']:.1f} / {case['smoke_after_ns']:.1f} |"
             )
     else:
         lines.extend(

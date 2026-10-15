@@ -21,6 +21,7 @@ from core import (
     interleaved_schedule,
     machine_metadata,
     markdown_report,
+    ns_per_frame,
     sample_load,
     summarize_rounds,
 )
@@ -152,8 +153,13 @@ def parse_bench_output(text: str, mode: str, rounds: int) -> list[dict]:
         if [row["order"] for row in samples] != interleaved_schedule(rounds):
             raise ValueError(f"before/after ordering did not alternate for {case}")
         for row in samples:
-            if row["frames"] <= 0 or row["before_ns"] <= 0 or row["after_ns"] <= 0:
-                raise ValueError(f"invalid timing sample for {case}: {row!r}")
+            try:
+                ns_per_frame(row["before_ns"], row["frames"])
+                ns_per_frame(row["after_ns"], row["frames"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(
+                    f"invalid timing sample for {case}: {error}; {row!r}"
+                ) from error
     return records
 
 
@@ -337,8 +343,8 @@ def main() -> int:
         report_cases = [
             {
                 "case": row["case"],
-                "smoke_before_ns": row["before_ns"] // row["frames"],
-                "smoke_after_ns": row["after_ns"] // row["frames"],
+                "smoke_before_ns": ns_per_frame(row["before_ns"], row["frames"]),
+                "smoke_after_ns": ns_per_frame(row["after_ns"], row["frames"]),
             }
             for row in round_rows
         ]

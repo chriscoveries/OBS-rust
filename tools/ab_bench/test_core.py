@@ -8,6 +8,7 @@ from core import (
     bootstrap_median_interval,
     describe,
     interleaved_schedule,
+    ns_per_frame,
     parse_proc_stat,
     parse_top_cpu,
     proc_stat_busy,
@@ -19,6 +20,20 @@ FIXTURES = Path(__file__).with_name("testdata")
 
 
 class StatisticsTests(unittest.TestCase):
+    def test_zero_duration_batch_is_rejected_clearly(self):
+        with self.assertRaisesRegex(ValueError, r"batch duration must be > 0 ns"):
+            ns_per_frame(0, 1)
+
+    def test_summary_rejects_zero_duration_sample_clearly(self):
+        rows = [
+            {"case": "BGRA same", "before_ns": 0, "after_ns": 10, "frames": 1}
+        ]
+        with self.assertRaisesRegex(ValueError, r"batch duration must be > 0 ns"):
+            summarize_rounds(rows)
+
+    def test_ns_per_frame_uses_full_batch_duration(self):
+        self.assertEqual(ns_per_frame(10001, 3), 10001 / 3)
+
     def test_median_minimum_and_iqr(self):
         stats = describe([1, 2, 3, 4, 5, 6, 7])
         self.assertEqual(stats["median"], 4)
