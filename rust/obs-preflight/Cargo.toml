@@ -1,0 +1,22 @@
+[package]
+name = "obs-preflight"
+version = "0.1.0"
+description = "Headless OBS preflight scoring and bake-off planning"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "obs-preflight"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[dev-dependencies]
+proptest = "1"

@@ -476,6 +476,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "obs-preflight"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "obs-preflight-ffi"
+version = "0.1.0"
+dependencies = [
+ "obs-preflight",
+]
+
+[[package]]
 name = "obs-properties"
 version = "0.1.0"
 dependencies = [
