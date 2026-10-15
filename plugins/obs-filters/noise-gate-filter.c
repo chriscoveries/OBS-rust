@@ -2,6 +2,8 @@
 #include <obs-module.h>
 #include <math.h>
 
+#include "noise-gate-process.h"
+
 #define do_log(level, format, ...) \
 	blog(level, "[noise gate: '%s'] " format, obs_source_get_name(ng->context), ##__VA_ARGS__)
 
@@ -27,21 +29,7 @@
 
 struct noise_gate_data {
 	obs_source_t *context;
-
-	float sample_rate_i;
-	size_t channels;
-
-	float open_threshold;
-	float close_threshold;
-	float decay_rate;
-	float attack_rate;
-	float release_rate;
-	float hold_time;
-
-	bool is_open;
-	float attenuation;
-	float level;
-	float held_time;
+	struct noise_gate_state state;
 };
 
 #define VOL_MIN -96.0
@@ -81,22 +69,22 @@ static void noise_gate_update(void *data, obs_data_t *s)
 	release_time_ms = (int)obs_data_get_int(s, S_RELEASE_TIME);
 	sample_rate = (float)audio_output_get_sample_rate(obs_get_audio());
 
-	ng->sample_rate_i = 1.0f / sample_rate;
-	ng->channels = audio_output_get_channels(obs_get_audio());
-	ng->open_threshold = db_to_mul(open_threshold_db);
-	ng->close_threshold = db_to_mul(close_threshold_db);
-	ng->attack_rate = 1.0f / (ms_to_secf(attack_time_ms) * sample_rate);
-	ng->release_rate = 1.0f / (ms_to_secf(release_time_ms) * sample_rate);
+	ng->state.sample_rate_i = 1.0f / sample_rate;
+	ng->state.channels = audio_output_get_channels(obs_get_audio());
+	ng->state.open_threshold = db_to_mul(open_threshold_db);
+	ng->state.close_threshold = db_to_mul(close_threshold_db);
+	ng->state.attack_rate = 1.0f / (ms_to_secf(attack_time_ms) * sample_rate);
+	ng->state.release_rate = 1.0f / (ms_to_secf(release_time_ms) * sample_rate);
 
-	const float threshold_diff = ng->open_threshold - ng->close_threshold;
+	const float threshold_diff = ng->state.open_threshold - ng->state.close_threshold;
 	const float min_decay_period = (1.0f / 75.0f) * sample_rate;
 
-	ng->decay_rate = threshold_diff / min_decay_period;
-	ng->hold_time = ms_to_secf(hold_time_ms);
-	ng->is_open = false;
-	ng->attenuation = 0.0f;
-	ng->level = 0.0f;
-	ng->held_time = 0.0f;
+	ng->state.decay_rate = threshold_diff / min_decay_period;
+	ng->state.hold_time = ms_to_secf(hold_time_ms);
+	ng->state.is_open = false;
+	ng->state.attenuation = 0.0f;
+	ng->state.level = 0.0f;
+	ng->state.held_time = 0.0f;
 }
 
 static void *noise_gate_create(obs_data_t *settings, obs_source_t *filter)
@@ -110,46 +98,7 @@ static void *noise_gate_create(obs_data_t *settings, obs_source_t *filter)
 static struct obs_audio_data *noise_gate_filter_audio(void *data, struct obs_audio_data *audio)
 {
 	struct noise_gate_data *ng = data;
-
-	float **adata = (float **)audio->data;
-	const float close_threshold = ng->close_threshold;
-	const float open_threshold = ng->open_threshold;
-	const float sample_rate_i = ng->sample_rate_i;
-	const float release_rate = ng->release_rate;
-	const float attack_rate = ng->attack_rate;
-	const float decay_rate = ng->decay_rate;
-	const float hold_time = ng->hold_time;
-	const size_t channels = ng->channels;
-
-	for (size_t i = 0; i < audio->frames; i++) {
-		float cur_level = fabsf(adata[0][i]);
-		for (size_t j = 0; j < channels; j++) {
-			cur_level = fmaxf(cur_level, fabsf(adata[j][i]));
-		}
-
-		if (cur_level > open_threshold && !ng->is_open) {
-			ng->is_open = true;
-		}
-		if (ng->level < close_threshold && ng->is_open) {
-			ng->held_time = 0.0f;
-			ng->is_open = false;
-		}
-
-		ng->level = fmaxf(ng->level, cur_level) - decay_rate;
-
-		if (ng->is_open) {
-			ng->attenuation = fminf(1.0f, ng->attenuation + attack_rate);
-		} else {
-			ng->held_time += sample_rate_i;
-			if (ng->held_time > hold_time) {
-				ng->attenuation = fmaxf(0.0f, ng->attenuation - release_rate);
-			}
-		}
-
-		for (size_t c = 0; c < channels; c++)
-			adata[c][i] *= ng->attenuation;
-	}
-
+	noise_gate_process(&ng->state, (float **)audio->data, audio->frames);
 	return audio;
 }
 

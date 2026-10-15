@@ -1,0 +1,66 @@
+{
+  "label": "Indicative microbenchmark, not an end-to-end measurement",
+  "metadata": {
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "cores": 5,
+    "os": "Linux 6.18.44",
+    "compiler": "clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)",
+    "ffmpeg": "not used",
+    "affinity_logical_cpus": 5,
+    "flags": "-std=c11 -O2 -DNDEBUG -fno-fast-math -ffp-contract=off",
+    "source_blob": "a2b04dc2e5b00eae36164b4255871e9458d2b812"
+  },
+  "load_before_percent": 0.0,
+  "load_during_percent": {
+    "median": 20.314419061655613,
+    "min": 18.75,
+    "q1": 19.324430479183032,
+    "q3": 20.94968704862783,
+    "iqr": 1.6252565694447973
+  },
+  "load_note": "Aggregate whole-machine busy percentage includes this benchmark; no process identities collected.",
+  "results": [
+    {
+      "case": "noise-gate-2ch",
+      "rounds": 9,
+      "before": {
+        "median": 7174.34716796875,
+        "min": 6936.5076904296875,
+        "q1": 7001.5604248046875,
+        "q3": 7486.7432861328125,
+        "iqr": 485.182861328125
+      },
+      "after": {
+        "median": 4874.9385986328125,
+        "min": 4494.5609130859375,
+        "q1": 4816.510986328125,
+        "q3": 4951.548828125,
+        "iqr": 135.037841796875
+      },
+      "speedup": 1.455300631415705,
+      "speedup_95ci": [1.42909359737634, 1.5176313236605279],
+      "noise_inconclusive": false
+    },
+    {
+      "case": "noise-gate-6ch",
+      "rounds": 9,
+      "before": {
+        "median": 8596.1787109375,
+        "min": 8296.017700195312,
+        "q1": 8525.274658203125,
+        "q3": 9306.65185546875,
+        "iqr": 781.377197265625
+      },
+      "after": {
+        "median": 4479.0997314453125,
+        "min": 4232.7677001953125,
+        "q1": 4382.8892822265625,
+        "q3": 4644.1781005859375,
+        "iqr": 261.288818359375
+      },
+      "speedup": 1.9660723863022458,
+      "speedup_95ci": [1.8768352397843333, 2.07018001027044],
+      "noise_inconclusive": false
+    }
+  ]
+}
