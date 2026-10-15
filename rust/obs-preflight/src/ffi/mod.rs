@@ -4,18 +4,22 @@
 //! opaque engine handle, copies fixed-layout samples, and copies completed
 //! results into caller-owned storage.
 
-use core::ffi::c_char;
-use core::ptr;
+use core::ffi::{CStr, c_char};
+use core::{ptr, slice};
 
 use crate::{
-    DEFAULT_WINDOW_DURATION_MS, StatSample, Verdict, WindowResult, judge_window, roll_up_windows,
+    BakeoffPlanner, CandidateMode, CandidatePlan, DEFAULT_WINDOW_DURATION_MS, StatSample, Verdict,
+    WindowResult, expand_candidate_matrix, judge_window, roll_up_windows,
 };
 
 pub const STATUS_OK: i32 = 0;
 pub const STATUS_INVALID_ARGUMENT: i32 = 1;
 pub const STATUS_ANALYSIS_ERROR: i32 = 2;
 pub const STATUS_OUT_OF_RANGE: i32 = 3;
+pub const STATUS_COMPLETE: i32 = 4;
 pub const REASON_CAPACITY: usize = 256;
+pub const ENCODER_ID_CAPACITY: usize = 128;
+const MAX_BAKEOFF_CANDIDATES: usize = 4096;
 
 /// Mirrors `struct obs_preflight_sample` in the hand-written C header.
 #[repr(C)]
@@ -62,10 +66,60 @@ pub struct ObsPreflightWindow {
     pub reason: [c_char; REASON_CAPACITY],
 }
 
+/// One video mode to test with every encoder ID passed to the planner.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ObsPreflightMode {
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+}
+
+/// A planned candidate copied into caller-owned storage.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ObsPreflightCandidatePlan {
+    pub order: usize,
+    pub encoder: [c_char; ENCODER_ID_CAPACITY],
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    pub duration_ms: u64,
+    pub stop_if_fail: i32,
+}
+
+/// Opaque sequential planner for one UI bake-off.
+pub struct PreflightBakeoff {
+    planner: BakeoffPlanner,
+}
+
 /// Opaque, independently owned history for one preflight run.
 pub struct PreflightEngine {
     window_duration_ms: u64,
     samples: Vec<StatSample>,
+}
+
+fn copy_candidate_plan(source: &CandidatePlan) -> Option<ObsPreflightCandidatePlan> {
+    let encoder = source.candidate.encoder.as_bytes();
+    if encoder.len() >= ENCODER_ID_CAPACITY {
+        return None;
+    }
+    let mut result = ObsPreflightCandidatePlan {
+        order: source.order,
+        encoder: [0; ENCODER_ID_CAPACITY],
+        width: source.candidate.width,
+        height: source.candidate.height,
+        fps_num: source.candidate.fps_num,
+        fps_den: source.candidate.fps_den,
+        duration_ms: source.duration_ms,
+        stop_if_fail: i32::from(source.stop_if_fail),
+    };
+    for (destination, source) in result.encoder.iter_mut().zip(encoder) {
+        *destination = *source as c_char;
+    }
+    Some(result)
 }
 
 impl From<ObsPreflightSample> for StatSample {
@@ -248,6 +302,140 @@ pub unsafe extern "C" fn obs_preflight_engine_get_window(
     STATUS_OK
 }
 
+/// Creates an encoder-major Cartesian product of encoder IDs and video modes.
+///
+/// Returns null for empty, invalid, or overlong input and for a zero duration.
+///
+/// # Safety
+///
+/// When its length is non-zero, `encoder_ids` must point to `encoder_count`
+/// readable C string pointers. `modes` must point to `mode_count` readable
+/// `ObsPreflightMode` values. Every encoder string must be NUL terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn obs_preflight_bakeoff_create(
+    encoder_ids: *const *const c_char,
+    encoder_count: usize,
+    modes: *const ObsPreflightMode,
+    mode_count: usize,
+    duration_ms: u64,
+) -> *mut PreflightBakeoff {
+    if encoder_count == 0
+        || mode_count == 0
+        || encoder_count
+            .checked_mul(mode_count)
+            .is_none_or(|candidate_count| candidate_count > MAX_BAKEOFF_CANDIDATES)
+        || encoder_ids.is_null()
+        || modes.is_null()
+        || duration_ms == 0
+    {
+        return ptr::null_mut();
+    }
+
+    // SAFETY: required by this function's pointer contract.
+    let encoder_ptrs = unsafe { slice::from_raw_parts(encoder_ids, encoder_count) };
+    let mut encoders = Vec::with_capacity(encoder_count);
+    for encoder_ptr in encoder_ptrs {
+        if encoder_ptr.is_null() {
+            return ptr::null_mut();
+        }
+        // SAFETY: each element must be a valid NUL-terminated C string.
+        let Ok(encoder) = unsafe { CStr::from_ptr(*encoder_ptr) }.to_str() else {
+            return ptr::null_mut();
+        };
+        if encoder.len() >= ENCODER_ID_CAPACITY {
+            return ptr::null_mut();
+        }
+        encoders.push(encoder.to_owned());
+    }
+
+    // SAFETY: required by this function's pointer contract.
+    let modes = unsafe { slice::from_raw_parts(modes, mode_count) };
+    let modes = modes
+        .iter()
+        .map(|mode| CandidateMode {
+            width: mode.width,
+            height: mode.height,
+            fps_num: mode.fps_num,
+            fps_den: mode.fps_den,
+        })
+        .collect::<Vec<_>>();
+    let candidates = expand_candidate_matrix(&encoders, &modes);
+    let Ok(planner) = BakeoffPlanner::new(candidates, duration_ms) else {
+        return ptr::null_mut();
+    };
+    Box::into_raw(Box::new(PreflightBakeoff { planner }))
+}
+
+/// Destroys a planner returned by `obs_preflight_bakeoff_create`. Null is safe.
+///
+/// # Safety
+///
+/// A non-null planner must be a live handle returned by this module and must
+/// not be used again after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn obs_preflight_bakeoff_destroy(planner: *mut PreflightBakeoff) {
+    if !planner.is_null() {
+        // SAFETY: guaranteed by the function contract.
+        drop(unsafe { Box::from_raw(planner) });
+    }
+}
+
+/// Writes the next candidate. Returns `STATUS_COMPLETE` after the last result.
+///
+/// # Safety
+///
+/// `planner` must be a live handle. `candidate_out` must point to writable
+/// storage for one `ObsPreflightCandidatePlan`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn obs_preflight_bakeoff_next(
+    planner: *mut PreflightBakeoff,
+    candidate_out: *mut ObsPreflightCandidatePlan,
+) -> i32 {
+    if planner.is_null() || candidate_out.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: the caller provides an exclusively borrowed live planner.
+    let planner = unsafe { &mut *planner };
+    let plan = match planner.planner.next_candidate() {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return STATUS_COMPLETE,
+        Err(_) => return STATUS_ANALYSIS_ERROR,
+    };
+    let Some(plan) = copy_candidate_plan(&plan) else {
+        return STATUS_OUT_OF_RANGE;
+    };
+    // SAFETY: the caller provides writable output storage.
+    unsafe { candidate_out.write(plan) };
+    STATUS_OK
+}
+
+/// Records a completed candidate. A failed candidate is preserved and the
+/// next call to `obs_preflight_bakeoff_next` still advances to the next row.
+///
+/// # Safety
+///
+/// `planner` must be a live handle with one candidate in progress.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn obs_preflight_bakeoff_complete(
+    planner: *mut PreflightBakeoff,
+    verdict: i32,
+) -> i32 {
+    if planner.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let verdict = match verdict {
+        0 => Verdict::Pass,
+        1 => Verdict::Marginal,
+        2 => Verdict::Fail,
+        _ => return STATUS_INVALID_ARGUMENT,
+    };
+    // SAFETY: the caller provides an exclusively borrowed live planner.
+    match unsafe { &mut *planner }.planner.complete_candidate(verdict) {
+        Ok(()) => STATUS_OK,
+        Err(_) => STATUS_ANALYSIS_ERROR,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +465,14 @@ mod tests {
         assert_eq!(offset_of!(ObsPreflightWindow, reason), 156);
         assert_eq!(size_of::<ObsPreflightWindow>(), 416);
         assert_eq!(align_of::<ObsPreflightWindow>(), 8);
+
+        assert_eq!(size_of::<ObsPreflightMode>(), 16);
+        assert_eq!(offset_of!(ObsPreflightCandidatePlan, encoder), 8);
+        assert_eq!(offset_of!(ObsPreflightCandidatePlan, width), 136);
+        assert_eq!(offset_of!(ObsPreflightCandidatePlan, duration_ms), 152);
+        assert_eq!(offset_of!(ObsPreflightCandidatePlan, stop_if_fail), 160);
+        assert_eq!(size_of::<ObsPreflightCandidatePlan>(), 168);
+        assert_eq!(align_of::<ObsPreflightCandidatePlan>(), 8);
     }
 
     #[test]
@@ -301,7 +497,7 @@ mod tests {
             },
         ];
         // SAFETY: the string pointers and arrays stay alive for the constructor call.
-        let mut planner = unsafe {
+        let planner = unsafe {
             obs_preflight_bakeoff_create(
                 encoder_ptrs.as_ptr(),
                 encoder_ptrs.len(),
@@ -322,11 +518,7 @@ mod tests {
         let first = unsafe { planned.assume_init() };
         assert_eq!(first.order, 1);
         assert_eq!(
-            CStr::from_bytes_until_nul(unsafe {
-                std::slice::from_raw_parts(first.encoder.as_ptr().cast(), first.encoder.len())
-            })
-            .unwrap()
-            .to_bytes(),
+            unsafe { CStr::from_ptr(first.encoder.as_ptr()) }.to_bytes(),
             b"obs_x264"
         );
         assert_eq!(
@@ -355,7 +547,5 @@ mod tests {
 
         // SAFETY: `planner` is live; destroy consumes it.
         unsafe { obs_preflight_bakeoff_destroy(planner) };
-        planner = ptr::null_mut();
-        assert!(planner.is_null());
     }
 }

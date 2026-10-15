@@ -622,6 +622,31 @@ pub struct Candidate {
     pub fps_den: u32,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CandidateMode {
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+}
+
+/// Expands the discovered encoder IDs across the caller's ordered video modes.
+/// Encoder-major ordering keeps every mode for one encoder together in the UI.
+pub fn expand_candidate_matrix(encoders: &[String], modes: &[CandidateMode]) -> Vec<Candidate> {
+    encoders
+        .iter()
+        .flat_map(|encoder| {
+            modes.iter().map(|mode| Candidate {
+                encoder: encoder.clone(),
+                width: mode.width,
+                height: mode.height,
+                fps_num: mode.fps_num,
+                fps_den: mode.fps_den,
+            })
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CandidatePlan {
     /// One-based position, preserving the order supplied by the caller.

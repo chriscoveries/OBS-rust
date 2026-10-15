@@ -13,9 +13,11 @@
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFrame>
 #include <QGroupBox>
 #include <QGridLayout>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
@@ -24,6 +26,8 @@
 #include <QScrollArea>
 #include <QSplitter>
 #include <QStandardPaths>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -32,14 +36,17 @@
 #include <array>
 #include <cmath>
 #include <cstring>
-#include <memory>
 #include <limits>
+#include <memory>
+#include <numeric>
 #include <string>
 #include <vector>
 
 namespace {
 
 constexpr uint64_t SAMPLE_WINDOW_MS = 500;
+// The existing Auto-Configuration wizard measures each encoder step for five seconds.
+constexpr uint64_t BAKEOFF_CANDIDATE_DURATION_MS = 5'000;
 constexpr size_t MAX_ENGINE_WINDOWS = 120;
 constexpr size_t CHART_HISTORY_SIZE = 120;
 
@@ -158,6 +165,11 @@ struct BenchPoint {
 	QString reason;
 };
 
+struct BakeoffCandidate {
+	std::string encoder_id;
+	obs_preflight_mode mode{};
+};
+
 OBSDataAutoRelease clone_settings(obs_data_t *settings)
 {
 	OBSDataAutoRelease copy = obs_data_create();
@@ -195,11 +207,14 @@ QString test_mode_label(const char *service_name)
 struct PreflightBenchWindow::Impl {
 	PreflightBenchWindow *dialog;
 	QPushButton *run_button = nullptr;
+	QPushButton *bakeoff_button = nullptr;
 	QLabel *destination_label = nullptr;
 	QLabel *state_label = nullptr;
 	QLabel *verdict_label = nullptr;
 	QLabel *reason_label = nullptr;
 	QLabel *recording_path_label = nullptr;
+	QLabel *bakeoff_status_label = nullptr;
+	QTableWidget *bakeoff_table = nullptr;
 	QTimer *sample_timer = nullptr;
 	QTimer *settings_timer = nullptr;
 	OBSPropertiesView *encoder_properties = nullptr;
@@ -210,19 +225,42 @@ struct PreflightBenchWindow::Impl {
 	OBSEncoderAutoRelease stream_audio_encoder;
 	OBSEncoderAutoRelease recording_video_encoder;
 	OBSEncoderAutoRelease recording_audio_encoder;
+	OBSEncoderAutoRelease bakeoff_encoder;
+	obs_data_t *bakeoff_audio_settings = nullptr;
 	obs_preflight_collector_t *collector = nullptr;
 	obs_preflight_engine_t *engine = nullptr;
+	obs_preflight_engine_t *bakeoff_engine = nullptr;
+	obs_preflight_bakeoff_t *bakeoff_planner = nullptr;
 	std::vector<BenchPoint> points;
+	std::vector<BakeoffCandidate> bakeoff_candidates;
+	obs_preflight_candidate_plan active_candidate{};
 	std::array<ChartPane, 8> charts;
+	QElapsedTimer bakeoff_elapsed;
 	QString supported_test_mode;
 	QString recording_path;
 	QString setup_error;
 	QString stop_completion_status;
+	QString bakeoff_candidate_reason;
+	uint32_t current_output_width = 0;
+	uint32_t current_output_height = 0;
+	uint32_t current_fps_num = 0;
+	uint32_t current_fps_den = 0;
+	int64_t candidate_render_headroom_ns = 0;
+	int64_t stream_bitrate_kbps = 0;
+	double candidate_encoder_skip_percent = 0.0;
+	int32_t candidate_verdict = OBS_PREFLIGHT_PASS;
+	size_t active_bakeoff_row = 0;
 	uint64_t last_window_end_ms = 0;
+	uint64_t candidate_last_window_end_ms = 0;
 	bool restart_stream_when_stopped = false;
 	bool restart_was_active = false;
 	bool bench_running = false;
 	bool stopping = false;
+	bool bakeoff_running = false;
+	bool bakeoff_waiting_for_stop = false;
+	bool bakeoff_cancelled = false;
+	bool bakeoff_candidate_active = false;
+	bool bakeoff_candidate_has_samples = false;
 	bool close_when_stopped = false;
 
 	explicit Impl(PreflightBenchWindow *dialog_) : dialog(dialog_) {}
@@ -243,6 +281,11 @@ struct PreflightBenchWindow::Impl {
 		}
 		obs_preflight_collector_destroy(collector);
 		obs_preflight_engine_destroy(engine);
+		obs_preflight_engine_destroy(bakeoff_engine);
+		obs_preflight_bakeoff_destroy(bakeoff_planner);
+		if (bakeoff_audio_settings) {
+			obs_data_release(bakeoff_audio_settings);
+		}
 	}
 
 	void SetStatus(const QString &text) { state_label->setText(text); }
@@ -351,6 +394,9 @@ struct PreflightBenchWindow::Impl {
 			setup_error = QObject::tr("Could not read the configured encoder settings.");
 			return false;
 		}
+		bakeoff_audio_settings = stream_audio_settings.Get();
+		obs_data_addref(bakeoff_audio_settings);
+		stream_bitrate_kbps = obs_data_get_int(stream_video_settings, "bitrate");
 		const char *stream_video_id = obs_encoder_get_id(configured_stream_video);
 		const char *stream_audio_id = configured_stream_audio ? obs_encoder_get_id(configured_stream_audio)
 								      : "ffmpeg_aac";
@@ -447,6 +493,132 @@ struct PreflightBenchWindow::Impl {
 		}
 
 		return true;
+	}
+
+	bool BuildBakeoffPlan()
+	{
+		std::vector<std::string> encoders;
+		for (size_t index = 0;; ++index) {
+			const char *encoder_id = nullptr;
+			if (!obs_enum_encoder_types(index, &encoder_id)) {
+				break;
+			}
+			if (encoder_id && obs_get_encoder_type(encoder_id) == OBS_ENCODER_VIDEO) {
+				encoders.emplace_back(encoder_id);
+			}
+		}
+		std::sort(encoders.begin(), encoders.end());
+		encoders.erase(std::unique(encoders.begin(), encoders.end()), encoders.end());
+		if (encoders.empty()) {
+			SetBakeoffStatus(QObject::tr("No video encoders are registered in OBS."));
+			return false;
+		}
+
+		struct obs_video_info video_info = {};
+		if (!obs_get_video_info(&video_info) || video_info.output_width == 0 || video_info.output_height == 0 ||
+		    video_info.fps_num == 0 || video_info.fps_den == 0) {
+			SetBakeoffStatus(QObject::tr("OBS video settings are not ready for an encoder bake-off."));
+			return false;
+		}
+		current_output_width = video_info.output_width;
+		current_output_height = video_info.output_height;
+		current_fps_num = video_info.fps_num;
+		current_fps_den = video_info.fps_den;
+
+		struct Scale {
+			uint32_t numerator;
+			uint32_t denominator;
+		};
+		constexpr std::array<Scale, 3> scales = {{{1, 1}, {2, 3}, {1, 2}}};
+		constexpr std::array<uint32_t, 2> frame_rate_divisors = {1, 2};
+		std::vector<obs_preflight_mode> modes;
+		for (const Scale &scale : scales) {
+			const uint64_t width =
+				(static_cast<uint64_t>(current_output_width) * scale.numerator / scale.denominator) &
+				~UINT64_C(1);
+			const uint64_t height =
+				(static_cast<uint64_t>(current_output_height) * scale.numerator / scale.denominator) &
+				~UINT64_C(1);
+			if (width == 0 || height == 0 || width > UINT32_MAX || height > UINT32_MAX) {
+				continue;
+			}
+			for (uint32_t divisor : frame_rate_divisors) {
+				const uint64_t fps_den = static_cast<uint64_t>(current_fps_den) * divisor;
+				if (fps_den > UINT32_MAX) {
+					continue;
+				}
+				const obs_preflight_mode mode = {
+					.width = static_cast<uint32_t>(width),
+					.height = static_cast<uint32_t>(height),
+					.fps_num = current_fps_num,
+					.fps_den = static_cast<uint32_t>(fps_den),
+				};
+				const auto duplicate =
+					std::find_if(modes.begin(), modes.end(), [&mode](const auto &existing) {
+						return existing.width == mode.width && existing.height == mode.height &&
+						       existing.fps_num == mode.fps_num &&
+						       existing.fps_den == mode.fps_den;
+					});
+				if (duplicate == modes.end()) {
+					modes.push_back(mode);
+				}
+			}
+		}
+		if (modes.empty()) {
+			SetBakeoffStatus(QObject::tr("OBS has no usable resolution and frame-rate candidates."));
+			return false;
+		}
+
+		bakeoff_candidates.clear();
+		bakeoff_candidates.reserve(encoders.size() * modes.size());
+		for (const std::string &encoder_id : encoders) {
+			for (const obs_preflight_mode &mode : modes) {
+				bakeoff_candidates.push_back({encoder_id, mode});
+			}
+		}
+
+		std::vector<const char *> encoder_ids;
+		encoder_ids.reserve(encoders.size());
+		for (const std::string &encoder_id : encoders) {
+			encoder_ids.push_back(encoder_id.c_str());
+		}
+		bakeoff_planner = obs_preflight_bakeoff_create(encoder_ids.data(), encoder_ids.size(), modes.data(),
+							       modes.size(), BAKEOFF_CANDIDATE_DURATION_MS);
+		if (!bakeoff_planner) {
+			SetBakeoffStatus(QObject::tr("The preflight engine could not build the bake-off plan."));
+			return false;
+		}
+
+		bakeoff_table->setRowCount(static_cast<int>(bakeoff_candidates.size()));
+		for (size_t row = 0; row < bakeoff_candidates.size(); ++row) {
+			const BakeoffCandidate &candidate = bakeoff_candidates[row];
+			const QString fps =
+				QString::number(static_cast<double>(candidate.mode.fps_num) / candidate.mode.fps_den,
+						'f', candidate.mode.fps_den == 1 ? 0 : 2);
+			bakeoff_table->setItem(static_cast<int>(row), 0,
+					       new QTableWidgetItem(QString::fromStdString(candidate.encoder_id)));
+			bakeoff_table->setItem(
+				static_cast<int>(row), 1,
+				new QTableWidgetItem(
+					QStringLiteral("%1 × %2").arg(candidate.mode.width).arg(candidate.mode.height)));
+			bakeoff_table->setItem(static_cast<int>(row), 2, new QTableWidgetItem(fps));
+			bakeoff_table->setItem(static_cast<int>(row), 3, new QTableWidgetItem(QStringLiteral("—")));
+			bakeoff_table->setItem(static_cast<int>(row), 4, new QTableWidgetItem(QStringLiteral("—")));
+			bakeoff_table->setItem(static_cast<int>(row), 5, new QTableWidgetItem(QObject::tr("Pending")));
+			bakeoff_table->setItem(static_cast<int>(row), 6, new QTableWidgetItem());
+		}
+		bakeoff_table->resizeRowsToContents();
+		SetBakeoffStatus(QObject::tr("Ready to test %1 candidates (%2 seconds each).")
+					 .arg(bakeoff_candidates.size())
+					 .arg(BAKEOFF_CANDIDATE_DURATION_MS / 1000));
+		return true;
+	}
+
+	void SetBakeoffStatus(const QString &text)
+	{
+		if (bakeoff_status_label) {
+			bakeoff_status_label->setText(text);
+		}
 	}
 
 	bool PrepareRecordingPath()
@@ -582,6 +754,40 @@ struct PreflightBenchWindow::Impl {
 		splitter->setStretchFactor(1, 1);
 		root->addWidget(splitter, 1);
 
+		auto *bakeoff_group = new QGroupBox(QObject::tr("Encoder bake-off"), dialog);
+		auto *bakeoff_layout = new QVBoxLayout(bakeoff_group);
+		auto *bakeoff_controls = new QHBoxLayout;
+		auto *bakeoff_description = new QLabel(
+			QObject::tr(
+				"Tests every registered video encoder at the current, two-thirds and half resolution, "
+				"at the current and half frame rate. Each candidate uses the non-public test output."),
+			bakeoff_group);
+		bakeoff_description->setWordWrap(true);
+		bakeoff_status_label = new QLabel(QObject::tr("No bake-off has run yet."), bakeoff_group);
+		bakeoff_button = new QPushButton(QObject::tr("Run bake-off"), bakeoff_group);
+		bakeoff_controls->addWidget(bakeoff_status_label, 1);
+		bakeoff_controls->addWidget(bakeoff_button);
+		bakeoff_table = new QTableWidget(0, 7, bakeoff_group);
+		bakeoff_table->setHorizontalHeaderLabels(
+			{QObject::tr("Encoder"), QObject::tr("Resolution"), QObject::tr("FPS"), QObject::tr("Headroom"),
+			 QObject::tr("Skipped"), QObject::tr("Verdict"), QObject::tr("Reason")});
+		bakeoff_table->verticalHeader()->hide();
+		bakeoff_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		bakeoff_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+		bakeoff_table->setSortingEnabled(false);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+		bakeoff_table->setMinimumHeight(180);
+		bakeoff_layout->addWidget(bakeoff_description);
+		bakeoff_layout->addLayout(bakeoff_controls);
+		bakeoff_layout->addWidget(bakeoff_table);
+		root->addWidget(bakeoff_group);
+
 		auto *summary = new QFrame(dialog);
 		auto *summary_layout = new QVBoxLayout(summary);
 		verdict_label = new QLabel(QObject::tr("Verdict: waiting for samples"), summary);
@@ -596,6 +802,7 @@ struct PreflightBenchWindow::Impl {
 		if (!setup_error.isEmpty()) {
 			SetStatus(setup_error);
 			run_button->setEnabled(false);
+			bakeoff_button->setEnabled(false);
 		} else if (!supported_test_mode.isEmpty()) {
 			SetStatus(QObject::tr("Ready · %1").arg(supported_test_mode));
 		}
@@ -696,6 +903,278 @@ struct PreflightBenchWindow::Impl {
 		reason_label->setText(point.reason);
 	}
 
+	QString BakeoffVerdictText(int32_t verdict) const
+	{
+		if (verdict == OBS_PREFLIGHT_PASS) {
+			return QObject::tr("Pass");
+		}
+		if (verdict == OBS_PREFLIGHT_MARGINAL) {
+			return QObject::tr("Marginal");
+		}
+		return QObject::tr("Fail");
+	}
+
+	void SetBakeoffCell(int column, const QString &text)
+	{
+		if (bakeoff_table && active_bakeoff_row < static_cast<size_t>(bakeoff_table->rowCount())) {
+			bakeoff_table->item(static_cast<int>(active_bakeoff_row), column)->setText(text);
+		}
+	}
+
+	void SetCandidateMetrics(const obs_preflight_window &window)
+	{
+		candidate_render_headroom_ns = window.render_headroom_ns;
+		candidate_encoder_skip_percent = window.encoder_skip_percent;
+		SetBakeoffCell(3, QStringLiteral("%1 ms").arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2));
+		SetBakeoffCell(4, QStringLiteral("%1 %").arg(candidate_encoder_skip_percent, 0, 'f', 2));
+	}
+
+	void CompleteBakeoffCandidate(int32_t verdict, const QString &reason)
+	{
+		if (!bakeoff_candidate_active || !bakeoff_planner) {
+			return;
+		}
+		candidate_verdict = std::max(candidate_verdict, verdict);
+		const QString final_reason = reason.isEmpty() ? bakeoff_candidate_reason : reason;
+		const int32_t status = obs_preflight_bakeoff_complete(bakeoff_planner, candidate_verdict);
+		if (status != OBS_PREFLIGHT_OK) {
+			SetBakeoffStatus(QObject::tr("The preflight engine could not record a candidate result."));
+		}
+		bakeoff_candidate_active = false;
+		SetBakeoffCell(5, BakeoffVerdictText(candidate_verdict));
+		SetBakeoffCell(6, final_reason.isEmpty() ? QObject::tr("No plain-language reason was reported.")
+							 : final_reason);
+		bakeoff_table->scrollToItem(bakeoff_table->item(static_cast<int>(active_bakeoff_row), 0));
+		bakeoff_waiting_for_stop = true;
+		if (stream_output && obs_output_active(stream_output)) {
+			obs_output_stop(stream_output);
+			sample_timer->start(100);
+			SetBakeoffStatus(QObject::tr("Candidate %1 of %2 finished; stopping its output.")
+						 .arg(active_candidate.order)
+						 .arg(bakeoff_candidates.size()));
+		} else {
+			QTimer::singleShot(0, dialog, [this]() { ContinueBakeoffAfterStop(); });
+		}
+	}
+
+	void FinishBakeoff(bool cancelled)
+	{
+		if (stream_output && !obs_output_active(stream_output)) {
+			obs_output_set_video_encoder(stream_output, stream_video_encoder);
+		}
+		bakeoff_encoder = nullptr;
+		bakeoff_running = false;
+		bakeoff_waiting_for_stop = false;
+		bakeoff_candidate_active = false;
+		bakeoff_candidate_has_samples = false;
+		bakeoff_cancelled = false;
+		sample_timer->stop();
+		obs_preflight_engine_destroy(bakeoff_engine);
+		bakeoff_engine = nullptr;
+		obs_preflight_bakeoff_destroy(bakeoff_planner);
+		bakeoff_planner = nullptr;
+		bakeoff_button->setEnabled(setup_error.isEmpty());
+		bakeoff_button->setText(QObject::tr("Run bake-off"));
+		run_button->setEnabled(setup_error.isEmpty());
+		if (encoder_properties) {
+			encoder_properties->setEnabled(true);
+		}
+		SetBakeoffStatus(cancelled ? QObject::tr("Bake-off stopped. Completed results remain in the table.")
+					   : QObject::tr("Bake-off complete. Results for %1 candidates are shown.")
+						     .arg(bakeoff_candidates.size()));
+		SetStatus(cancelled ? QObject::tr("Bake-off stopped.") : QObject::tr("Bake-off complete."));
+		if (close_when_stopped) {
+			close_when_stopped = false;
+			dialog->close();
+		}
+	}
+
+	void ContinueBakeoffAfterStop()
+	{
+		if (!bakeoff_waiting_for_stop) {
+			return;
+		}
+		bakeoff_waiting_for_stop = false;
+		if (stream_output && !obs_output_active(stream_output)) {
+			obs_output_set_video_encoder(stream_output, stream_video_encoder);
+		}
+		bakeoff_encoder = nullptr;
+		if (bakeoff_engine) {
+			obs_preflight_engine_destroy(bakeoff_engine);
+		}
+		bakeoff_engine = obs_preflight_engine_create_with_window(SAMPLE_WINDOW_MS);
+		if (bakeoff_cancelled) {
+			FinishBakeoff(true);
+			return;
+		}
+		if (!bakeoff_engine) {
+			SetBakeoffStatus(QObject::tr("Could not prepare the next candidate's stats window."));
+			FinishBakeoff(true);
+			return;
+		}
+		StartNextBakeoffCandidate();
+	}
+
+	void StartNextBakeoffCandidate()
+	{
+		if (!bakeoff_running || !bakeoff_planner) {
+			return;
+		}
+		active_candidate = {};
+		const int32_t next_status = obs_preflight_bakeoff_next(bakeoff_planner, &active_candidate);
+		if (next_status == OBS_PREFLIGHT_COMPLETE) {
+			FinishBakeoff(false);
+			return;
+		}
+		if (next_status != OBS_PREFLIGHT_OK || active_candidate.order == 0 ||
+		    active_candidate.order > bakeoff_candidates.size()) {
+			SetBakeoffStatus(QObject::tr("The preflight engine could not read the next candidate."));
+			FinishBakeoff(true);
+			return;
+		}
+
+		active_bakeoff_row = active_candidate.order - 1;
+		bakeoff_candidate_active = true;
+		bakeoff_candidate_has_samples = false;
+		candidate_verdict = OBS_PREFLIGHT_PASS;
+		candidate_render_headroom_ns = 0;
+		candidate_encoder_skip_percent = 0.0;
+		candidate_last_window_end_ms = 0;
+		bakeoff_candidate_reason.clear();
+		SetBakeoffCell(3, QStringLiteral("—"));
+		SetBakeoffCell(4, QStringLiteral("—"));
+		SetBakeoffCell(5, QObject::tr("Running"));
+		SetBakeoffCell(6, QString());
+
+		OBSDataAutoRelease settings = obs_encoder_defaults(active_candidate.encoder);
+		if (!settings) {
+			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL,
+						 QObject::tr("OBS could not create settings for this encoder."));
+			return;
+		}
+		if (stream_bitrate_kbps > 0) {
+			obs_data_set_int(settings, "bitrate", stream_bitrate_kbps);
+		}
+		obs_service_apply_encoder_settings(test_service, settings, bakeoff_audio_settings);
+		bakeoff_encoder = obs_video_encoder_create(active_candidate.encoder, "preflight_bakeoff_video",
+							   settings, nullptr);
+		if (!bakeoff_encoder) {
+			CompleteBakeoffCandidate(
+				OBS_PREFLIGHT_FAIL,
+				QObject::tr("OBS could not create this encoder on the current device."));
+			return;
+		}
+
+		video_t *video = obs_get_video();
+		if (!video || active_candidate.fps_num != current_fps_num || current_fps_den == 0 ||
+		    active_candidate.fps_den % current_fps_den != 0) {
+			CompleteBakeoffCandidate(
+				OBS_PREFLIGHT_FAIL,
+				QObject::tr(
+					"OBS could not attach this frame-rate candidate to the current video mix."));
+			return;
+		}
+		obs_encoder_set_video(bakeoff_encoder, video);
+		if (active_candidate.width != current_output_width ||
+		    active_candidate.height != current_output_height) {
+			obs_encoder_set_scaled_size(bakeoff_encoder, active_candidate.width, active_candidate.height);
+		}
+		const uint32_t divisor = active_candidate.fps_den / current_fps_den;
+		if (divisor == 0 || !obs_encoder_set_frame_rate_divisor(bakeoff_encoder, divisor)) {
+			CompleteBakeoffCandidate(
+				OBS_PREFLIGHT_FAIL,
+				QObject::tr("This encoder could not apply the requested frame-rate divisor."));
+			return;
+		}
+
+		obs_output_set_video_encoder(stream_output, bakeoff_encoder);
+		if (!obs_output_start(stream_output)) {
+			CompleteBakeoffCandidate(
+				OBS_PREFLIGHT_FAIL,
+				output_error(stream_output,
+					     QObject::tr("This encoder could not start the private test output.")));
+			return;
+		}
+		bakeoff_elapsed.start();
+		sample_timer->start(static_cast<int>(SAMPLE_WINDOW_MS));
+		SetBakeoffStatus(QObject::tr("Testing candidate %1 of %2: %3.")
+					 .arg(active_candidate.order)
+					 .arg(bakeoff_candidates.size())
+					 .arg(QString::fromUtf8(active_candidate.encoder)));
+	}
+
+	void StopBakeoff()
+	{
+		if (!bakeoff_running) {
+			return;
+		}
+		bakeoff_cancelled = true;
+		bakeoff_button->setEnabled(false);
+		bakeoff_button->setText(QObject::tr("Stopping…"));
+		if (bakeoff_candidate_active) {
+			SetBakeoffCell(5, QObject::tr("Stopped"));
+			SetBakeoffCell(6, QObject::tr("Stopped before this candidate finished."));
+			bakeoff_candidate_active = false;
+		}
+		bakeoff_waiting_for_stop = true;
+		if (stream_output && obs_output_active(stream_output)) {
+			obs_output_stop(stream_output);
+			sample_timer->start(100);
+		} else {
+			QTimer::singleShot(0, dialog, [this]() { ContinueBakeoffAfterStop(); });
+		}
+		SetBakeoffStatus(QObject::tr("Stopping the current private test candidate."));
+	}
+
+	void SampleBakeoff()
+	{
+		if (!bakeoff_running || !bakeoff_candidate_active) {
+			return;
+		}
+		if (!stream_output || !obs_output_active(stream_output)) {
+			CompleteBakeoffCandidate(
+				OBS_PREFLIGHT_FAIL,
+				output_error(stream_output,
+					     QObject::tr("The private test output stopped unexpectedly.")));
+			return;
+		}
+		video_t *video = obs_encoder_video(bakeoff_encoder);
+		if (obs_preflight_collect_sample(collector, bakeoff_engine, stream_output, video) == OBS_PREFLIGHT_OK) {
+			size_t count = 0;
+			if (obs_preflight_engine_get_window_count(bakeoff_engine, &count) == OBS_PREFLIGHT_OK &&
+			    count > 0) {
+				obs_preflight_window window = {};
+				if (obs_preflight_engine_get_window(bakeoff_engine, count - 1, &window) ==
+					    OBS_PREFLIGHT_OK &&
+				    window.end_ms > candidate_last_window_end_ms) {
+					candidate_last_window_end_ms = window.end_ms;
+					bakeoff_candidate_has_samples = true;
+					SetCandidateMetrics(window);
+					PushPoint(window);
+					if (window.verdict >= candidate_verdict) {
+						candidate_verdict = window.verdict;
+						bakeoff_candidate_reason = QString::fromUtf8(window.reason);
+					}
+					SetBakeoffCell(5, BakeoffVerdictText(candidate_verdict));
+					if (candidate_verdict == OBS_PREFLIGHT_FAIL) {
+						CompleteBakeoffCandidate(candidate_verdict, bakeoff_candidate_reason);
+						return;
+					}
+				}
+			}
+		}
+
+		if (bakeoff_elapsed.elapsed() >= static_cast<qint64>(active_candidate.duration_ms)) {
+			if (!bakeoff_candidate_has_samples) {
+				CompleteBakeoffCandidate(
+					OBS_PREFLIGHT_FAIL,
+					QObject::tr("The encoder produced no usable samples during this test."));
+			} else {
+				CompleteBakeoffCandidate(candidate_verdict, bakeoff_candidate_reason);
+			}
+		}
+	}
+
 	void UpdateEncoderSettings()
 	{
 		if (!stream_video_encoder || !encoder_properties) {
@@ -724,7 +1203,7 @@ struct PreflightBenchWindow::Impl {
 PreflightBenchWindow::PreflightBenchWindow(QWidget *parent) : QDialog(parent), impl(std::make_unique<Impl>(this))
 {
 	setWindowTitle(tr("Preflight live bench"));
-	resize(1280, 820);
+	resize(1280, 1020);
 	impl->sample_timer = new QTimer(this);
 	impl->sample_timer->setInterval(static_cast<int>(SAMPLE_WINDOW_MS));
 	connect(impl->sample_timer, &QTimer::timeout, this, &PreflightBenchWindow::Sample);
@@ -734,12 +1213,21 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent) : QDialog(parent), i
 	impl->BuildOutputs();
 	impl->BuildUi();
 	connect(impl->run_button, &QPushButton::clicked, this, &PreflightBenchWindow::ToggleBench);
+	connect(impl->bakeoff_button, &QPushButton::clicked, this, &PreflightBenchWindow::ToggleBakeoff);
 }
 
 PreflightBenchWindow::~PreflightBenchWindow() = default;
 
 void PreflightBenchWindow::closeEvent(QCloseEvent *event)
 {
+	if (impl->bakeoff_running || impl->bakeoff_waiting_for_stop) {
+		impl->close_when_stopped = true;
+		if (impl->bakeoff_running && !impl->bakeoff_cancelled) {
+			impl->StopBakeoff();
+		}
+		event->ignore();
+		return;
+	}
 	if (impl->bench_running || impl->stopping) {
 		impl->close_when_stopped = true;
 		if (!impl->stopping) {
@@ -755,6 +1243,10 @@ void PreflightBenchWindow::ToggleBench()
 {
 	if (impl->bench_running) {
 		impl->StopOutputs(tr("Stopping the stream test and local recording."), tr("Stopped"));
+		return;
+	}
+	if (impl->bakeoff_running || impl->stopping) {
+		impl->SetStatus(tr("Stop the current preflight operation before starting the live bench."));
 		return;
 	}
 
@@ -780,6 +1272,41 @@ void PreflightBenchWindow::ToggleBench()
 	impl->sample_timer->start();
 }
 
+void PreflightBenchWindow::ToggleBakeoff()
+{
+	if (impl->bakeoff_running) {
+		impl->StopBakeoff();
+		return;
+	}
+	if (!impl->setup_error.isEmpty()) {
+		impl->SetBakeoffStatus(impl->setup_error);
+		return;
+	}
+	if (impl->bench_running || impl->stopping || (impl->stream_output && obs_output_active(impl->stream_output))) {
+		impl->SetBakeoffStatus(tr("Stop the live bench before starting the bake-off."));
+		return;
+	}
+	if (!impl->BuildBakeoffPlan()) {
+		return;
+	}
+	impl->bakeoff_engine = obs_preflight_engine_create_with_window(SAMPLE_WINDOW_MS);
+	if (!impl->bakeoff_engine) {
+		impl->SetBakeoffStatus(tr("Could not create the bake-off stats engine."));
+		obs_preflight_bakeoff_destroy(impl->bakeoff_planner);
+		impl->bakeoff_planner = nullptr;
+		return;
+	}
+	impl->bakeoff_running = true;
+	impl->bakeoff_cancelled = false;
+	impl->bakeoff_button->setText(tr("Stop bake-off"));
+	impl->run_button->setEnabled(false);
+	if (impl->encoder_properties) {
+		impl->encoder_properties->setEnabled(false);
+	}
+	impl->SetStatus(tr("Running each candidate through the non-public test output."));
+	impl->StartNextBakeoffCandidate();
+}
+
 void PreflightBenchWindow::Sample()
 {
 	if (impl->stopping) {
@@ -788,6 +1315,16 @@ void PreflightBenchWindow::Sample()
 		if (stream_stopped && recording_stopped) {
 			impl->FinishStopping();
 		}
+		return;
+	}
+	if (impl->bakeoff_waiting_for_stop) {
+		if (!impl->stream_output || !obs_output_active(impl->stream_output)) {
+			impl->ContinueBakeoffAfterStop();
+		}
+		return;
+	}
+	if (impl->bakeoff_running) {
+		impl->SampleBakeoff();
 		return;
 	}
 

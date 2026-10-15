@@ -8,6 +8,12 @@
 _Static_assert(OBS_PREFLIGHT_PASS == 0, "Pass verdict ABI value");
 _Static_assert(OBS_PREFLIGHT_MARGINAL == 1, "Marginal verdict ABI value");
 _Static_assert(OBS_PREFLIGHT_FAIL == 2, "Fail verdict ABI value");
+_Static_assert(sizeof(struct obs_preflight_mode) == 16, "Preflight mode ABI size");
+_Static_assert(offsetof(struct obs_preflight_candidate_plan, encoder) == 8, "Bake-off encoder offset");
+_Static_assert(offsetof(struct obs_preflight_candidate_plan, width) == 136, "Bake-off width offset");
+_Static_assert(offsetof(struct obs_preflight_candidate_plan, duration_ms) == 152, "Bake-off duration offset");
+_Static_assert(offsetof(struct obs_preflight_candidate_plan, stop_if_fail) == 160, "Bake-off early-stop offset");
+_Static_assert(sizeof(struct obs_preflight_candidate_plan) == 168, "Bake-off plan ABI size");
 
 static struct obs_preflight_sample sample_at(uint64_t timestamp_ms)
 {
@@ -142,6 +148,36 @@ static void test_counter_decrease_starts_a_new_window(void **state)
 	obs_preflight_engine_destroy(engine);
 }
 
+static void test_bakeoff_records_failed_candidate_and_continues(void **state)
+{
+	(void)state;
+	const char *encoders[] = {"obs_x264", "obs_nvenc_h264"};
+	const struct obs_preflight_mode modes[] = {
+		{.width = 1920, .height = 1080, .fps_num = 60, .fps_den = 1},
+		{.width = 1280, .height = 720, .fps_num = 30, .fps_den = 1},
+	};
+	obs_preflight_bakeoff_t *planner = obs_preflight_bakeoff_create(encoders, 2, modes, 2, 5000);
+	struct obs_preflight_candidate_plan candidate;
+
+	assert_non_null(planner);
+	assert_int_equal(obs_preflight_bakeoff_next(planner, &candidate), OBS_PREFLIGHT_OK);
+	assert_int_equal(candidate.order, 1);
+	assert_string_equal(candidate.encoder, "obs_x264");
+	assert_int_equal(candidate.width, 1920);
+	assert_int_equal(candidate.fps_num, 60);
+	assert_int_equal(candidate.duration_ms, 5000);
+	assert_int_equal(candidate.stop_if_fail, 1);
+	assert_int_equal(obs_preflight_bakeoff_complete(planner, OBS_PREFLIGHT_FAIL), OBS_PREFLIGHT_OK);
+	assert_int_equal(obs_preflight_bakeoff_next(planner, &candidate), OBS_PREFLIGHT_OK);
+	assert_int_equal(candidate.order, 2);
+	assert_string_equal(candidate.encoder, "obs_x264");
+	assert_int_equal(candidate.width, 1280);
+	assert_int_equal(candidate.fps_num, 30);
+	assert_int_equal(obs_preflight_bakeoff_complete(planner, OBS_PREFLIGHT_PASS), OBS_PREFLIGHT_OK);
+	obs_preflight_bakeoff_destroy(planner);
+	obs_preflight_bakeoff_destroy(NULL);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -151,6 +187,7 @@ int main(void)
 		cmocka_unit_test(test_clean_window_passes_with_reason),
 		cmocka_unit_test(test_output_drop_thresholds),
 		cmocka_unit_test(test_counter_decrease_starts_a_new_window),
+		cmocka_unit_test(test_bakeoff_records_failed_candidate_and_continues),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);

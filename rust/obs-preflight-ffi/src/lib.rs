@@ -7,7 +7,8 @@
 #![deny(unsafe_code)]
 
 pub use obs_preflight::{
-    DEFAULT_WINDOW_DURATION_MS, StatSample, Verdict, WindowResult, judge_window, roll_up_windows,
+    BakeoffPlanner, CandidateMode, CandidatePlan, DEFAULT_WINDOW_DURATION_MS, StatSample, Verdict,
+    WindowResult, expand_candidate_matrix, judge_window, roll_up_windows,
 };
 
 #[allow(unsafe_code)] // Isolated C ABI boundary.
