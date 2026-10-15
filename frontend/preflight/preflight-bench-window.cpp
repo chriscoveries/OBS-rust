@@ -228,7 +228,7 @@ public:
 		hover_samples = std::move(values);
 		if (was_hovered && !hover_samples.empty()) {
 			hovered_index = std::clamp(qRound(hovered_fraction * (hover_samples.size() - 1)), 0,
-					   static_cast<int>(hover_samples.size()) - 1);
+						   static_cast<int>(hover_samples.size()) - 1);
 		} else {
 			hovered_index = -1;
 			hovered_series_row = -1;
@@ -248,13 +248,14 @@ protected:
 		constexpr qreal HOVER_READOUT_HEIGHT = 74.0;
 		const bool show_hover_readout = hovered_index >= 0 &&
 						hovered_index < static_cast<int>(hover_samples.size());
-		const QRectF plot = QRectF(rect()).adjusted(54, 24 + (show_hover_readout ? HOVER_READOUT_HEIGHT : 0.0), -10,
-					    -16);
+		const QRectF plot =
+			QRectF(rect()).adjusted(54, 24 + (show_hover_readout ? HOVER_READOUT_HEIGHT : 0.0), -10, -16);
 		plot_rect = plot;
 		setProperty("preflightHoverBandHeight", show_hover_readout ? HOVER_READOUT_HEIGHT : 0.0);
 		setProperty("preflightHoverDetailCount",
-			     show_hover_readout ? static_cast<int>(hover_samples[static_cast<size_t>(hovered_index)].lines.size())
-					: 0);
+			    show_hover_readout
+				    ? static_cast<int>(hover_samples[static_cast<size_t>(hovered_index)].lines.size())
+				    : 0);
 		setProperty("preflightPlotTop", plot.top());
 		setProperty("preflightPlotWidth", qRound(plot.width()));
 		setProperty("preflightPlotHeight", qRound(plot.height()));
@@ -372,8 +373,8 @@ protected:
 			const QFontMetrics metrics(readout_font);
 			painter.setFont(readout_font);
 			painter.setPen(palette().color(QPalette::Text));
-			painter.drawText(QRectF(7, 1, width() - 14, metrics.height() + 2), Qt::AlignLeft | Qt::AlignVCenter,
-					 sample.time);
+			painter.drawText(QRectF(7, 1, width() - 14, metrics.height() + 2),
+					 Qt::AlignLeft | Qt::AlignVCenter, sample.time);
 			const qreal left_column = 8;
 			const qreal right_column = width() / 2.0 + 4;
 			const qreal row_top = metrics.height() + 5;
@@ -412,8 +413,9 @@ protected:
 			    !line.points[static_cast<size_t>(hovered_index)]) {
 				continue;
 			}
-			const qreal sample_y = plot_rect.bottom() -
-					       plot_rect.height() * (*line.points[static_cast<size_t>(hovered_index)] / plot_maximum);
+			const qreal sample_y =
+				plot_rect.bottom() -
+				plot_rect.height() * (*line.points[static_cast<size_t>(hovered_index)] / plot_maximum);
 			const qreal distance = std::abs(event->position().y() - sample_y);
 			if (distance < nearest_distance) {
 				nearest_distance = distance;
@@ -595,10 +597,10 @@ protected:
 		setProperty("preflightMainPreviewShare", preview_width / bounds.width());
 		preview_panel = QRectF(bounds.left(), bounds.top(), preview_width, bounds.height());
 		source_zoom_panel = QRectF(preview_panel.right() + gap, bounds.top(), zoom_width, zoom_height);
-		encoded_zoom_panel = QRectF(preview_panel.right() + gap, source_zoom_panel.bottom() + gap, zoom_width,
-					    zoom_height);
-		recording_zoom_panel = QRectF(preview_panel.right() + gap, encoded_zoom_panel.bottom() + gap, zoom_width,
-					      zoom_height);
+		encoded_zoom_panel =
+			QRectF(preview_panel.right() + gap, source_zoom_panel.bottom() + gap, zoom_width, zoom_height);
+		recording_zoom_panel =
+			QRectF(preview_panel.right() + gap, encoded_zoom_panel.bottom() + gap, zoom_width, zoom_height);
 		for (const QRectF &panel :
 		     {preview_panel, source_zoom_panel, encoded_zoom_panel, recording_zoom_panel}) {
 			painter.setPen(palette().color(QPalette::Mid));
@@ -3395,18 +3397,19 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			sample.lines.push_back({QStringLiteral("CPU %1 %").arg(sample_point.cpu_percent, 0, 'f', 1),
 						series_colors[0], dialog->palette().color(QPalette::Text)});
 			if (sample_point.gpu_percent) {
-				sample.lines.push_back({QStringLiteral("GPU %1 %").arg(*sample_point.gpu_percent, 0, 'f', 1),
-							series_colors[1], dialog->palette().color(QPalette::Text)});
+				sample.lines.push_back(
+					{QStringLiteral("GPU %1 %").arg(*sample_point.gpu_percent, 0, 'f', 1),
+					 series_colors[1], dialog->palette().color(QPalette::Text)});
 			} else {
 				sample.lines.push_back({QObject::tr("GPU unavailable"), series_colors[1],
-								 dialog->palette().color(QPalette::Text)});
+							dialog->palette().color(QPalette::Text)});
 			}
-		add_line(sample, QObject::tr("Render"),
-			 QStringLiteral("%1 ms · %2 % of interval (warn %3 · danger %4 ms)")
-				 .arg(sample_point.average_frame_time_ms, 0, 'f', 2)
-				 .arg(sample_render_ratio * 100.0, 0, 'f', 0)
-				 .arg(sample_interval * OBS_RENDER_WARNING_FRACTION, 0, 'f', 2)
-				 .arg(sample_interval * OBS_RENDER_DANGER_FRACTION, 0, 'f', 2),
+			add_line(sample, QObject::tr("Render"),
+				 QStringLiteral("%1 ms · %2 % of interval (warn %3 · danger %4 ms)")
+					 .arg(sample_point.average_frame_time_ms, 0, 'f', 2)
+					 .arg(sample_render_ratio * 100.0, 0, 'f', 0)
+					 .arg(sample_interval * OBS_RENDER_WARNING_FRACTION, 0, 'f', 2)
+					 .arg(sample_interval * OBS_RENDER_DANGER_FRACTION, 0, 'f', 2),
 				 QString(), 2,
 				 sample_band(sample_render_ratio, OBS_RENDER_WARNING_FRACTION,
 					     OBS_RENDER_DANGER_FRACTION));
@@ -3445,13 +3448,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				 sample_band(sample_point.congestion_percent, OBS_CONGESTION_WARNING_PERCENT,
 					     OBS_CONGESTION_DANGER_PERCENT));
 			const bool no_encoder_frames = sample_point.encoder_frames == 0;
-		const QColor encoder_status_color =
-			no_encoder_frames ? status_color("text-danger") : dialog->palette().color(QPalette::Mid);
-		sample.lines.push_back({QStringLiteral("Encoder %1%2 frames")
-							.arg(no_encoder_frames ? QStringLiteral("✕ ") : QString())
-							.arg(sample_point.encoder_frames),
-						encoder_status_color, no_encoder_frames ? encoder_status_color
-										     : dialog->palette().color(QPalette::Text)});
+			const QColor encoder_status_color = no_encoder_frames ? status_color("text-danger")
+									      : dialog->palette().color(QPalette::Mid);
+			sample.lines.push_back(
+				{QStringLiteral("Encoder %1%2 frames")
+					 .arg(no_encoder_frames ? QStringLiteral("✕ ") : QString())
+					 .arg(sample_point.encoder_frames),
+				 encoder_status_color,
+				 no_encoder_frames ? encoder_status_color : dialog->palette().color(QPalette::Text)});
 			sample.lines.push_back({QStringLiteral("Bitrate %1 kb/s · connect %2 ms")
 							.arg(sample_point.bitrate_kbps, 0, 'f', 0)
 							.arg(sample_point.connect_time_ms, 0, 'f', 0),

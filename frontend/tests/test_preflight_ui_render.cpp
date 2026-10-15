@@ -691,8 +691,8 @@ int main(int argc, char **argv)
 		PreflightBenchWindow window(recorded);
 		const QSize default_size = window.size();
 		const QScreen *primary_screen = QGuiApplication::primaryScreen();
-		require(primary_screen && default_size == QSize(1040, 720).boundedTo(
-											    primary_screen->availableGeometry().size()),
+		require(primary_screen &&
+				default_size == QSize(1040, 720).boundedTo(primary_screen->availableGeometry().size()),
 			"default window size is not clamped to the available screen geometry");
 		window.resize(1040, 720);
 		window.show(); // Qt's offscreen platform keeps this out of the display.
@@ -763,8 +763,7 @@ int main(int argc, char **argv)
 
 		auto *metric_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-metric-table"));
 		require(metric_table && !metric_table->isVisible() && metric_table->rowCount() == 4 &&
-				metric_table->columnCount() == 2 &&
-				metric_table->horizontalHeader()->isHidden() &&
+				metric_table->columnCount() == 2 && metric_table->horizontalHeader()->isHidden() &&
 				metric_table->horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOff,
 			"chart legend is visible before the user hovers over a sample");
 		for (int index = 0; index < 8; ++index) {
