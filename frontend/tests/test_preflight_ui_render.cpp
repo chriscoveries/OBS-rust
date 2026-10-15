@@ -221,6 +221,7 @@ static void test_apply_contract_regressions()
 {
 	using preflight::apply::BuildAdvancedPlan;
 	using preflight::apply::BuildSimplePlan;
+	using preflight::apply::ReadAdvancedSettings;
 	using preflight::apply::TargetIdentity;
 	using preflight::apply::WriteAdvancedSettings;
 	using preflight::apply::WriteSimpleConfig;
@@ -268,7 +269,6 @@ static void test_apply_contract_regressions()
 		BuildSimplePlan(simple_saved, simple_initial, simple_shown, QStringLiteral("x264"), false, target);
 	require(WriteSimpleConfig(config.get(), displayed_simple, current_simple, &error),
 		"the displayed Simple Apply plan did not write to temporary basic.ini");
-	require(config_save(config.get()) == CONFIG_SUCCESS, "could not persist temporary basic.ini");
 	config_close(config.release());
 	config = nullptr;
 	config_t *reopened_basic = nullptr;
@@ -309,6 +309,17 @@ static void test_apply_contract_regressions()
 		require(file.open(QIODevice::ReadOnly), "could not read temporary encoder JSON");
 		return QJsonDocument::fromJson(file.readAll()).object();
 	};
+	auto write_bytes = [](const QString &path, const QByteArray &bytes) {
+		QFile file(path);
+		require(file.open(QIODevice::WriteOnly | QIODevice::Truncate),
+			"could not create temporary file bytes");
+		require(file.write(bytes) == bytes.size(), "could not write temporary file bytes");
+	};
+	auto read_bytes = [](const QString &path) {
+		QFile file(path);
+		require(file.open(QIODevice::ReadOnly), "could not read temporary file bytes");
+		return file.readAll();
+	};
 	const QJsonObject record_saved{{QStringLiteral("recording"), QStringLiteral("untouched")}};
 	write_json(stream_path, advanced_saved);
 	write_json(record_path, record_saved);
@@ -328,21 +339,33 @@ static void test_apply_contract_regressions()
 	QDir().mkpath(changed_profile.profile_path);
 	const QString other_stream_path =
 		QDir(changed_profile.profile_path).filePath(QStringLiteral("streamEncoder.json"));
-	const QJsonObject other_profile_saved{{QStringLiteral("bitrate"), 9999}};
-	write_json(other_stream_path, other_profile_saved);
+	write_json(other_stream_path, advanced_saved);
 	const auto profile_changed_plan =
 		BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited, changed_profile);
 	require(!WriteAdvancedSettings(displayed_advanced, profile_changed_plan, &error) &&
-			read_json(other_stream_path) == other_profile_saved,
+			read_json(other_stream_path) == advanced_saved,
 		"Apply wrote settings after the active profile changed");
 
 	TargetIdentity changed_encoder = target;
 	changed_encoder.encoder_id = QStringLiteral("obs_nvenc_h264_tex");
+	write_json(stream_path, advanced_saved);
 	const auto encoder_changed_plan =
 		BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited, changed_encoder);
 	require(!WriteAdvancedSettings(displayed_advanced, encoder_changed_plan, &error) &&
-			read_json(stream_path) == expected_advanced,
+			read_json(stream_path) == advanced_saved,
 		"Apply wrote settings after the configured encoder changed");
+
+	const QString corrupt_stream_path = QDir(profile_path).filePath(QStringLiteral("streamEncoder.json"));
+	const QString corrupt_backup_path = corrupt_stream_path + QStringLiteral(".bak");
+	const QByteArray corrupt_stream_bytes = QByteArrayLiteral("{corrupt stream settings\n");
+	const QByteArray backup_stream_bytes = QByteArrayLiteral("{\"bitrate\":1234}\n");
+	write_bytes(corrupt_stream_path, corrupt_stream_bytes);
+	write_bytes(corrupt_backup_path, backup_stream_bytes);
+	QJsonObject corrupt_preview;
+	const bool corrupt_preview_ok = ReadAdvancedSettings(corrupt_stream_path, &corrupt_preview, &error);
+	require(!corrupt_preview_ok && read_bytes(corrupt_stream_path) == corrupt_stream_bytes &&
+			read_bytes(corrupt_backup_path) == backup_stream_bytes,
+		"preview repaired a corrupt streamEncoder.json from its backup or changed either file");
 }
 
 int main(int argc, char **argv)
