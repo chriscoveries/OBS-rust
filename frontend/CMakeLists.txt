@@ -43,7 +43,7 @@ if(ENABLE_UNIT_TESTS)
   add_executable(test_preflight_test_mode tests/test_preflight_test_mode.cpp preflight/preflight-test-mode.cpp)
   target_include_directories(test_preflight_test_mode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
   add_test(NAME test_preflight_test_mode COMMAND test_preflight_test_mode)
-  add_executable(test_preflight_bench_data tests/test_preflight_bench_data.cpp)
+  add_executable(test_preflight_bench_data tests/test_preflight_bench_data.cpp preflight/preflight-bench-data.cpp)
   target_include_directories(test_preflight_bench_data PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
   add_test(NAME test_preflight_bench_data COMMAND test_preflight_bench_data)
   add_executable(
@@ -71,6 +71,8 @@ if(ENABLE_UNIT_TESTS)
       OBSApp_Themes.cpp
       preflight/obs-preflight-collector.c
       preflight/preflight-apply-plan.cpp
+      preflight/preflight-bench-data.cpp
+      preflight/preflight-bench-data-obs.cpp
       preflight/preflight-bench-window.cpp
       preflight/preflight-loupe-capture.cpp
       preflight/preflight-loupe-core.cpp
