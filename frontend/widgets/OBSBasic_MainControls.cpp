@@ -21,6 +21,10 @@
 #include <utility/AppIdentity.hpp>
 #include "OBSBasicStats.hpp"
 
+#ifdef OBS_PREFLIGHT_SUPPORTED
+#include <preflight/preflight-bench-window.hpp>
+#endif
+
 #include <dialogs/LogUploadDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
 #include <dialogs/OBSBasicAdvAudio.hpp>
@@ -650,6 +654,22 @@ void OBSBasic::on_autoConfigure_triggered()
 	test.setModal(true);
 	test.show();
 	test.exec();
+}
+
+void OBSBasic::on_preflightBench_triggered()
+{
+#ifdef OBS_PREFLIGHT_SUPPORTED
+	if (preflightBench) {
+		preflightBench->show();
+		preflightBench->raise();
+		preflightBench->activateWindow();
+		return;
+	}
+
+	preflightBench = new PreflightBenchWindow(this);
+	preflightBench->setAttribute(Qt::WA_DeleteOnClose);
+	preflightBench->show();
+#endif
 }
 
 void OBSBasic::on_stats_triggered()

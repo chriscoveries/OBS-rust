@@ -44,3 +44,15 @@ target_sources(
     dialogs/OBSWhatsNew.cpp
     dialogs/OBSWhatsNew.hpp
 )
+
+if(TARGET obs-preflight-rust)
+  target_sources(
+    obs-studio
+    PRIVATE
+      preflight/obs-preflight-collector.c
+      preflight/preflight-bench-window.cpp
+      preflight/preflight-bench-window.hpp
+      preflight/preflight-test-mode.cpp
+      preflight/preflight-test-mode.hpp
+  )
+endif()

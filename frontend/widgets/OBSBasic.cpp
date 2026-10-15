@@ -140,6 +140,9 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	api = InitializeAPIInterface(this);
 
 	ui->setupUi(this);
+#ifndef OBS_PREFLIGHT_SUPPORTED
+	ui->preflightBench->setVisible(false);
+#endif
 	ui->previewDisabledWidget->setVisible(false);
 
 	/* Set up streaming connections */

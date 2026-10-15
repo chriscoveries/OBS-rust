@@ -31,9 +31,18 @@ endif()
 add_executable(obs-studio)
 add_executable(OBS::studio ALIAS obs-studio)
 
+if(TARGET obs-preflight-rust)
+  target_link_libraries(obs-studio PRIVATE "${OBS_PREFLIGHT_ARCHIVE}" Threads::Threads ${CMAKE_DL_LIBS})
+  add_dependencies(obs-studio obs-preflight-rust)
+  target_compile_definitions(obs-studio PRIVATE OBS_PREFLIGHT_SUPPORTED=1)
+endif()
+
 if(ENABLE_UNIT_TESTS)
   add_executable(test_virtual_cam_shutdown tests/test_virtual_cam_shutdown.cpp)
   add_test(NAME test_virtual_cam_shutdown COMMAND test_virtual_cam_shutdown)
+  add_executable(test_preflight_test_mode tests/test_preflight_test_mode.cpp preflight/preflight-test-mode.cpp)
+  target_include_directories(test_preflight_test_mode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
+  add_test(NAME test_preflight_test_mode COMMAND test_preflight_test_mode)
   add_executable(test_config_migration tests/test_config_migration.cpp)
   target_include_directories(test_config_migration PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   foreach(
