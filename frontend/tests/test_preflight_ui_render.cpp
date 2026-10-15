@@ -533,7 +533,7 @@ int main(int argc, char **argv)
 			 QStringLiteral("obs_x264")});
 
 		PreflightBenchWindow window(recorded);
-		window.resize(1180, 850);
+		window.resize(1040, 720);
 		window.show(); // Qt's offscreen platform keeps this out of the display.
 		QApplication::processEvents();
 

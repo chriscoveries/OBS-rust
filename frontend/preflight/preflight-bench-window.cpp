@@ -110,6 +110,17 @@ struct ChartWarningLine {
 	QColor color;
 };
 
+// Reads the text colour the active OBS theme gives a class such as "text-warning", so painted
+// charts use the same warning and danger colours as the Stats window.
+QColor theme_class_color(QWidget *context, const char *classes)
+{
+	QLabel probe(context);
+	probe.hide();
+	setClasses(&probe, classes);
+	probe.ensurePolished();
+	return probe.palette().color(QPalette::WindowText);
+}
+
 class MetricChart final : public QWidget {
 	std::vector<ChartSeries> series;
 	std::vector<ChartWarningLine> warning_lines;
@@ -300,9 +311,9 @@ class MetricSparkline final : public QWidget {
 public:
 	explicit MetricSparkline(QWidget *parent = nullptr) : QWidget(parent)
 	{
-		setMinimumSize(88, 22);
+		setMinimumSize(96, 22);
 		setMaximumHeight(26);
-		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 	}
 
 	void SetPoints(std::vector<double> values)
@@ -325,7 +336,7 @@ protected:
 			low -= padding;
 			high += padding;
 		}
-		const QRectF plot = QRectF(rect()).adjusted(2, 3, -2, -3);
+		const QRectF plot = QRectF(rect()).adjusted(4, 5, -6, -5);
 		QPolygonF line;
 		line.reserve(static_cast<qsizetype>(points.size()));
 		for (size_t index = 0; index < points.size(); ++index) {
@@ -336,8 +347,14 @@ protected:
 		}
 		QPainter painter(this);
 		painter.setRenderHint(QPainter::Antialiasing);
-		painter.setPen(QPen(palette().color(QPalette::Highlight), 1.5));
+		/* Text colour stays readable on both the row and its selection highlight. */
+		QColor stroke = palette().color(QPalette::Text);
+		stroke.setAlphaF(0.65);
+		painter.setPen(QPen(stroke, 1.25));
 		painter.drawPolyline(line);
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(palette().color(QPalette::Text));
+		painter.drawEllipse(line.back(), 2.5, 2.5);
 	}
 };
 
@@ -749,7 +766,6 @@ struct PreflightBenchWindow::Impl {
 	QTabWidget *tabs = nullptr;
 	QTableWidget *metric_table = nullptr;
 	QGroupBox *chart_detail_group = nullptr;
-	QLabel *chart_detail_title = nullptr;
 	MetricChart *chart_detail = nullptr;
 	QGroupBox *apply_group = nullptr;
 	QLabel *apply_mode_label = nullptr;
@@ -1055,7 +1071,7 @@ struct PreflightBenchWindow::Impl {
 		apply_button->setEnabled(false);
 		if (recorded_apply_preview) {
 			apply_plan = *recorded_apply_preview;
-			apply_mode_label->setText(QObject::tr("Recorded %1 Apply preview")
+			apply_mode_label->setText(QObject::tr("%1 (recorded preview)")
 							  .arg(apply_plan->mode == preflight::apply::OutputMode::Simple
 								       ? QObject::tr("Simple")
 								       : QObject::tr("Advanced")));
@@ -1063,8 +1079,8 @@ struct PreflightBenchWindow::Impl {
 			OBSBasic *main = OBSBasic::Get();
 			const char *mode_value = main ? config_get_string(main->Config(), "Output", "Mode") : nullptr;
 			const QString mode = QString::fromUtf8(mode_value ? mode_value : "");
-			apply_mode_label->setText(QObject::tr("OBS output mode: %1 · mode stays unchanged")
-							  .arg(mode.isEmpty() ? QObject::tr("unknown") : mode));
+			apply_mode_label->setText(
+				QObject::tr("%1 (stays unchanged)").arg(mode.isEmpty() ? QObject::tr("unknown") : mode));
 			apply_plan = BuildCurrentApplyPlan(main);
 		}
 
@@ -1660,34 +1676,27 @@ struct PreflightBenchWindow::Impl {
 			return;
 		}
 		const size_t index = static_cast<size_t>(selected_metric);
-		chart_detail_title->setText(charts[index].title);
-		const QPalette colors = chart_detail->palette();
-		const QColor primary = colors.color(QPalette::Highlight);
-		const QColor secondary = colors.color(QPalette::Link);
+		chart_detail_group->setTitle(charts[index].title);
+		const QColor primary = chart_detail->palette().color(QPalette::Highlight);
+		const QColor warning_color = theme_class_color(chart_detail, "text-warning");
+		const QColor danger_color = theme_class_color(chart_detail, "text-danger");
 		std::vector<ChartSeries> series;
 		if (index == 1) {
+			// The frame interval is drawn as the 100% line, so only render time needs a series.
 			std::vector<double> render;
-			std::vector<double> interval;
 			render.reserve(points.size());
-			interval.reserve(points.size());
 			for (const BenchPoint &point : points) {
 				render.push_back(point.average_frame_time_ms);
-				interval.push_back(point.frame_interval_ms);
 			}
 			series.push_back({charts[index].names[0], primary, std::move(render)});
-			series.push_back({charts[index].names[1], secondary, std::move(interval)});
 		} else {
 			series.push_back({charts[index].names.front(), primary, MetricValues(index)});
 		}
 		chart_detail->SetStartsAtZero(index == 0 || index == 2 || index == 3 || index == 4 || index == 6);
 		std::vector<ChartWarningLine> warnings = charts[index].warning_lines;
-		for (ChartWarningLine &warning : warnings) {
-			warning.color = warning.label.contains(QStringLiteral("danger"), Qt::CaseInsensitive) ||
-							warning.label.startsWith(QStringLiteral("100%")) ||
-							warning.label.startsWith(QStringLiteral("5%")) ||
-							warning.label.startsWith(QStringLiteral("66.67%"))
-						? colors.color(QPalette::BrightText)
-						: colors.color(QPalette::Link);
+		for (size_t line = 0; line < warnings.size(); ++line) {
+			// Each chart lists its OBS warning band first and its danger band second.
+			warnings[line].color = line == 0 ? warning_color : danger_color;
 		}
 		if (index == 1 && !points.empty() && warnings.size() == 2) {
 			warnings[0].value = points.back().frame_interval_ms * OBS_RENDER_WARNING_FRACTION;
@@ -1719,6 +1728,17 @@ struct PreflightBenchWindow::Impl {
 		bakeoff_table->setFixedHeight(std::min(content_height, MAX_BAKEOFF_TABLE_VIEW_HEIGHT));
 	}
 
+	void ResizeMetricTableToContents()
+	{
+		if (!metric_table) {
+			return;
+		}
+		// Show all eight rows without a scroll bar; the detail chart takes the remaining height.
+		metric_table->resizeRowsToContents();
+		metric_table->setFixedHeight(metric_table->horizontalHeader()->sizeHint().height() +
+					     metric_table->verticalHeader()->length() + metric_table->frameWidth() * 2);
+	}
+
 	void ResizeApplyTableToContents()
 	{
 		if (!apply_table) {
@@ -1748,13 +1768,19 @@ struct PreflightBenchWindow::Impl {
 		header->addWidget(run_button);
 		root->addLayout(header);
 
-		destination_label =
-			new QLabel(recorded_apply_preview          ? QObject::tr("Recorded sample preview")
-				   : supported_test_mode.isEmpty() ? QObject::tr("No safe test service selected")
-				   : cloudflare_speed_only         ? supported_test_mode
-							   : QObject::tr("Private test: %1").arg(supported_test_mode),
-				   dialog);
+		QString destination;
+		if (supported_test_mode.isEmpty()) {
+			destination = QObject::tr("No safe test service selected");
+		} else if (cloudflare_speed_only) {
+			destination = supported_test_mode;
+		} else {
+			destination = QObject::tr("Private test: %1").arg(supported_test_mode);
+		}
+		destination_label = new QLabel(destination, dialog);
 		destination_label->setWordWrap(true);
+		setClasses(destination_label, "text-muted");
+		// A recorded preview already says so in the header; there is no destination to show.
+		destination_label->setVisible(!recorded_apply_preview);
 		root->addWidget(destination_label);
 
 		tabs = new QTabWidget(dialog);
@@ -1818,11 +1844,18 @@ struct PreflightBenchWindow::Impl {
 		metric_table->setSelectionMode(QAbstractItemView::SingleSelection);
 		metric_table->setShowGrid(false);
 		metric_table->setWordWrap(false);
+		metric_table->setFocusPolicy(Qt::NoFocus);
+		// Names, values and trends stay together on the left, as in OBS's Stats window; the
+		// status column takes the remaining width.
 		metric_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 		metric_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-		metric_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-		metric_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+		metric_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
+		metric_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+		metric_table->horizontalHeader()->setMinimumSectionSize(72);
+		metric_table->horizontalHeader()->resizeSection(2, 160);
+		metric_table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 		metric_table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+		metric_table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 		const std::array<QString, 8> metric_names = {
 			QObject::tr("CPU"),        QObject::tr("Render time vs interval"),
 			QObject::tr("Missed"),     QObject::tr("Skipped"),
@@ -1835,6 +1868,7 @@ struct PreflightBenchWindow::Impl {
 			auto *value = new QLabel(QStringLiteral("—"), metric_table);
 			value->setObjectName(QStringLiteral("preflight-metric-value-%1").arg(row));
 			setClasses(value, "text-bold");
+			value->setContentsMargins(12, 0, 16, 0);
 			metric_table->setCellWidget(static_cast<int>(row), 1, value);
 			auto *sparkline = new MetricSparkline(metric_table);
 			sparkline->setObjectName(QStringLiteral("preflight-metric-trend-%1").arg(row));
@@ -1846,17 +1880,15 @@ struct PreflightBenchWindow::Impl {
 		}
 		connect(metric_table, &QTableWidget::currentCellChanged, dialog,
 			[this](int row, int, int, int) { ShowMetricDetail(row); });
+		ResizeMetricTableToContents();
 		live_layout->addWidget(metric_table);
 
 		chart_detail_group = new QGroupBox(QObject::tr("Metric detail"), live_tab);
 		chart_detail_group->setObjectName(QStringLiteral("preflight-chart-detail-group"));
 		auto *detail_layout = new QVBoxLayout(chart_detail_group);
-		chart_detail_title = new QLabel(chart_detail_group);
-		chart_detail_title->setObjectName(QStringLiteral("preflight-chart-detail-title"));
 		chart_detail = new MetricChart(chart_detail_group);
 		chart_detail->setObjectName(QStringLiteral("preflight-chart-detail"));
 		chart_detail->setMinimumHeight(148);
-		detail_layout->addWidget(chart_detail_title);
 		detail_layout->addWidget(chart_detail);
 		chart_detail_group->setVisible(false);
 		live_layout->addWidget(chart_detail_group);
@@ -1867,6 +1899,7 @@ struct PreflightBenchWindow::Impl {
 		recording_path_label->setWordWrap(true);
 		recording_layout->addRow(QObject::tr("File"), recording_path_label);
 		live_layout->addWidget(recording_group);
+		live_layout->addStretch(1);
 		tabs->addTab(live_tab, QObject::tr("Live bench"));
 
 		auto *bakeoff_tab = new QWidget(tabs);
@@ -1877,8 +1910,7 @@ struct PreflightBenchWindow::Impl {
 		auto *bakeoff_layout = new QVBoxLayout(bakeoff_group);
 		auto *bakeoff_controls = new QHBoxLayout;
 		auto *bakeoff_description = new QLabel(
-			QObject::tr("Compare encoder, resolution and frame-rate candidates on the private output."),
-			bakeoff_group);
+			QObject::tr("Each candidate runs for five seconds on the private test output."), bakeoff_group);
 		bakeoff_description->setWordWrap(true);
 		bakeoff_status_label = new QLabel(QObject::tr("No bake-off has run yet."), bakeoff_group);
 		bakeoff_button = new QPushButton(QObject::tr("Run bake-off"), bakeoff_group);
@@ -1922,9 +1954,13 @@ struct PreflightBenchWindow::Impl {
 		loupe_status_label->setWordWrap(true);
 		loupe_view = new LoupeView(loupe_group);
 		loupe_view->setObjectName(QStringLiteral("preflight-loupe-view"));
+		// Enough height for the default crop at 400%; the rest of the tab stays empty instead of
+		// stretching the panes around a small picture.
+		loupe_view->setMaximumHeight(320);
 		loupe_layout->addWidget(loupe_status_label);
 		loupe_layout->addWidget(loupe_view, 1);
-		loupe_tab_layout->addWidget(loupe_group, 1);
+		loupe_tab_layout->addWidget(loupe_group);
+		loupe_tab_layout->addStretch(1);
 		tabs->addTab(loupe_tab, QObject::tr("Loupe"));
 
 		auto *apply_tab = new QWidget(tabs);
@@ -1969,11 +2005,15 @@ struct PreflightBenchWindow::Impl {
 			apply_button->setObjectName(QStringLiteral("preflight-apply-button"));
 			apply_button->setEnabled(false);
 			auto *apply_form = new QFormLayout;
-			apply_form->addRow(QObject::tr("Mode"), apply_mode_label);
+			apply_form->addRow(QObject::tr("Output mode"), apply_mode_label);
 			apply_layout->addLayout(apply_form);
 			apply_layout->addWidget(apply_table);
 			apply_layout->addWidget(apply_note);
-			apply_layout->addWidget(apply_button);
+			// OBS dialogs keep their action buttons right-aligned.
+			auto *apply_buttons = new QHBoxLayout;
+			apply_buttons->addStretch(1);
+			apply_buttons->addWidget(apply_button);
+			apply_layout->addLayout(apply_buttons);
 			apply_tab_layout->addWidget(apply_group);
 		} else {
 			apply_tab_layout->addWidget(
@@ -2070,7 +2110,8 @@ struct PreflightBenchWindow::Impl {
 			if (value > OBS_STATS_WARNING_PERCENT) {
 				return std::pair{QObject::tr("Warning"), "text-warning"};
 			}
-			return std::pair{QObject::tr("Good"), ""};
+			// Like OBS's Stats window, a value inside its limits gets no status label.
+			return std::pair{QString(), ""};
 		};
 		const double render_percent = point.frame_interval_ms > 0.0
 						      ? point.average_frame_time_ms / point.frame_interval_ms * 100.0
@@ -2079,15 +2120,15 @@ struct PreflightBenchWindow::Impl {
 						   ? std::pair{QObject::tr("Danger"), "text-danger"}
 					   : render_percent > OBS_RENDER_WARNING_FRACTION * 100.0
 						   ? std::pair{QObject::tr("Warning"), "text-warning"}
-						   : std::pair{QObject::tr("Good"), ""};
+						   : std::pair{QString(), ""};
 		const auto missed_status = percentage_status(point.render_lag_percent);
 		const auto skipped_status = percentage_status(point.encoder_skipped_percent);
 		const auto dropped_status = percentage_status(point.dropped_percent);
 		const auto congestion_status = point.congestion_percent > OBS_CONGESTION_DANGER_PERCENT
-						       ? std::pair{QObject::tr("Poor"), "text-danger"}
+						       ? std::pair{QObject::tr("Danger"), "text-danger"}
 					       : point.congestion_percent > OBS_CONGESTION_WARNING_PERCENT
-						       ? std::pair{QObject::tr("Fair"), "text-warning"}
-						       : std::pair{QObject::tr("Good"), "text-success"};
+						       ? std::pair{QObject::tr("Warning"), "text-warning"}
+						       : std::pair{QString(), ""};
 		const std::array<QString, 8> values = {
 			QStringLiteral("%1 %").arg(point.cpu_percent, 0, 'f', 1),
 			QStringLiteral("%1 / %2 ms")
@@ -2101,15 +2142,15 @@ struct PreflightBenchWindow::Impl {
 			point.connect_time_ms <= 0 ? QObject::tr("Waiting")
 						   : QStringLiteral("%1 ms").arg(point.connect_time_ms, 0, 'f', 0),
 		};
-		const std::array<QString, 8> statuses = {
-			QStringLiteral("—"),
-			render_status.first,
-			missed_status.first,
-			skipped_status.first,
-			dropped_status.first,
-			QStringLiteral("—"),
-			congestion_status.first,
-			point.connect_time_ms <= 0 ? QObject::tr("Waiting") : QStringLiteral("—")};
+		const std::array<QString, 8> statuses = {QString(),
+							 render_status.first,
+							 missed_status.first,
+							 skipped_status.first,
+							 dropped_status.first,
+							 QString(),
+							 congestion_status.first,
+							 point.connect_time_ms <= 0 ? QObject::tr("Waiting")
+										    : QString()};
 		const std::array<const char *, 8> classes = {"",
 							     render_status.second,
 							     missed_status.second,
@@ -2125,6 +2166,7 @@ struct PreflightBenchWindow::Impl {
 			setClasses(metric_rows[index].status, classes[index]);
 			metric_rows[index].sparkline->SetPoints(MetricValues(index));
 		}
+		ResizeMetricTableToContents();
 		UpdateChartDetail();
 	}
 
@@ -2475,7 +2517,7 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 {
 	setObjectName(QStringLiteral("preflight-bench-window"));
 	setWindowTitle(tr("Preflight live bench"));
-	resize(1280, 1020);
+	resize(1040, 720);
 	impl->sample_timer = new QTimer(this);
 	impl->sample_timer->setInterval(static_cast<int>(SAMPLE_WINDOW_MS));
 	connect(impl->sample_timer, &QTimer::timeout, this, &PreflightBenchWindow::Sample);
