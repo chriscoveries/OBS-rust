@@ -1,0 +1,4 @@
+gpu=31
+gpu=47
+video_encode=12
+video_encode=18

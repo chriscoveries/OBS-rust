@@ -31,6 +31,16 @@ endif()
 add_executable(obs-studio)
 add_executable(OBS::studio ALIAS obs-studio)
 
+set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/unavailable/preflight-gpu-sampler.cpp)
+if(OS_MACOS)
+  set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/macos/preflight-gpu-sampler.cpp)
+elseif(OS_WINDOWS)
+  set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/windows/preflight-gpu-sampler.cpp)
+elseif(OS_LINUX)
+  set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/linux/preflight-gpu-sampler.cpp)
+endif()
+target_sources(obs-studio PRIVATE preflight/preflight-gpu-sampler.cpp "${PREFLIGHT_GPU_PLATFORM_SOURCE}")
+
 if(TARGET obs-preflight-rust)
   target_link_libraries(obs-studio PRIVATE "${OBS_PREFLIGHT_ARCHIVE}" Threads::Threads ${CMAKE_DL_LIBS})
   add_dependencies(obs-studio obs-preflight-rust)
@@ -46,6 +56,26 @@ if(ENABLE_UNIT_TESTS)
   add_executable(test_preflight_bench_data tests/test_preflight_bench_data.cpp preflight/preflight-bench-data.cpp)
   target_include_directories(test_preflight_bench_data PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
   add_test(NAME test_preflight_bench_data COMMAND test_preflight_bench_data)
+  add_executable(
+    test_preflight_gpu_sampler
+    tests/test_preflight_gpu_sampler.cpp
+    preflight/preflight-gpu-sampler.cpp
+    "${PREFLIGHT_GPU_PLATFORM_SOURCE}"
+  )
+  target_include_directories(test_preflight_gpu_sampler PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
+  target_compile_definitions(
+    test_preflight_gpu_sampler
+    PRIVATE PREFLIGHT_GPU_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/preflight-gpu"
+  )
+  if(OS_MACOS)
+    find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
+    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    target_link_libraries(test_preflight_gpu_sampler PRIVATE "${IOKIT_FRAMEWORK}" "${COREFOUNDATION_FRAMEWORK}")
+    target_link_libraries(obs-studio PRIVATE "${IOKIT_FRAMEWORK}" "${COREFOUNDATION_FRAMEWORK}")
+  elseif(OS_WINDOWS)
+    target_link_libraries(obs-studio PRIVATE pdh)
+  endif()
+  add_test(NAME test_preflight_gpu_sampler COMMAND test_preflight_gpu_sampler)
   add_executable(
     test_preflight_cloudflare_speed_test
     tests/test_preflight_cloudflare_speed_test.cpp

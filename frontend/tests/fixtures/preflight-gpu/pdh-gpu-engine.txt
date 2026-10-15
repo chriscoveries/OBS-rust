@@ -1,0 +1,4 @@
+\GPU Engine(pid_442_luid_0x00000000_0x0000_phys_0_eng_0_engtype_3D)\Utilization Percentage=18.5
+\GPU Engine(pid_442_luid_0x00000000_0x0000_phys_0_eng_1_engtype_3D)\Utilization Percentage=7.25
+\GPU Engine(pid_442_luid_0x00000000_0x0000_phys_0_eng_2_engtype_VideoEncode)\Utilization Percentage=11.0
+\GPU Engine(pid_442_luid_0x00000000_0x0000_phys_0_eng_3_engtype_Copy)\Utilization Percentage=82.0

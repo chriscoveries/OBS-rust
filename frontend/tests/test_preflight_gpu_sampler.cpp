@@ -1,0 +1,132 @@
+#include "../preflight/preflight-gpu-sampler.hpp"
+
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+
+#if defined(__APPLE__)
+#include "../preflight/platform/macos/preflight-gpu-sampler-macos.hpp"
+
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
+namespace {
+
+void require(bool condition, const char *message)
+{
+	if (!condition) {
+		std::cerr << "FAIL test_preflight_gpu_sampler: " << message << '\n';
+		std::exit(1);
+	}
+}
+
+std::string fixture(const char *name)
+{
+	std::ifstream file(std::string(PREFLIGHT_GPU_FIXTURE_DIR) + "/" + name);
+	if (!file) {
+		throw std::runtime_error("could not open GPU fixture");
+	}
+	std::ostringstream contents;
+	contents << file.rdbuf();
+	return contents.str();
+}
+
+void test_iokit_recorded_dictionary()
+{
+#if defined(__APPLE__)
+	const std::string xml = fixture("iokit-performance-statistics.plist");
+	CFDataRef data = CFDataCreate(kCFAllocatorDefault, reinterpret_cast<const UInt8 *>(xml.data()),
+				      static_cast<CFIndex>(xml.size()));
+	require(data != nullptr, "could not create recorded IOKit plist data");
+	CFErrorRef error = nullptr;
+	CFPropertyListRef properties = CFPropertyListCreateWithData(
+		kCFAllocatorDefault, data, kCFPropertyListImmutable, nullptr, &error);
+	CFRelease(data);
+	if (error) {
+		CFRelease(error);
+	}
+	require(properties && CFGetTypeID(properties) == CFDictionaryGetTypeID(),
+		"recorded IOKit fixture is not a dictionary");
+	const auto sample = preflight::gpu::ParseMacPerformanceStatistics(
+		static_cast<CFDictionaryRef>(properties));
+	CFRelease(properties);
+	require(sample.gpu_percent && *sample.gpu_percent == 37.0,
+		"IOKit Device Utilization % was not parsed from the recorded fixture");
+	require(sample.renderer_percent && *sample.renderer_percent == 21.0 &&
+			sample.tiler_percent && *sample.tiler_percent == 14.0,
+		"IOKit renderer or tiler utilization was not parsed");
+	const auto missing = preflight::gpu::ParseMacPerformanceStatistics(nullptr);
+	require(!missing.gpu_percent && !missing.renderer_percent && !missing.tiler_percent,
+		"missing IOKit keys must remain unavailable");
+#endif
+}
+
+void test_provider_fixtures()
+{
+	const auto pdh = preflight::gpu::ParsePdhGpuEngineCounters(fixture("pdh-gpu-engine.txt"));
+	require(pdh.gpu_percent && *pdh.gpu_percent == 25.75,
+		"PDH parser did not sum 3D engine instances");
+	require(pdh.video_encode_percent && *pdh.video_encode_percent == 11.0,
+		"PDH parser did not retain VideoEncode utilization separately");
+	const auto amd = preflight::gpu::ParseAmdGpuBusyPercent(fixture("amd-gpu-busy.txt"));
+	require(amd && *amd == 42.0, "AMD sysfs GPU busy percentage was not parsed");
+
+	/* A stub NVML device set replays readings recorded in the fixture. */
+	std::istringstream nvml(fixture("nvml-utilization.txt"));
+	std::string line;
+	std::vector<double> gpu;
+	std::vector<double> encode;
+	while (std::getline(nvml, line)) {
+		const auto separator = line.find('=');
+		if (separator == std::string::npos) {
+			continue;
+		}
+		const double value = std::stod(line.substr(separator + 1));
+		(line.substr(0, separator) == "gpu" ? gpu : encode).push_back(value);
+	}
+	const auto nvml_gpu = preflight::gpu::AverageNvmlGpuUtilization(gpu);
+	const auto nvml_encode = preflight::gpu::AverageNvmlVideoEncodeUtilization(encode);
+	require(nvml_gpu && *nvml_gpu == 39.0 && nvml_encode && *nvml_encode == 15.0,
+		"NVML stub did not average device utilization readings");
+}
+
+void test_window_average_and_unavailable()
+{
+	preflight::gpu::WindowAverager average;
+	average.Add({42.0, 20.0, 10.0, 5.0});
+	average.Add({std::nullopt, 30.0, std::nullopt, std::nullopt});
+	const auto result = average.TakeAverage();
+	require(result.gpu_percent && *result.gpu_percent == 42.0 &&
+			result.renderer_percent && *result.renderer_percent == 25.0 &&
+			result.tiler_percent == std::nullopt && result.video_encode_percent == std::nullopt,
+		"GPU window average treated missing samples as zero");
+	const auto empty = average.TakeAverage();
+	require(!empty.gpu_percent && !empty.renderer_percent && !empty.tiler_percent &&
+			!empty.video_encode_percent,
+		"an empty GPU window must be unavailable");
+
+	auto unavailable = preflight::gpu::CreateUnavailableSampler();
+	const auto missing = unavailable->Read();
+	require(!missing.gpu_percent && !missing.renderer_percent && !missing.tiler_percent &&
+			!missing.video_encode_percent,
+		"unavailable platform sampler must not report zero utilization");
+}
+
+} // namespace
+
+int main()
+{
+	try {
+		test_iokit_recorded_dictionary();
+		test_provider_fixtures();
+		test_window_average_and_unavailable();
+	} catch (const std::exception &error) {
+		std::cerr << "FAIL test_preflight_gpu_sampler: " << error.what() << '\n';
+		return 1;
+	}
+	std::cout << "PASS test_preflight_gpu_sampler\n";
+	return 0;
+}
