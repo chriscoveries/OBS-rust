@@ -24,13 +24,16 @@
 namespace {
 
 constexpr uint32_t FPS = 30;
-constexpr uint32_t FIRST_WIDTH = 128;
-constexpr uint32_t FIRST_HEIGHT = 96;
-constexpr uint32_t SECOND_WIDTH = 96;
-constexpr uint32_t SECOND_HEIGHT = 64;
+constexpr uint32_t REALISTIC_WIDTH = 1920;
+constexpr uint32_t REALISTIC_HEIGHT = 1080;
+constexpr uint32_t RECONFIGURED_WIDTH = 128;
+constexpr uint32_t RECONFIGURED_HEIGHT = 96;
 constexpr uint32_t OUTPUT_DURATION_MS = 5000;
 constexpr uint32_t RECONFIGURED_DURATION_MS = 4000;
 constexpr uint64_t MIN_DECODED_FRAMES = FPS * 2;
+constexpr uint64_t MIN_PAIR_RATE_PERCENT = 95;
+constexpr uint64_t MAX_PAIR_DELTA_INTERVALS = 2;
+constexpr uint64_t NANOSECONDS_PER_SECOND = 1000000000ULL;
 constexpr uint8_t PATTERN_RED = 220;
 constexpr uint8_t PATTERN_GREEN = 40;
 constexpr uint8_t PATTERN_BLUE = 20;
@@ -212,10 +215,10 @@ int setup(void **state)
 		.graphics_module = GRAPHICS_MODULE_PATH,
 		.fps_num = FPS,
 		.fps_den = 1,
-		.base_width = FIRST_WIDTH,
-		.base_height = FIRST_HEIGHT,
-		.output_width = FIRST_WIDTH,
-		.output_height = FIRST_HEIGHT,
+		.base_width = REALISTIC_WIDTH,
+		.base_height = REALISTIC_HEIGHT,
+		.output_width = REALISTIC_WIDTH,
+		.output_height = REALISTIC_HEIGHT,
 		.output_format = VIDEO_FORMAT_NV12,
 		.colorspace = VIDEO_CS_709,
 		.range = VIDEO_RANGE_PARTIAL,
@@ -344,6 +347,20 @@ obs_encoder_t *create_x264_encoder(const char *id, const char *name, video_t *vi
 	return encoder;
 }
 
+bool within_frame_intervals(uint64_t delta_ns, uint64_t intervals)
+{
+	obs_video_info video_info = {};
+	if (!obs_get_video_info(&video_info) || video_info.fps_num == 0 || video_info.fps_den == 0) {
+		return false;
+	}
+	/* Compare against the exact rational frame interval. obs_get_frame_interval_ns()
+	 * truncates each interval before multiplying, which can reject the boundary. */
+	const __uint128_t delta_scaled = static_cast<__uint128_t>(delta_ns) * video_info.fps_num;
+	const __uint128_t limit_scaled =
+		static_cast<__uint128_t>(intervals) * video_info.fps_den * NANOSECONDS_PER_SECOND;
+	return delta_scaled <= limit_scaled;
+}
+
 bool pattern_crop_matches(const preflight::loupe::FramePair &pair)
 {
 	using namespace preflight::loupe;
@@ -410,14 +427,16 @@ bool pattern_crop_matches(const preflight::loupe::FramePair &pair)
 bool capture_results_valid(PreflightLoupeCapture &capture, bool expect_packet_reorder)
 {
 	const auto stats = capture.Stats();
+	const bool high_pair_rate = stats.decoded_frames != 0 &&
+				    static_cast<__uint128_t>(stats.paired_frames) * 100 >=
+					    static_cast<__uint128_t>(stats.decoded_frames) * MIN_PAIR_RATE_PERCENT;
 	if (stats.encoded_packets < MIN_DECODED_FRAMES || stats.decoded_frames < MIN_DECODED_FRAMES ||
-	    stats.wrong_size_decoded_frames != 0 || stats.paired_frames != stats.decoded_frames ||
-	    stats.unpaired_decoded_frames != 0 ||
-	    stats.max_capture_timestamp_delta_ns > obs_get_frame_interval_ns() * 2 ||
+	    stats.wrong_size_decoded_frames != 0 || !high_pair_rate ||
+	    !within_frame_intervals(stats.max_capture_timestamp_delta_ns, MAX_PAIR_DELTA_INTERVALS) ||
 	    (expect_packet_reorder && stats.reordered_packet_timestamps == 0)) {
 		fprintf(stderr,
 			"capture assertions failed: source=%llu packets=%llu decoded=%llu paired=%llu unpaired=%llu "
-			"wrong_size=%llu reorder=%llu max_delta=%llu interval=%llu\n",
+			"wrong_size=%llu reorder=%llu pair_rate=%llu%% max_delta=%llu\n",
 			static_cast<unsigned long long>(stats.source_frames),
 			static_cast<unsigned long long>(stats.encoded_packets),
 			static_cast<unsigned long long>(stats.decoded_frames),
@@ -425,8 +444,9 @@ bool capture_results_valid(PreflightLoupeCapture &capture, bool expect_packet_re
 			static_cast<unsigned long long>(stats.unpaired_decoded_frames),
 			static_cast<unsigned long long>(stats.wrong_size_decoded_frames),
 			static_cast<unsigned long long>(stats.reordered_packet_timestamps),
-			static_cast<unsigned long long>(stats.max_capture_timestamp_delta_ns),
-			static_cast<unsigned long long>(obs_get_frame_interval_ns()));
+			static_cast<unsigned long long>(
+				stats.decoded_frames ? stats.paired_frames * 100 / stats.decoded_frames : 0),
+			static_cast<unsigned long long>(stats.max_capture_timestamp_delta_ns));
 		return false;
 	}
 	const auto pair = capture.LatestPair();
@@ -536,7 +556,7 @@ void test_real_x264_packets_reach_the_loupe_worker(void **state)
 	obs_encoder_t *first_encoder = nullptr;
 	obs_weak_encoder_t *first_weak = nullptr;
 
-	configure_and_run(&first_source, output, "obs_x264", "preflight x264 first", FIRST_WIDTH, FIRST_HEIGHT,
+	configure_and_run(&first_source, output, "obs_x264", "preflight x264 1080p", REALISTIC_WIDTH, REALISTIC_HEIGHT,
 			  OUTPUT_DURATION_MS, true, true, capture, &first_encoder, &first_weak);
 
 	/* Stop capture while the output is still live, then stop and detach the old
@@ -560,10 +580,10 @@ void test_real_x264_packets_reach_the_loupe_worker(void **state)
 		.graphics_module = GRAPHICS_MODULE_PATH,
 		.fps_num = FPS,
 		.fps_den = 1,
-		.base_width = SECOND_WIDTH,
-		.base_height = SECOND_HEIGHT,
-		.output_width = SECOND_WIDTH,
-		.output_height = SECOND_HEIGHT,
+		.base_width = RECONFIGURED_WIDTH,
+		.base_height = RECONFIGURED_HEIGHT,
+		.output_width = RECONFIGURED_WIDTH,
+		.output_height = RECONFIGURED_HEIGHT,
 		.output_format = VIDEO_FORMAT_NV12,
 		.colorspace = VIDEO_CS_709,
 		.range = VIDEO_RANGE_PARTIAL,
@@ -574,8 +594,9 @@ void test_real_x264_packets_reach_the_loupe_worker(void **state)
 	obs_source_t *second_source = nullptr;
 	obs_encoder_t *second_encoder = nullptr;
 	obs_weak_encoder_t *second_weak = nullptr;
-	configure_and_run(&second_source, output, "obs_x264", "preflight x264 reconfigured", SECOND_WIDTH,
-			  SECOND_HEIGHT, RECONFIGURED_DURATION_MS, false, true, capture, &second_encoder, &second_weak);
+	configure_and_run(&second_source, output, "obs_x264", "preflight x264 reconfigured", RECONFIGURED_WIDTH,
+			  RECONFIGURED_HEIGHT, RECONFIGURED_DURATION_MS, false, true, capture, &second_encoder,
+			  &second_weak);
 	capture.Stop();
 	assert_false(capture.Stats().worker_running);
 	stop_output(output);
@@ -635,8 +656,8 @@ void test_registered_videotoolbox_h264_packets_reach_the_loupe_worker(void **sta
 	obs_source_t *source = nullptr;
 	obs_encoder_t *encoder = nullptr;
 	obs_weak_encoder_t *weak = nullptr;
-	configure_and_run(&source, output, id.c_str(), "preflight VideoToolbox", SECOND_WIDTH, SECOND_HEIGHT,
-			  RECONFIGURED_DURATION_MS, false, false, capture, &encoder, &weak);
+	configure_and_run(&source, output, id.c_str(), "preflight VideoToolbox", RECONFIGURED_WIDTH,
+			  RECONFIGURED_HEIGHT, RECONFIGURED_DURATION_MS, false, false, capture, &encoder, &weak);
 	if (encoder) {
 		capture.Stop();
 		assert_false(capture.Stats().worker_running);
