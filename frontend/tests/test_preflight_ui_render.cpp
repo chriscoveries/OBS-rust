@@ -697,7 +697,13 @@ int main(int argc, char **argv)
 		window.resize(1040, 720);
 		window.show(); // Qt's offscreen platform keeps this out of the display.
 		QApplication::processEvents();
-		require(window.size() == QSize(1040, 720), "1040×720 render fixture was resized unexpectedly");
+		const QSize shown_size = window.size();
+		const QSize shown_minimum = window.minimumSize();
+		const std::string resized_error =
+			"1040×720 render fixture was resized to " + std::to_string(shown_size.width()) + "×" +
+			std::to_string(shown_size.height()) + " (minimum " + std::to_string(shown_minimum.width()) +
+			"×" + std::to_string(shown_minimum.height()) + ")";
+		require(shown_size == QSize(1040, 720), resized_error.c_str());
 
 		QLabel *verdict_label = window.findChild<QLabel *>(QStringLiteral("preflight-verdict"));
 		QLabel *reason_label = window.findChild<QLabel *>(QStringLiteral("preflight-reason"));

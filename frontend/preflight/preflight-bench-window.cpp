@@ -209,7 +209,7 @@ public:
 	explicit CombinedMetricChart(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName(QStringLiteral("preflight-combined-chart"));
-		setMinimumHeight(230);
+		setMinimumHeight(220);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 		setMouseTracking(true);
 		setProperty("preflightStartsAtZero", true);
@@ -763,7 +763,7 @@ protected:
 public:
 	explicit LoupeView(QWidget *parent = nullptr) : QWidget(parent)
 	{
-		setMinimumHeight(205);
+		setMinimumHeight(150);
 		setMouseTracking(true);
 		setToolTip(tr("Drag to compare at 400%"));
 	}
@@ -2672,6 +2672,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	void BuildUi()
 	{
 		auto *root = new QVBoxLayout(dialog);
+		// Keep child size hints from forcing the initial window past the laptop-sized target.
+		root->setSizeConstraint(QLayout::SetNoConstraint);
 		auto *header = new QHBoxLayout;
 		auto *title = new QLabel(QObject::tr("Preflight"), dialog);
 		setClasses(title, "text-title");
@@ -2883,7 +2885,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		loupe_status_label->setWordWrap(true);
 		loupe_view = new LoupeView(preview_group);
 		loupe_view->setObjectName(QStringLiteral("preflight-loupe-view"));
-		loupe_view->setMinimumHeight(175);
+		loupe_view->setMinimumHeight(150);
 		loupe_view->setMaximumHeight(450);
 		preview_layout->addWidget(loupe_view, 1);
 		preview_layout->addWidget(loupe_status_label);
@@ -4030,9 +4032,6 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 {
 	setObjectName(QStringLiteral("preflight-bench-window"));
 	setWindowTitle(tr("Preflight"));
-	const QSize preferred_size(1040, 720);
-	const QScreen *screen = QGuiApplication::primaryScreen();
-	resize(screen ? preferred_size.boundedTo(screen->availableGeometry().size()) : preferred_size);
 	impl->sample_timer = new QTimer(this);
 	impl->sample_timer->setInterval(static_cast<int>(SAMPLE_WINDOW_MS));
 	connect(impl->sample_timer, &QTimer::timeout, this, &PreflightBenchWindow::Sample);
@@ -4059,15 +4058,16 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 	if (recorded_data) {
 		impl->LoadRecordedData(*recorded_data);
 	}
-	QTimer::singleShot(0, this, [this]() {
-		impl->ResizeBakeoffTableToContents();
-		impl->ResizeApplyTableToContents();
-	});
 	connect(impl->run_button, &QPushButton::clicked, this, &PreflightBenchWindow::ToggleBench);
 	connect(impl->bakeoff_button, &QPushButton::clicked, this, &PreflightBenchWindow::ToggleBakeoff);
 	if (impl->apply_button) {
 		connect(impl->apply_button, &QPushButton::clicked, this, [this]() { impl->ApplyConfigChanges(); });
 	}
+	impl->ResizeBakeoffTableToContents();
+	impl->ResizeApplyTableToContents();
+	const QSize preferred_size(1040, 720);
+	const QScreen *screen = QGuiApplication::primaryScreen();
+	resize(screen ? preferred_size.boundedTo(screen->availableGeometry().size()) : preferred_size);
 }
 
 PreflightBenchWindow::~PreflightBenchWindow() = default;
