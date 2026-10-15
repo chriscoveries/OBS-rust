@@ -947,6 +947,7 @@
      <string>Basic.MainMenu.Tools</string>
     </property>
     <addaction name="autoConfigure"/>
+    <addaction name="preflightBench"/>
     <addaction name="idianPlayground"/>
     <addaction name="actionOpenPluginManager"/>
     <addaction name="separator"/>
@@ -2040,6 +2041,11 @@
   <action name="autoConfigure">
    <property name="text">
     <string>Basic.AutoConfig</string>
+   </property>
+  </action>
+  <action name="preflightBench">
+   <property name="text">
+    <string>Basic.Preflight.OpenLiveBench</string>
    </property>
   </action>
   <action name="actionOpenPluginManager">

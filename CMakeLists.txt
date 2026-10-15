@@ -32,6 +32,7 @@ if(OS_MACOS)
   add_subdirectory(libobs-metal)
 endif()
 add_subdirectory(plugins)
+include(cmake/preflight-rust.cmake)
 
 add_subdirectory(test/test-input)
 

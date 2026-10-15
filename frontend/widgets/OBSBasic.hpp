@@ -57,6 +57,9 @@ class OBSBasicInteraction;
 class OBSBasicProperties;
 class OBSBasicSourceSelect;
 class OBSBasicTransform;
+#ifdef OBS_PREFLIGHT_SUPPORTED
+class PreflightBenchWindow;
+#endif
 class OBSLogViewer;
 class OBSMissingFiles;
 class OBSProjector;
@@ -600,6 +603,9 @@ private:
 	QPointer<OBSAbout> about;
 	QPointer<OBSBasicSourceSelect> addWindow;
 	QPointer<OBSLogViewer> logView;
+#ifdef OBS_PREFLIGHT_SUPPORTED
+	QPointer<PreflightBenchWindow> preflightBench;
+#endif
 	QPointer<QWidget> stats;
 	QPointer<QWidget> remux;
 	QPointer<QWidget> importer;
@@ -671,6 +677,7 @@ private slots:
 	void on_toggleStatusBar_toggled(bool visible);
 
 	void on_autoConfigure_triggered();
+	void on_preflightBench_triggered();
 	void on_stats_triggered();
 	void on_idianPlayground_triggered();
 
