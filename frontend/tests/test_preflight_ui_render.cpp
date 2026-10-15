@@ -14,6 +14,9 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QTemporaryDir>
+
+#include <util/config-file.h>
 
 #include <algorithm>
 #include <array>
@@ -214,6 +217,132 @@ static void test_apply_plans()
 		"a non-integer Simple output bitrate was offered for Apply");
 }
 
+static void test_apply_contract_regressions()
+{
+	using preflight::apply::BuildAdvancedPlan;
+	using preflight::apply::BuildSimplePlan;
+	using preflight::apply::TargetIdentity;
+	using preflight::apply::WriteAdvancedSettings;
+	using preflight::apply::WriteSimpleConfig;
+
+	QTemporaryDir temporary(QDir::tempPath() + QStringLiteral("/preflight-apply-Ω-XXXXXX"));
+	require(temporary.isValid(), "could not create a Unicode temporary profile path");
+	const QString profile_path = temporary.path();
+	const TargetIdentity target{QStringLiteral("Préflight profile"), profile_path,
+				     QStringLiteral("obs_x264"), QStringLiteral("x264")};
+
+	const QString basic_ini = QDir(profile_path).filePath(QStringLiteral("basic.ini"));
+	const QByteArray basic_path_utf8 = basic_ini.toUtf8();
+	config_t *raw_config = nullptr;
+	require(config_open(&raw_config, basic_path_utf8.constData(), CONFIG_OPEN_ALWAYS) == CONFIG_SUCCESS &&
+			raw_config,
+		"could not open temporary basic.ini");
+	std::unique_ptr<config_t, decltype(&config_close)> config(raw_config, config_close);
+	config_set_string(config.get(), "Output", "Mode", "Simple");
+	config_set_uint(config.get(), "SimpleOutput", "VBitrate", 2500);
+	config_set_string(config.get(), "SimpleOutput", "Preset", "veryfast");
+	config_set_bool(config.get(), "SimpleOutput", "UseAdvanced", false);
+	config_set_string(config.get(), "SimpleOutput", "RecQuality", "High");
+	require(config_save(config.get()) == CONFIG_SUCCESS, "could not seed temporary basic.ini");
+
+	const QJsonObject simple_saved{{QStringLiteral("VBitrate"), 2500},
+				       {QStringLiteral("Preset"), QStringLiteral("veryfast")},
+				       {QStringLiteral("UseAdvanced"), false}};
+	const QJsonObject simple_initial{{QStringLiteral("bitrate"), 2500},
+					  {QStringLiteral("preset"), QStringLiteral("veryfast")}};
+	const QJsonObject simple_shown{{QStringLiteral("bitrate"), 4000},
+					{QStringLiteral("preset"), QStringLiteral("fast")}};
+	const QJsonObject simple_newer{{QStringLiteral("bitrate"), 5000},
+					{QStringLiteral("preset"), QStringLiteral("fast")}};
+	const auto displayed_simple = BuildSimplePlan(simple_saved, simple_initial, simple_shown,
+						       QStringLiteral("x264"), false, target);
+	const auto stale_simple = BuildSimplePlan(simple_saved, simple_initial, simple_newer,
+						   QStringLiteral("x264"), false, target);
+	QString error;
+	require(!WriteSimpleConfig(config.get(), displayed_simple, stale_simple, &error),
+		"a stale Simple Apply plan was written before its updated diff was reviewed");
+	require(config_get_uint(config.get(), "SimpleOutput", "VBitrate") == 2500,
+		"refusing a stale Simple plan still changed basic.ini");
+
+	const auto current_simple = BuildSimplePlan(simple_saved, simple_initial, simple_shown,
+						     QStringLiteral("x264"), false, target);
+	require(WriteSimpleConfig(config.get(), displayed_simple, current_simple, &error),
+		"the displayed Simple Apply plan did not write to temporary basic.ini");
+	require(config_save(config.get()) == CONFIG_SUCCESS, "could not persist temporary basic.ini");
+	config_close(config.release());
+	config = nullptr;
+	config_t *reopened_basic = nullptr;
+	require(config_open(&reopened_basic, basic_path_utf8.constData(), CONFIG_OPEN_EXISTING) == CONFIG_SUCCESS &&
+			reopened_basic,
+		"could not reopen temporary basic.ini");
+	std::unique_ptr<config_t, decltype(&config_close)> applied_config(reopened_basic, config_close);
+	require(config_get_uint(applied_config.get(), "SimpleOutput", "VBitrate") == 4000 &&
+			std::string(config_get_string(applied_config.get(), "SimpleOutput", "Preset")) == "fast" &&
+			!config_get_bool(applied_config.get(), "SimpleOutput", "UseAdvanced") &&
+			std::string(config_get_string(applied_config.get(), "SimpleOutput", "RecQuality")) == "High" &&
+			std::string(config_get_string(applied_config.get(), "Output", "Mode")) == "Simple",
+		"Simple Apply changed an unplanned basic.ini key or changed Output.Mode");
+
+	const QString stream_path = QDir(profile_path).filePath(QStringLiteral("streamEncoder.json"));
+	const QString record_path = QDir(profile_path).filePath(QStringLiteral("recordEncoder.json"));
+	const QJsonObject advanced_saved{{QStringLiteral("bitrate"), 6000},
+					 {QStringLiteral("preset"), QStringLiteral("veryfast")},
+					 {QStringLiteral("profile"), QStringLiteral("high")},
+					 {QStringLiteral("lookahead"), false}};
+	const QJsonObject advanced_initial{{QStringLiteral("bitrate"), 6000},
+					   {QStringLiteral("preset"), QStringLiteral("veryfast")},
+					   {QStringLiteral("profile"), QStringLiteral("high")},
+					   {QStringLiteral("lookahead"), false}};
+	const QJsonObject advanced_edited{{QStringLiteral("bitrate"), 4500},
+					   {QStringLiteral("preset"), QStringLiteral("fast")},
+					   {QStringLiteral("profile"), QStringLiteral("high")},
+					   {QStringLiteral("lookahead"), false}};
+	auto write_json = [](const QString &path, const QJsonObject &object) {
+		QFile file(path);
+		require(file.open(QIODevice::WriteOnly | QIODevice::Truncate), "could not create temporary encoder JSON");
+		file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
+		file.close();
+	};
+	auto read_json = [](const QString &path) {
+		QFile file(path);
+		require(file.open(QIODevice::ReadOnly), "could not read temporary encoder JSON");
+		return QJsonDocument::fromJson(file.readAll()).object();
+	};
+	const QJsonObject record_saved{{QStringLiteral("recording"), QStringLiteral("untouched")}};
+	write_json(stream_path, advanced_saved);
+	write_json(record_path, record_saved);
+	const auto displayed_advanced = BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited, target);
+	require(WriteAdvancedSettings(displayed_advanced, displayed_advanced, &error),
+		"the displayed Advanced Apply plan did not write to temporary streamEncoder.json");
+	const QJsonObject expected_advanced{{QStringLiteral("bitrate"), 4500},
+					    {QStringLiteral("preset"), QStringLiteral("fast")},
+					    {QStringLiteral("profile"), QStringLiteral("high")},
+					    {QStringLiteral("lookahead"), false}};
+	require(read_json(stream_path) == expected_advanced && read_json(record_path) == record_saved,
+		"Advanced Apply lost untouched settings or modified recordEncoder.json");
+
+	TargetIdentity changed_profile = target;
+	changed_profile.profile_name = QStringLiteral("Other profile");
+	changed_profile.profile_path = QDir(profile_path).filePath(QStringLiteral("autre-配置"));
+	QDir().mkpath(changed_profile.profile_path);
+	const QString other_stream_path = QDir(changed_profile.profile_path).filePath(QStringLiteral("streamEncoder.json"));
+	const QJsonObject other_profile_saved{{QStringLiteral("bitrate"), 9999}};
+	write_json(other_stream_path, other_profile_saved);
+	const auto profile_changed_plan = BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited,
+								   changed_profile);
+	require(!WriteAdvancedSettings(displayed_advanced, profile_changed_plan, &error) &&
+				read_json(other_stream_path) == other_profile_saved,
+			"Apply wrote settings after the active profile changed");
+
+	TargetIdentity changed_encoder = target;
+	changed_encoder.encoder_id = QStringLiteral("obs_nvenc_h264_tex");
+	const auto encoder_changed_plan = BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited,
+								 changed_encoder);
+	require(!WriteAdvancedSettings(displayed_advanced, encoder_changed_plan, &error) &&
+				read_json(stream_path) == expected_advanced,
+			"Apply wrote settings after the configured encoder changed");
+}
+
 int main(int argc, char **argv)
 {
 	qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
@@ -230,6 +359,7 @@ int main(int argc, char **argv)
 		const obs_preflight_window congested = congested_windows.back();
 		const obs_preflight_window stale = stale_windows.back();
 		test_apply_plans();
+		test_apply_contract_regressions();
 		require(congested_windows.size() > 1, "congested golden trace did not produce chart history");
 		require(clean.verdict == OBS_PREFLIGHT_PASS && congested.verdict == OBS_PREFLIGHT_MARGINAL &&
 				stale.verdict == OBS_PREFLIGHT_FAIL,
