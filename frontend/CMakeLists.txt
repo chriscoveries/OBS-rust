@@ -66,6 +66,7 @@ if(ENABLE_UNIT_TESTS)
       test_preflight_ui_render
       tests/test_preflight_ui_render.cpp
       preflight/obs-preflight-collector.c
+      preflight/preflight-apply-plan.cpp
       preflight/preflight-bench-window.cpp
       preflight/preflight-loupe-capture.cpp
       preflight/preflight-loupe-core.cpp
@@ -84,7 +85,7 @@ if(ENABLE_UNIT_TESTS)
     )
     target_compile_definitions(
       test_preflight_ui_render
-      PRIVATE PREFLIGHT_GOLDEN_DIR=\"${CMAKE_SOURCE_DIR}/rust/obs-preflight/tests/golden\"
+      PRIVATE PREFLIGHT_UI_RENDER_TEST=1 PREFLIGHT_GOLDEN_DIR=\"${CMAKE_SOURCE_DIR}/rust/obs-preflight/tests/golden\"
     )
     target_link_libraries(
       test_preflight_ui_render

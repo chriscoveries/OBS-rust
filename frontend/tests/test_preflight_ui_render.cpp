@@ -10,7 +10,10 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QPixmap>
+#include <QScrollArea>
+#include <QSplitter>
 #include <QTableWidget>
+#include <QHeaderView>
 
 #include <algorithm>
 #include <array>
@@ -172,7 +175,8 @@ static void test_apply_plans()
 	const auto advanced = BuildAdvancedPlan(saved_encoder, initial_encoder, edited_encoder);
 	require(advanced.mode == OutputMode::Advanced && advanced.applicable(),
 		"advanced settings did not produce an applicable config preview");
-	require(advanced.changes.size() == 2 && advanced.changes[0].path == QStringLiteral("streamEncoder.json/bitrate") &&
+	require(advanced.changes.size() == 2 &&
+			advanced.changes[0].path == QStringLiteral("streamEncoder.json/bitrate") &&
 			advanced.changes[1].path == QStringLiteral("streamEncoder.json/preset"),
 		"advanced preview did not list the exact changed encoder keys");
 	require(advanced.updated_settings.value(QStringLiteral("profile")) == QJsonValue(QStringLiteral("high")),
@@ -198,10 +202,16 @@ static void test_apply_plans()
 
 	QJsonObject unsupported_after = simple_after;
 	unsupported_after.insert(QStringLiteral("lookahead"), true);
-	const auto unsupported = BuildSimplePlan(simple_config, simple_before, unsupported_after,
-						 QStringLiteral("x264"), false);
+	const auto unsupported =
+		BuildSimplePlan(simple_config, simple_before, unsupported_after, QStringLiteral("x264"), false);
 	require(!unsupported.applicable() && !unsupported.error.isEmpty(),
 		"unpersistable Simple-mode settings were silently offered for Apply");
+	QJsonObject fractional_bitrate = simple_after;
+	fractional_bitrate.insert(QStringLiteral("bitrate"), 4000.5);
+	const auto invalid_bitrate =
+		BuildSimplePlan(simple_config, simple_before, fractional_bitrate, QStringLiteral("x264"), false);
+	require(!invalid_bitrate.applicable() && !invalid_bitrate.error.isEmpty(),
+		"a non-integer Simple output bitrate was offered for Apply");
 }
 
 int main(int argc, char **argv)
@@ -244,13 +254,43 @@ int main(int argc, char **argv)
 		QLabel *verdict_label = window.findChild<QLabel *>(QStringLiteral("preflight-verdict"));
 		QLabel *reason_label = window.findChild<QLabel *>(QStringLiteral("preflight-reason"));
 		require(verdict_label && reason_label, "bench verdict widgets are missing");
-		require(verdict_label->text() == QStringLiteral("Verdict: Marginal"),
+		require(verdict_label->text() == QStringLiteral("Marginal"),
 			"bench verdict text does not match the engine result");
 		require(reason_label->text() == QString::fromUtf8(congested.reason),
 			"bench reason text does not match the engine result");
+		auto *summary = window.findChild<QWidget *>(QStringLiteral("preflight-verdict-summary"));
+		auto *splitter = window.findChild<QSplitter *>(QStringLiteral("preflight-main-splitter"));
+		auto *settings_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-settings-scroll"));
+		auto *charts_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-charts-scroll"));
+		require(summary && splitter && settings_scroll && charts_scroll,
+			"verdict or chart layout widgets are missing");
+		require(summary->geometry().bottom() < splitter->geometry().top(),
+			"verdict summary is not prominent above the charts");
+		require(settings_scroll->isHidden() && splitter->sizes().size() == 2 && splitter->sizes()[0] == 0 &&
+				charts_scroll->width() > window.width() / 2,
+			"empty settings panel still consumes space in the recorded-data view");
+
+		auto *render_chart = window.findChild<QWidget *>(QStringLiteral("preflight-chart-1"));
+		auto *skip_chart = window.findChild<QWidget *>(QStringLiteral("preflight-chart-2"));
+		auto *congestion_chart = window.findChild<QWidget *>(QStringLiteral("preflight-chart-6"));
+		require(render_chart && skip_chart && congestion_chart, "warning-line charts are missing");
+		require(render_chart->property("preflightYAxisLabels").toStringList().size() == 4,
+			"render chart is missing numeric y-axis values");
+		require(render_chart->property("preflightWarningLines").toStringList() ==
+					QStringList(
+						{QStringLiteral("75% interval"), QStringLiteral("100% interval")}) &&
+				skip_chart->property("preflightWarningLines").toStringList() ==
+					QStringList(
+						{QStringLiteral("1% OBS warning"), QStringLiteral("5% OBS danger")}) &&
+				congestion_chart->property("preflightWarningLines").toStringList() ==
+					QStringList({QStringLiteral("33.33%"), QStringLiteral("66.67%")}),
+			"chart warning lines do not match the OBS warning bands");
 
 		auto *table = window.findChild<QTableWidget *>(QStringLiteral("preflight-bakeoff-table"));
 		require(table && table->rowCount() == 3, "bake-off table does not show three engine results");
+		require(table->wordWrap() &&
+				table->verticalHeader()->sectionResizeMode(0) == QHeaderView::ResizeToContents,
+			"bake-off reasons do not wrap into compact content-sized rows");
 		for (int row = 0; row < table->rowCount(); ++row) {
 			require(table->item(row, 5) && table->item(row, 6) && !table->item(row, 6)->text().isEmpty(),
 				"bake-off row is missing its verdict or plain-language reason");

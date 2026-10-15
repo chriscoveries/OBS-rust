@@ -49,6 +49,8 @@ if(TARGET obs-preflight-rust)
   target_sources(
     obs-studio
     PRIVATE
+      preflight/preflight-apply-plan.cpp
+      preflight/preflight-apply-plan.hpp
       preflight/obs-preflight-collector.c
       preflight/preflight-bench-window.cpp
       preflight/preflight-bench-window.hpp

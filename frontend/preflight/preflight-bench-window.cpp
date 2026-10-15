@@ -3,6 +3,7 @@
 #include "obs-preflight-collector.h"
 #include "obs-preflight.h"
 #include "preflight-cloudflare-speed-test.hpp"
+#include "preflight-apply-plan.hpp"
 #include "preflight-loupe-capture.hpp"
 #include "preflight-test-mode.hpp"
 
@@ -10,9 +11,12 @@
 
 #include <obs-frontend-api.h>
 #include <obs.hpp>
-#ifdef YOUTUBE_ENABLED
-#include <utility/YoutubeApiWrappers.hpp>
+#include <util/config-file.h>
+#ifndef PREFLIGHT_UI_RENDER_TEST
 #include <widgets/OBSBasic.hpp>
+#endif
+#if defined(YOUTUBE_ENABLED) && !defined(PREFLIGHT_UI_RENDER_TEST)
+#include <utility/YoutubeApiWrappers.hpp>
 #endif
 
 #include <QColor>
@@ -20,6 +24,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFileInfo>
 #include <QFrame>
 #include <QGroupBox>
 #include <QGridLayout>
@@ -27,6 +32,8 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QImage>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPolygonF>
@@ -39,16 +46,35 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QStringList>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <string>
 #include <vector>
+
+#ifdef PREFLIGHT_UI_RENDER_TEST
+// The recorded-data test never creates live outputs. Keep its link independent
+// of OBSBasic's generated Qt UI while compiling the production Apply code.
+class OBSBasic {
+public:
+	struct Profile {
+		std::string path;
+	};
+
+	static OBSBasic *Get() { return nullptr; }
+	config_t *Config() const { return nullptr; }
+	Profile GetCurrentProfile() const { return {}; }
+	bool Active() const { return false; }
+	void ResetOutputs() {}
+};
+#endif
 
 namespace {
 
@@ -57,6 +83,15 @@ constexpr uint64_t SAMPLE_WINDOW_MS = 500;
 constexpr uint64_t BAKEOFF_CANDIDATE_DURATION_MS = 5'000;
 constexpr size_t MAX_ENGINE_WINDOWS = 120;
 constexpr size_t CHART_HISTORY_SIZE = 120;
+// OBSBasicStats.cpp:362-369 warns above 75% of frame time and marks danger above 100%.
+constexpr double OBS_RENDER_WARNING_FRACTION = 0.75;
+constexpr double OBS_RENDER_DANGER_FRACTION = 1.0;
+// OBSBasicStats.cpp:393-398 and 419-424 uses >1% for warning and >5% for danger.
+constexpr double OBS_STATS_WARNING_PERCENT = 1.0;
+constexpr double OBS_STATS_DANGER_PERCENT = 5.0;
+// OBSBasicStatusBar.cpp:10-13 labels congestion good through 33.33% and mediocre through 66.67%.
+constexpr double OBS_CONGESTION_WARNING_PERCENT = 33.33;
+constexpr double OBS_CONGESTION_DANGER_PERCENT = 66.67;
 
 struct ChartSeries {
 	QString name;
@@ -64,13 +99,20 @@ struct ChartSeries {
 	std::vector<double> points;
 };
 
+struct ChartWarningLine {
+	QString label;
+	double value = 0.0;
+	QColor color;
+};
+
 class MetricChart final : public QWidget {
 	std::vector<ChartSeries> series;
+	std::vector<ChartWarningLine> warning_lines;
 
 public:
 	explicit MetricChart(QWidget *parent = nullptr) : QWidget(parent)
 	{
-		setMinimumHeight(114);
+		setMinimumHeight(132);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	}
 
@@ -80,28 +122,27 @@ public:
 		update();
 	}
 
+	void SetWarningLines(std::vector<ChartWarningLine> lines)
+	{
+		QStringList labels;
+		for (const auto &line : lines) {
+			labels.push_back(line.label);
+		}
+		setProperty("preflightWarningLines", labels);
+		warning_lines = std::move(lines);
+		update();
+	}
+
 protected:
 	void paintEvent(QPaintEvent *) override
 	{
 		QPainter painter(this);
 		painter.setRenderHint(QPainter::Antialiasing);
 		painter.fillRect(rect(), palette().color(QPalette::Base));
-
-		QRectF plot = QRectF(rect()).adjusted(12, 24, -10, -21);
-		painter.setPen(palette().color(QPalette::Mid));
-		for (int row = 0; row <= 3; ++row) {
-			const qreal y = plot.top() + plot.height() * row / 3.0;
-			painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
-		}
-
-		if (series.empty() || series.front().points.empty()) {
-			painter.setPen(palette().color(QPalette::Text));
-			painter.drawText(plot, Qt::AlignCenter, tr("Waiting for samples"));
-			return;
-		}
-
-		double minValue = series.front().points.back();
-		double maxValue = minValue;
+		QRectF plot = QRectF(rect()).adjusted(48, 24, -10, -22);
+		bool has_points = false;
+		double minValue = 0.0;
+		double maxValue = 100.0;
 		qreal legend_x = plot.left();
 		painter.setFont(QFont(painter.font().family(), painter.font().pointSize() - 1));
 		for (const auto &line : series) {
@@ -110,12 +151,23 @@ protected:
 			painter.setPen(palette().color(QPalette::Text));
 			painter.drawText(QPointF(legend_x + 18, 14), line.name);
 			legend_x += painter.fontMetrics().horizontalAdvance(line.name) + 34;
-		}
-
-		for (const auto &line : series) {
 			for (double value : line.points) {
-				minValue = std::min(minValue, value);
-				maxValue = std::max(maxValue, value);
+				if (!has_points) {
+					minValue = maxValue = value;
+					has_points = true;
+				} else {
+					minValue = std::min(minValue, value);
+					maxValue = std::max(maxValue, value);
+				}
+			}
+		}
+		for (const auto &line : warning_lines) {
+			if (!has_points) {
+				minValue = maxValue = line.value;
+				has_points = true;
+			} else {
+				minValue = std::min(minValue, line.value);
+				maxValue = std::max(maxValue, line.value);
 			}
 		}
 		if (maxValue - minValue < 0.001) {
@@ -127,26 +179,66 @@ protected:
 			minValue -= padding;
 			maxValue += padding;
 		}
+		QStringList y_axis_labels;
+		painter.setPen(palette().color(QPalette::Mid));
+		for (int row = 0; row <= 3; ++row) {
+			const qreal y = plot.top() + plot.height() * row / 3.0;
+			const double value = maxValue - (maxValue - minValue) * row / 3.0;
+			const int precision = std::abs(value) >= 100.0 ? 0 : std::abs(value) >= 10.0 ? 1 : 2;
+			QString label = QString::number(value, 'f', precision);
+			while (label.contains('.') && label.endsWith('0')) {
+				label.chop(1);
+			}
+			if (label.endsWith('.')) {
+				label.chop(1);
+			}
+			y_axis_labels.push_back(label);
+			painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+			painter.setPen(palette().color(QPalette::Text));
+			painter.drawText(QRectF(0, y - 8, plot.left() - 6, 16), Qt::AlignRight | Qt::AlignVCenter,
+					 label);
+			painter.setPen(palette().color(QPalette::Mid));
+		}
+		setProperty("preflightYAxisLabels", y_axis_labels);
 
-		for (const auto &line : series) {
-			if (line.points.size() < 2) {
-				continue;
-			}
-			const size_t first =
-				line.points.size() > CHART_HISTORY_SIZE ? line.points.size() - CHART_HISTORY_SIZE : 0;
-			const size_t count = line.points.size() - first;
-			QPolygonF path;
-			path.reserve(static_cast<qsizetype>(count));
-			for (size_t i = first; i < line.points.size(); ++i) {
-				const qreal x =
-					plot.left() + plot.width() * static_cast<qreal>(i - first) /
-							      static_cast<qreal>(std::max<size_t>(1, count - 1));
-				const double normalized = (line.points[i] - minValue) / (maxValue - minValue);
+		if (!has_points || series.empty() || series.front().points.empty()) {
+			painter.setPen(palette().color(QPalette::Text));
+			painter.drawText(plot, Qt::AlignCenter, tr("Waiting for samples"));
+		} else {
+			for (const auto &line : warning_lines) {
+				const qreal normalized = (line.value - minValue) / (maxValue - minValue);
 				const qreal y = plot.bottom() - plot.height() * normalized;
-				path.append(QPointF(x, y));
+				painter.setPen(QPen(line.color, 1.0, Qt::DashLine));
+				painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+				const int label_width = painter.fontMetrics().horizontalAdvance(line.label) + 16;
+				const qreal label_y = std::clamp(y - 9, plot.top(), plot.bottom() - 17);
+				QRectF label_rect(plot.right() - label_width - 8, label_y, label_width, 17);
+				painter.fillRect(label_rect, palette().color(QPalette::Base));
+				painter.setPen(line.color);
+				painter.drawText(label_rect, Qt::AlignRight | Qt::AlignVCenter, line.label);
 			}
-			painter.setPen(QPen(line.color, 2.0));
-			painter.drawPolyline(path);
+
+			for (const auto &line : series) {
+				if (line.points.size() < 2) {
+					continue;
+				}
+				const size_t first = line.points.size() > CHART_HISTORY_SIZE
+							     ? line.points.size() - CHART_HISTORY_SIZE
+							     : 0;
+				const size_t count = line.points.size() - first;
+				QPolygonF path;
+				path.reserve(static_cast<qsizetype>(count));
+				for (size_t i = first; i < line.points.size(); ++i) {
+					const qreal x = plot.left() +
+							plot.width() * static_cast<qreal>(i - first) /
+								static_cast<qreal>(std::max<size_t>(1, count - 1));
+					const double normalized = (line.points[i] - minValue) / (maxValue - minValue);
+					const qreal y = plot.bottom() - plot.height() * normalized;
+					path.append(QPointF(x, y));
+				}
+				painter.setPen(QPen(line.color, 2.0));
+				painter.drawPolyline(path);
+			}
 		}
 	}
 };
@@ -476,9 +568,9 @@ struct BenchPoint {
 	double cpu_percent = 0.0;
 	double average_frame_time_ms = 0.0;
 	double frame_interval_ms = 0.0;
-	double encoder_skipped_frames = 0.0;
-	double lagged_frames = 0.0;
-	double dropped_frames = 0.0;
+	double encoder_skipped_percent = 0.0;
+	double render_lag_percent = 0.0;
+	double dropped_percent = 0.0;
 	double bitrate_kbps = 0.0;
 	double congestion_percent = 0.0;
 	double connect_time_ms = 0.0;
@@ -498,6 +590,19 @@ OBSDataAutoRelease clone_settings(obs_data_t *settings)
 		obs_data_apply(copy, settings);
 	}
 	return copy;
+}
+
+QJsonObject json_object_from_settings(obs_data_t *settings)
+{
+	if (!settings) {
+		return {};
+	}
+	const char *json = obs_data_get_json(settings);
+	if (!json) {
+		return {};
+	}
+	const QJsonDocument document = QJsonDocument::fromJson(QByteArray(json));
+	return document.isObject() ? document.object() : QJsonObject{};
 }
 
 QString output_error(obs_output_t *output, const QString &fallback)
@@ -538,11 +643,17 @@ struct PreflightBenchWindow::Impl {
 	QLabel *recording_path_label = nullptr;
 	QLabel *bakeoff_status_label = nullptr;
 	QTableWidget *bakeoff_table = nullptr;
+	QGroupBox *apply_group = nullptr;
+	QLabel *apply_mode_label = nullptr;
+	QLabel *apply_note = nullptr;
+	QTableWidget *apply_table = nullptr;
+	QPushButton *apply_button = nullptr;
 	QTimer *sample_timer = nullptr;
 	QTimer *loupe_timer = nullptr;
 	QTimer *settings_timer = nullptr;
 	QTimer *uplink_timer = nullptr;
 	OBSPropertiesView *encoder_properties = nullptr;
+	obs_data_t *initial_encoder_settings = nullptr;
 	OBSServiceAutoRelease test_service;
 	OBSOutputAutoRelease stream_output;
 	OBSOutputAutoRelease recording_output;
@@ -570,6 +681,10 @@ struct PreflightBenchWindow::Impl {
 	QString youtube_test_error;
 	QString stop_completion_status;
 	QString bakeoff_candidate_reason;
+	QString initial_output_mode;
+	QString simple_output_encoder;
+	QString apply_feedback;
+	std::optional<preflight::apply::Plan> apply_plan;
 	std::string configured_service_name;
 	uint32_t current_output_width = 0;
 	uint32_t current_output_height = 0;
@@ -594,6 +709,7 @@ struct PreflightBenchWindow::Impl {
 	bool cloudflare_speed_only = false;
 	bool requires_youtube_throwaway_stream = false;
 	bool close_when_stopped = false;
+	bool simple_output_advanced = false;
 
 	explicit Impl(PreflightBenchWindow *dialog_) : dialog(dialog_) {}
 
@@ -616,6 +732,9 @@ struct PreflightBenchWindow::Impl {
 		obs_preflight_engine_destroy(engine);
 		obs_preflight_engine_destroy(bakeoff_engine);
 		obs_preflight_bakeoff_destroy(bakeoff_planner);
+		if (initial_encoder_settings) {
+			obs_data_release(initial_encoder_settings);
+		}
 		if (bakeoff_audio_settings) {
 			obs_data_release(bakeoff_audio_settings);
 		}
@@ -692,8 +811,203 @@ struct PreflightBenchWindow::Impl {
 		}
 	}
 
+	QJsonObject SimpleConfigSnapshot(OBSBasic *main) const
+	{
+		QJsonObject settings;
+		config_t *config = main->Config();
+		settings.insert(QStringLiteral("VBitrate"),
+				static_cast<double>(config_get_uint(config, "SimpleOutput", "VBitrate")));
+		settings.insert(QStringLiteral("UseAdvanced"), config_get_bool(config, "SimpleOutput", "UseAdvanced"));
+		const QString preset_key = preflight::apply::SimplePresetConfigKey(simple_output_encoder);
+		if (!preset_key.isEmpty()) {
+			const QByteArray key = preset_key.toUtf8();
+			const char *preset = config_get_string(config, "SimpleOutput", key.constData());
+			settings.insert(preset_key, QString::fromUtf8(preset ? preset : ""));
+		}
+		if (simple_output_advanced && (simple_output_encoder == QStringLiteral("x264") ||
+					       simple_output_encoder == QStringLiteral("x264_lowcpu"))) {
+			const char *custom = config_get_string(config, "SimpleOutput", "x264Settings");
+			settings.insert(QStringLiteral("x264Settings"), QString::fromUtf8(custom ? custom : ""));
+		}
+		return settings;
+	}
+
+	void RefreshApplyPreview()
+	{
+		if (!apply_table || !apply_button || !encoder_properties || !initial_encoder_settings) {
+			return;
+		}
+		OBSBasic *main = OBSBasic::Get();
+		if (!main) {
+			apply_plan = preflight::apply::Plan{};
+			apply_plan->error = QObject::tr("OBS settings are not available in this window.");
+		} else {
+			const char *mode_value = config_get_string(main->Config(), "Output", "Mode");
+			const QString mode = QString::fromUtf8(mode_value ? mode_value : "");
+			apply_mode_label->setText(QObject::tr("OBS output mode: %1 · mode stays unchanged")
+							  .arg(mode.isEmpty() ? QObject::tr("unknown") : mode));
+			const QJsonObject initial = json_object_from_settings(initial_encoder_settings);
+			const QJsonObject edited = json_object_from_settings(encoder_properties->GetSettings());
+			if (mode != initial_output_mode) {
+				apply_plan = preflight::apply::Plan{};
+				apply_plan->error = QObject::tr(
+					"The OBS output mode changed while Preflight was open. Close and reopen Preflight to review the new mode.");
+			} else if (mode == QStringLiteral("Advanced")) {
+				const std::filesystem::path profile_dir = main->GetCurrentProfile().path;
+				const QString saved_path =
+					QString::fromStdString((profile_dir / "streamEncoder.json").string());
+				const QByteArray saved_path_bytes = saved_path.toUtf8();
+				OBSDataAutoRelease saved;
+				if (QFileInfo::exists(saved_path)) {
+					saved = obs_data_create_from_json_file_safe(saved_path_bytes.constData(),
+										    "bak");
+					if (!saved) {
+						apply_plan = preflight::apply::Plan{};
+						apply_plan->error = QObject::tr(
+							"OBS could not read the saved stream encoder settings. No changes can be applied safely.");
+					} else {
+						apply_plan = preflight::apply::BuildAdvancedPlan(
+							json_object_from_settings(saved), initial, edited);
+					}
+				} else {
+					saved = obs_data_create();
+					apply_plan = preflight::apply::BuildAdvancedPlan(
+						json_object_from_settings(saved), initial, edited);
+				}
+			} else if (mode == QStringLiteral("Simple")) {
+				apply_plan = preflight::apply::BuildSimplePlan(SimpleConfigSnapshot(main), initial,
+									       edited, simple_output_encoder,
+									       simple_output_advanced);
+			} else {
+				apply_plan = preflight::apply::Plan{};
+				apply_plan->error =
+					QObject::tr("This OBS output mode does not have a supported Apply mapping.");
+			}
+		}
+
+		const auto &plan = *apply_plan;
+		apply_table->setRowCount(static_cast<int>(plan.changes.size()));
+		for (size_t row = 0; row < plan.changes.size(); ++row) {
+			const auto &change = plan.changes[row];
+			const int table_row = static_cast<int>(row);
+			auto *key = new QTableWidgetItem(change.path);
+			auto *before = new QTableWidgetItem(preflight::apply::ValueForDisplay(change.before));
+			auto *after = new QTableWidgetItem(preflight::apply::ValueForDisplay(change.after));
+			for (QTableWidgetItem *item : {key, before, after}) {
+				item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+			}
+			apply_table->setItem(table_row, 0, key);
+			apply_table->setItem(table_row, 1, before);
+			apply_table->setItem(table_row, 2, after);
+		}
+		apply_table->resizeRowsToContents();
+		apply_button->setEnabled(plan.applicable());
+		if (!plan.error.isEmpty()) {
+			apply_note->setText(plan.error);
+		} else if (plan.changes.empty()) {
+			apply_note->setText(
+				apply_feedback.isEmpty()
+					? QObject::tr(
+						  "Edit a setting to preview exact config keys. Nothing is written until Apply.")
+					: apply_feedback);
+		} else {
+			apply_note->setText(QObject::tr(
+				"Review the exact key changes above. Nothing is written until Apply is pressed."));
+		}
+	}
+
+	void ApplyConfigChanges()
+	{
+		if (!apply_table || !apply_button) {
+			return;
+		}
+		RefreshApplyPreview();
+		if (!apply_plan || !apply_plan->applicable()) {
+			return;
+		}
+		OBSBasic *main = OBSBasic::Get();
+		if (!main) {
+			return;
+		}
+		const preflight::apply::Plan plan = *apply_plan;
+		if (plan.mode == preflight::apply::OutputMode::Advanced) {
+			const std::filesystem::path profile_dir = main->GetCurrentProfile().path;
+			const QString saved_path =
+				QString::fromStdString((profile_dir / "streamEncoder.json").string());
+			const QByteArray path_bytes = saved_path.toUtf8();
+			const QByteArray json = QJsonDocument(plan.updated_settings).toJson(QJsonDocument::Indented);
+			OBSDataAutoRelease updated = obs_data_create_from_json(json.constData());
+			if (!updated || !obs_data_save_json_safe(updated, path_bytes.constData(), "tmp", "bak")) {
+				apply_note->setText(QObject::tr(
+					"OBS could not save streamEncoder.json. No settings were applied."));
+				return;
+			}
+		} else if (plan.mode == preflight::apply::OutputMode::Simple) {
+			config_t *config = main->Config();
+			for (const auto &change : plan.changes) {
+				if (change.key == QStringLiteral("VBitrate")) {
+					config_set_uint(config, "SimpleOutput", "VBitrate",
+							static_cast<uint64_t>(change.after.toDouble()));
+				} else {
+					const QByteArray key = change.key.toUtf8();
+					const QByteArray value = change.after.toString().toUtf8();
+					config_set_string(config, "SimpleOutput", key.constData(), value.constData());
+				}
+			}
+			if (config_save_safe(config, "tmp", nullptr) != CONFIG_SUCCESS) {
+				for (const auto &change : plan.changes) {
+					const QByteArray key = change.key.toUtf8();
+					if (change.before.isUndefined()) {
+						config_remove_value(config, "SimpleOutput", key.constData());
+					} else if (change.key == QStringLiteral("VBitrate")) {
+						config_set_uint(config, "SimpleOutput", "VBitrate",
+								static_cast<uint64_t>(change.before.toDouble()));
+					} else {
+						const QByteArray value = change.before.toString().toUtf8();
+						config_set_string(config, "SimpleOutput", key.constData(),
+								  value.constData());
+					}
+				}
+				apply_note->setText(QObject::tr(
+					"OBS could not save the Simple output settings. No settings were applied."));
+				return;
+			}
+		} else {
+			return;
+		}
+
+		OBSDataAutoRelease new_baseline = clone_settings(encoder_properties->GetSettings());
+		if (new_baseline) {
+			obs_data_addref(new_baseline);
+			if (initial_encoder_settings) {
+				obs_data_release(initial_encoder_settings);
+			}
+			initial_encoder_settings = new_baseline.Get();
+		}
+		if (!main->Active()) {
+			main->ResetOutputs();
+		}
+		apply_feedback = QObject::tr("Applied to OBS %1 settings. The output mode was not changed.")
+					 .arg(plan.mode == preflight::apply::OutputMode::Simple
+						      ? QObject::tr("Simple")
+						      : QObject::tr("Advanced"));
+		RefreshApplyPreview();
+	}
+
 	bool BuildOutputs()
 	{
+		OBSBasic *main = OBSBasic::Get();
+		if (!main) {
+			setup_error = QObject::tr("OBS is not ready to read output settings.");
+			return false;
+		}
+		const char *mode = config_get_string(main->Config(), "Output", "Mode");
+		initial_output_mode = QString::fromUtf8(mode ? mode : "");
+		if (initial_output_mode == QStringLiteral("Simple")) {
+			const char *encoder = config_get_string(main->Config(), "SimpleOutput", "StreamEncoder");
+			simple_output_encoder = QString::fromUtf8(encoder ? encoder : "");
+			simple_output_advanced = config_get_bool(main->Config(), "SimpleOutput", "UseAdvanced");
+		}
 		OBSServiceAutoRelease selected_service = obs_frontend_get_streaming_service();
 		if (!selected_service) {
 			setup_error = QObject::tr("Choose a stream service in OBS before starting the bench.");
@@ -804,6 +1118,17 @@ struct PreflightBenchWindow::Impl {
 		}
 		obs_service_apply_encoder_settings(test_service, stream_video_settings, stream_audio_settings);
 		OBSDataAutoRelease property_settings = clone_settings(stream_video_settings);
+		if (!property_settings) {
+			setup_error = QObject::tr("Could not create the stream encoder settings view.");
+			return false;
+		}
+		OBSDataAutoRelease initial_settings = clone_settings(property_settings);
+		if (!initial_settings) {
+			setup_error = QObject::tr("Could not snapshot the current stream encoder settings.");
+			return false;
+		}
+		obs_data_addref(initial_settings);
+		initial_encoder_settings = initial_settings.Get();
 		encoder_properties = new OBSPropertiesView(property_settings.Get(), stream_video_id,
 							   (PropertiesReloadCallback)obs_get_encoder_properties, 190);
 		encoder_properties->setFrameShape(QFrame::NoFrame);
@@ -886,7 +1211,7 @@ struct PreflightBenchWindow::Impl {
 		if (!requires_youtube_throwaway_stream) {
 			return true;
 		}
-#ifdef YOUTUBE_ENABLED
+#if defined(YOUTUBE_ENABLED) && !defined(PREFLIGHT_UI_RENDER_TEST)
 		OBSBasic *main = OBSBasic::Get();
 		auto *youtube = main ? dynamic_cast<YoutubeApiWrappers *>(main->GetAuth()) : nullptr;
 		if (!youtube || configured_service_name != youtube->service()) {
@@ -1145,6 +1470,7 @@ struct PreflightBenchWindow::Impl {
 		header->addWidget(latest);
 		pane_layout->addLayout(header);
 		auto *chart = new MetricChart(frame);
+		chart->setObjectName(QStringLiteral("preflight-chart-%1").arg(index));
 		pane_layout->addWidget(chart, 1);
 		layout->addWidget(frame, row, column);
 		charts[index] = {chart, latest, names, colors};
@@ -1191,7 +1517,9 @@ struct PreflightBenchWindow::Impl {
 		}
 
 		auto *splitter = new QSplitter(Qt::Horizontal, dialog);
+		splitter->setObjectName(QStringLiteral("preflight-main-splitter"));
 		auto *settings_scroll = new QScrollArea(splitter);
+		settings_scroll->setObjectName(QStringLiteral("preflight-settings-scroll"));
 		settings_scroll->setWidgetResizable(true);
 		auto *settings_panel = new QWidget(settings_scroll);
 		auto *settings_layout = new QVBoxLayout(settings_panel);
@@ -1205,6 +1533,36 @@ struct PreflightBenchWindow::Impl {
 				encoder_group));
 		}
 		settings_layout->addWidget(encoder_group);
+		if (encoder_properties) {
+			apply_group = new QGroupBox(QObject::tr("Apply to OBS"), settings_panel);
+			apply_group->setObjectName(QStringLiteral("preflight-apply-preview"));
+			auto *apply_layout = new QVBoxLayout(apply_group);
+			apply_mode_label = new QLabel(apply_group);
+			apply_mode_label->setWordWrap(true);
+			apply_table = new QTableWidget(0, 3, apply_group);
+			apply_table->setObjectName(QStringLiteral("preflight-apply-diff"));
+			apply_table->setHorizontalHeaderLabels(
+				{QObject::tr("Config key"), QObject::tr("Current"), QObject::tr("Proposed")});
+			apply_table->verticalHeader()->hide();
+			apply_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+			apply_table->setWordWrap(true);
+			apply_table->setTextElideMode(Qt::ElideNone);
+			apply_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+			apply_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+			apply_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+			apply_table->setMaximumHeight(190);
+			apply_note = new QLabel(apply_group);
+			apply_note->setObjectName(QStringLiteral("preflight-apply-note"));
+			apply_note->setWordWrap(true);
+			apply_button = new QPushButton(QObject::tr("Apply to OBS"), apply_group);
+			apply_button->setObjectName(QStringLiteral("preflight-apply-button"));
+			apply_button->setEnabled(false);
+			apply_layout->addWidget(apply_mode_label);
+			apply_layout->addWidget(apply_table);
+			apply_layout->addWidget(apply_note);
+			apply_layout->addWidget(apply_button);
+			settings_layout->addWidget(apply_group);
+		}
 		auto *recording_group = new QGroupBox(QObject::tr("Local recording"), settings_panel);
 		auto *recording_layout = new QVBoxLayout(recording_group);
 		recording_path_label = new QLabel(
@@ -1218,9 +1576,11 @@ struct PreflightBenchWindow::Impl {
 		settings_layout->addStretch(1);
 		settings_scroll->setWidget(settings_panel);
 		settings_scroll->setMinimumWidth(320);
+		settings_scroll->setVisible(encoder_properties != nullptr);
 		splitter->addWidget(settings_scroll);
 
 		auto *charts_scroll = new QScrollArea(splitter);
+		charts_scroll->setObjectName(QStringLiteral("preflight-charts-scroll"));
 		charts_scroll->setWidgetResizable(true);
 		auto *chart_container = new QWidget(charts_scroll);
 		auto *chart_column = new QVBoxLayout(chart_container);
@@ -1229,17 +1589,36 @@ struct PreflightBenchWindow::Impl {
 		AddChart(chart_layout, 0, 0, 0, QObject::tr("CPU"), {QObject::tr("CPU")}, {QColor("#60a5fa")});
 		AddChart(chart_layout, 0, 1, 1, QObject::tr("Render time vs frame interval"),
 			 {QObject::tr("Render"), QObject::tr("Interval")}, {QColor("#34d399"), QColor("#fbbf24")});
-		AddChart(chart_layout, 1, 0, 2, QObject::tr("Encoder skipped frames"), {QObject::tr("Skipped")},
+		AddChart(chart_layout, 1, 0, 2, QObject::tr("Encoder skipped frames (%)"), {QObject::tr("Skipped")},
 			 {QColor("#f97316")});
-		AddChart(chart_layout, 1, 1, 3, QObject::tr("Render-missed frames"), {QObject::tr("Missed")},
+		AddChart(chart_layout, 1, 1, 3, QObject::tr("Render-missed frames (%)"), {QObject::tr("Missed")},
 			 {QColor("#f87171")});
-		AddChart(chart_layout, 2, 0, 4, QObject::tr("Stream dropped frames"), {QObject::tr("Dropped")},
+		AddChart(chart_layout, 2, 0, 4, QObject::tr("Stream dropped frames (%)"), {QObject::tr("Dropped")},
 			 {QColor("#fb7185")});
 		AddChart(chart_layout, 2, 1, 5, QObject::tr("Stream bitrate"), {QObject::tr("kb/s")},
 			 {QColor("#a78bfa")});
 		AddChart(chart_layout, 3, 0, 6, QObject::tr("Congestion"), {QObject::tr("%")}, {QColor("#38bdf8")});
 		AddChart(chart_layout, 3, 1, 7, QObject::tr("Connect time"), {QObject::tr("ms")}, {QColor("#facc15")});
-		chart_layout->setRowStretch(4, 1);
+		for (int row = 0; row < 4; ++row) {
+			chart_layout->setRowStretch(row, 1);
+		}
+		chart_layout->setColumnStretch(0, 1);
+		chart_layout->setColumnStretch(1, 1);
+		charts[1].chart->SetWarningLines({
+			{QObject::tr("75% interval"), 0.0, QColor("#fbbf24")},
+			{QObject::tr("100% interval"), 0.0, QColor("#f87171")},
+		});
+		const std::vector<ChartWarningLine> frame_loss_warnings = {
+			{QObject::tr("1% OBS warning"), OBS_STATS_WARNING_PERCENT, QColor("#fbbf24")},
+			{QObject::tr("5% OBS danger"), OBS_STATS_DANGER_PERCENT, QColor("#f87171")},
+		};
+		charts[2].chart->SetWarningLines(frame_loss_warnings);
+		charts[3].chart->SetWarningLines(frame_loss_warnings);
+		charts[4].chart->SetWarningLines(frame_loss_warnings);
+		charts[6].chart->SetWarningLines({
+			{QObject::tr("33.33%"), OBS_CONGESTION_WARNING_PERCENT, QColor("#fbbf24")},
+			{QObject::tr("66.67%"), OBS_CONGESTION_DANGER_PERCENT, QColor("#f87171")},
+		});
 		chart_column->addLayout(chart_layout, 1);
 
 		auto *loupe_group = new QGroupBox(QObject::tr("400% source vs encoded-frame loupe"), chart_container);
@@ -1281,6 +1660,8 @@ struct PreflightBenchWindow::Impl {
 		bakeoff_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		bakeoff_table->setSelectionBehavior(QAbstractItemView::SelectRows);
 		bakeoff_table->setSortingEnabled(false);
+		bakeoff_table->setWordWrap(true);
+		bakeoff_table->setTextElideMode(Qt::ElideNone);
 		bakeoff_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 		bakeoff_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 		bakeoff_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
@@ -1288,24 +1669,30 @@ struct PreflightBenchWindow::Impl {
 		bakeoff_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
 		bakeoff_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
 		bakeoff_table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
-		bakeoff_table->setMinimumHeight(180);
+		bakeoff_table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+		bakeoff_table->setMinimumHeight(145);
 		bakeoff_layout->addWidget(bakeoff_description);
 		bakeoff_layout->addLayout(bakeoff_controls);
 		bakeoff_layout->addWidget(bakeoff_table);
 		root->addWidget(bakeoff_group);
 
 		auto *summary = new QFrame(dialog);
-		auto *summary_layout = new QVBoxLayout(summary);
-		verdict_label = new QLabel(QObject::tr("Verdict: waiting for samples"), summary);
+		summary->setObjectName(QStringLiteral("preflight-verdict-summary"));
+		auto *summary_layout = new QHBoxLayout(summary);
+		verdict_label = new QLabel(QObject::tr("Waiting"), summary);
 		verdict_label->setObjectName(QStringLiteral("preflight-verdict"));
+		QFont verdict_font = verdict_label->font();
+		verdict_font.setPointSize(verdict_font.pointSize() + 2);
+		verdict_font.setBold(true);
+		verdict_label->setFont(verdict_font);
 		reason_label = new QLabel(
 			QObject::tr("Start a non-public test and Preflight will report the current OBS warning bands."),
 			summary);
 		reason_label->setObjectName(QStringLiteral("preflight-reason"));
 		reason_label->setWordWrap(true);
-		summary_layout->addWidget(verdict_label);
-		summary_layout->addWidget(reason_label);
-		root->addWidget(summary);
+		summary_layout->addWidget(verdict_label, 0, Qt::AlignTop);
+		summary_layout->addWidget(reason_label, 1);
+		root->insertWidget(2, summary);
 
 		if (cloudflare_speed_only) {
 			bakeoff_button->setEnabled(false);
@@ -1365,9 +1752,9 @@ struct PreflightBenchWindow::Impl {
 		point.cpu_percent = window.cpu_percent;
 		point.average_frame_time_ms = window.average_frame_time_ns / 1'000'000.0;
 		point.frame_interval_ms = window.frame_interval_ns / 1'000'000.0;
-		point.encoder_skipped_frames = static_cast<double>(window.encoder_frames_skipped);
-		point.lagged_frames = static_cast<double>(window.lagged_frames);
-		point.dropped_frames = static_cast<double>(window.output_frames_dropped);
+		point.encoder_skipped_percent = window.encoder_skip_percent;
+		point.render_lag_percent = window.render_lag_percent;
+		point.dropped_percent = window.output_drop_percent;
 		point.bitrate_kbps = window.output_bitrate_kbps;
 		point.congestion_percent = window.congestion_percent;
 		point.connect_time_ms = static_cast<double>(window.connect_time_ms);
@@ -1396,9 +1783,9 @@ struct PreflightBenchWindow::Impl {
 			values([](const BenchPoint &p) { return p.cpu_percent; }),
 			values([](const BenchPoint &p) { return p.average_frame_time_ms; }),
 			values([](const BenchPoint &p) { return p.frame_interval_ms; }),
-			values([](const BenchPoint &p) { return p.encoder_skipped_frames; }),
-			values([](const BenchPoint &p) { return p.lagged_frames; }),
-			values([](const BenchPoint &p) { return p.dropped_frames; }),
+			values([](const BenchPoint &p) { return p.encoder_skipped_percent; }),
+			values([](const BenchPoint &p) { return p.render_lag_percent; }),
+			values([](const BenchPoint &p) { return p.dropped_percent; }),
 			values([](const BenchPoint &p) { return p.bitrate_kbps; }),
 			values([](const BenchPoint &p) { return p.congestion_percent; }),
 			values([](const BenchPoint &p) { return p.connect_time_ms; }),
@@ -1411,9 +1798,11 @@ struct PreflightBenchWindow::Impl {
 						 .arg(points.back().average_frame_time_ms, 0, 'f', 2)
 						 .arg(points.back().frame_interval_ms, 0, 'f', 2),
 			points.empty() ? QStringLiteral("—")
-				       : QString::number(points.back().encoder_skipped_frames, 'f', 0),
-			points.empty() ? QStringLiteral("—") : QString::number(points.back().lagged_frames, 'f', 0),
-			points.empty() ? QStringLiteral("—") : QString::number(points.back().dropped_frames, 'f', 0),
+				       : QStringLiteral("%1 %").arg(points.back().encoder_skipped_percent, 0, 'f', 2),
+			points.empty() ? QStringLiteral("—")
+				       : QStringLiteral("%1 %").arg(points.back().render_lag_percent, 0, 'f', 2),
+			points.empty() ? QStringLiteral("—")
+				       : QStringLiteral("%1 %").arg(points.back().dropped_percent, 0, 'f', 2),
 			points.empty() ? QStringLiteral("—")
 				       : QStringLiteral("%1 kb/s").arg(points.back().bitrate_kbps, 0, 'f', 0),
 			points.empty() ? QStringLiteral("—")
@@ -1434,6 +1823,11 @@ struct PreflightBenchWindow::Impl {
 			charts[i].chart->SetSeries(std::move(lines));
 			charts[i].latest->setText(latest[i]);
 		}
+		const double frame_interval = points.empty() ? 0.0 : points.back().frame_interval_ms;
+		charts[1].chart->SetWarningLines({
+			{QObject::tr("75% interval"), frame_interval * OBS_RENDER_WARNING_FRACTION, QColor("#fbbf24")},
+			{QObject::tr("100% interval"), frame_interval * OBS_RENDER_DANGER_FRACTION, QColor("#f87171")},
+		});
 	}
 
 	void UpdateVerdict()
@@ -1445,8 +1839,15 @@ struct PreflightBenchWindow::Impl {
 		const QString verdict = point.verdict == OBS_PREFLIGHT_PASS       ? QObject::tr("Pass")
 					: point.verdict == OBS_PREFLIGHT_MARGINAL ? QObject::tr("Marginal")
 										  : QObject::tr("Fail");
-		verdict_label->setText(QObject::tr("Verdict: %1").arg(verdict));
+		verdict_label->setText(verdict);
 		reason_label->setText(point.reason);
+		const QString badge_color = point.verdict == OBS_PREFLIGHT_PASS       ? QStringLiteral("#166534")
+					    : point.verdict == OBS_PREFLIGHT_MARGINAL ? QStringLiteral("#854d0e")
+										      : QStringLiteral("#991b1b");
+		verdict_label->setStyleSheet(
+			QStringLiteral(
+				"QLabel { background: %1; color: white; border-radius: 6px; padding: 7px 14px; }")
+				.arg(badge_color));
 	}
 
 	QString BakeoffVerdictText(int32_t verdict) const
@@ -1732,6 +2133,7 @@ struct PreflightBenchWindow::Impl {
 
 	void UpdateEncoderSettings()
 	{
+		RefreshApplyPreview();
 		if (!stream_video_encoder || !encoder_properties) {
 			return;
 		}
@@ -1795,11 +2197,15 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 		impl->BuildOutputs();
 	}
 	impl->BuildUi();
+	impl->RefreshApplyPreview();
 	if (recorded_data) {
 		impl->LoadRecordedData(*recorded_data);
 	}
 	connect(impl->run_button, &QPushButton::clicked, this, &PreflightBenchWindow::ToggleBench);
 	connect(impl->bakeoff_button, &QPushButton::clicked, this, &PreflightBenchWindow::ToggleBakeoff);
+	if (impl->apply_button) {
+		connect(impl->apply_button, &QPushButton::clicked, this, [this]() { impl->ApplyConfigChanges(); });
+	}
 }
 
 PreflightBenchWindow::~PreflightBenchWindow() = default;
