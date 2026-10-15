@@ -1,0 +1,6 @@
+add_executable(test_hdr_recording_profile test_hdr_recording_profile.c)
+if(NOT MSVC)
+  target_link_libraries(test_hdr_recording_profile PRIVATE m)
+endif()
+add_dependencies(cmocka-tests test_hdr_recording_profile)
+add_test(NAME test_hdr_recording_profile COMMAND test_hdr_recording_profile)
