@@ -1109,10 +1109,12 @@ struct PreflightBenchWindow::Impl {
 		chart_column->addLayout(chart_layout, 1);
 
 		auto *loupe_group = new QGroupBox(QObject::tr("400% source vs encoded-frame loupe"), chart_container);
+		loupe_group->setObjectName(QStringLiteral("preflight-loupe-group"));
 		auto *loupe_layout = new QVBoxLayout(loupe_group);
 		loupe_status_label = new QLabel(QObject::tr("Loupe is waiting for the live bench."), loupe_group);
 		loupe_status_label->setWordWrap(true);
 		loupe_view = new LoupeView(loupe_group);
+		loupe_view->setObjectName(QStringLiteral("preflight-loupe-view"));
 		loupe_layout->addWidget(loupe_status_label);
 		loupe_layout->addWidget(loupe_view, 1);
 		chart_column->addWidget(loupe_group, 0);
@@ -1123,6 +1125,7 @@ struct PreflightBenchWindow::Impl {
 		root->addWidget(splitter, 1);
 
 		auto *bakeoff_group = new QGroupBox(QObject::tr("Encoder bake-off"), dialog);
+		bakeoff_group->setObjectName(QStringLiteral("preflight-bakeoff-group"));
 		auto *bakeoff_layout = new QVBoxLayout(bakeoff_group);
 		auto *bakeoff_controls = new QHBoxLayout;
 		auto *bakeoff_description = new QLabel(
@@ -1136,6 +1139,7 @@ struct PreflightBenchWindow::Impl {
 		bakeoff_controls->addWidget(bakeoff_status_label, 1);
 		bakeoff_controls->addWidget(bakeoff_button);
 		bakeoff_table = new QTableWidget(0, 7, bakeoff_group);
+		bakeoff_table->setObjectName(QStringLiteral("preflight-bakeoff-table"));
 		bakeoff_table->setHorizontalHeaderLabels(
 			{QObject::tr("Encoder"), QObject::tr("Resolution"), QObject::tr("FPS"), QObject::tr("Headroom"),
 			 QObject::tr("Skipped"), QObject::tr("Verdict"), QObject::tr("Reason")});
@@ -1159,9 +1163,11 @@ struct PreflightBenchWindow::Impl {
 		auto *summary = new QFrame(dialog);
 		auto *summary_layout = new QVBoxLayout(summary);
 		verdict_label = new QLabel(QObject::tr("Verdict: waiting for samples"), summary);
+		verdict_label->setObjectName(QStringLiteral("preflight-verdict"));
 		reason_label = new QLabel(
 			QObject::tr("Start a non-public test and Preflight will report the current OBS warning bands."),
 			summary);
+		reason_label->setObjectName(QStringLiteral("preflight-reason"));
 		reason_label->setWordWrap(true);
 		summary_layout->addWidget(verdict_label);
 		summary_layout->addWidget(reason_label);
@@ -1173,6 +1179,41 @@ struct PreflightBenchWindow::Impl {
 			bakeoff_button->setEnabled(false);
 		} else if (!supported_test_mode.isEmpty()) {
 			SetStatus(QObject::tr("Ready · %1").arg(supported_test_mode));
+		}
+	}
+
+	void LoadRecordedData(const PreflightBenchWindowRecordedData &recorded_data)
+	{
+		for (const obs_preflight_window &window : recorded_data.windows) {
+			PushPoint(window);
+		}
+
+		bakeoff_table->setRowCount(static_cast<int>(recorded_data.bakeoff_rows.size()));
+		for (size_t row = 0; row < recorded_data.bakeoff_rows.size(); ++row) {
+			const auto &recorded = recorded_data.bakeoff_rows[row];
+			const auto &result = recorded.result;
+			const int table_row = static_cast<int>(row);
+			bakeoff_table->setItem(table_row, 0, new QTableWidgetItem(recorded.encoder));
+			bakeoff_table->setItem(table_row, 1, new QTableWidgetItem(recorded.resolution));
+			bakeoff_table->setItem(table_row, 2, new QTableWidgetItem(recorded.fps));
+			bakeoff_table->setItem(table_row, 3,
+					       new QTableWidgetItem(QStringLiteral("%1 ms").arg(
+						       result.render_headroom_ns / 1'000'000.0, 0, 'f', 2)));
+			bakeoff_table->setItem(table_row, 4,
+					       new QTableWidgetItem(QStringLiteral("%1 %").arg(
+						       result.encoder_skip_percent, 0, 'f', 2)));
+			bakeoff_table->setItem(table_row, 5, new QTableWidgetItem(BakeoffVerdictText(result.verdict)));
+			bakeoff_table->setItem(table_row, 6, new QTableWidgetItem(QString::fromUtf8(result.reason)));
+		}
+		bakeoff_table->resizeRowsToContents();
+		bakeoff_status_label->setText(QObject::tr("Recorded results from the preflight engine."));
+		if (loupe_view) {
+			loupe_view->SetPair(recorded_data.loupe_pair);
+		}
+		if (loupe_status_label) {
+			loupe_status_label->setText(
+				recorded_data.loupe_pair ? QObject::tr("Comparing recorded source and decoded frames.")
+							 : QObject::tr("No recorded frame pair is available."));
 		}
 	}
 
@@ -1575,8 +1616,18 @@ struct PreflightBenchWindow::Impl {
 	}
 };
 
-PreflightBenchWindow::PreflightBenchWindow(QWidget *parent) : QDialog(parent), impl(std::make_unique<Impl>(this))
+PreflightBenchWindow::PreflightBenchWindow(QWidget *parent) : PreflightBenchWindow(parent, nullptr) {}
+
+PreflightBenchWindow::PreflightBenchWindow(const PreflightBenchWindowRecordedData &recorded_data, QWidget *parent)
+	: PreflightBenchWindow(parent, &recorded_data)
 {
+}
+
+PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBenchWindowRecordedData *recorded_data)
+	: QDialog(parent),
+	  impl(std::make_unique<Impl>(this))
+{
+	setObjectName(QStringLiteral("preflight-bench-window"));
 	setWindowTitle(tr("Preflight live bench"));
 	resize(1280, 1020);
 	impl->sample_timer = new QTimer(this);
@@ -1588,8 +1639,15 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent) : QDialog(parent), i
 	impl->settings_timer = new QTimer(this);
 	impl->settings_timer->setSingleShot(true);
 	connect(impl->settings_timer, &QTimer::timeout, this, &PreflightBenchWindow::ApplyEncoderSettings);
-	impl->BuildOutputs();
+	if (recorded_data) {
+		impl->setup_error = tr("This preview uses recorded samples; live OBS outputs are unavailable.");
+	} else {
+		impl->BuildOutputs();
+	}
 	impl->BuildUi();
+	if (recorded_data) {
+		impl->LoadRecordedData(*recorded_data);
+	}
 	connect(impl->run_button, &QPushButton::clicked, this, &PreflightBenchWindow::ToggleBench);
 	connect(impl->bakeoff_button, &QPushButton::clicked, this, &PreflightBenchWindow::ToggleBakeoff);
 }
