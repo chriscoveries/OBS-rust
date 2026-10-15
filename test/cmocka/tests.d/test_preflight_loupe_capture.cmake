@@ -34,9 +34,7 @@ if((OS_LINUX OR OS_MACOS) AND TARGET OBS::libobs-opengl AND TARGET obs-x264)
     get_filename_component(_preflight_ffmpeg_lib_dir "${FFmpeg_avcodec_LIBRARY}" DIRECTORY)
     target_link_options(
       test_preflight_loupe_capture
-      PRIVATE
-        "LINKER:-rpath,${_preflight_ffmpeg_lib_dir}"
-        "LINKER:-rpath,$<TARGET_FILE_DIR:OBS::libobs>/../../.."
+      PRIVATE "LINKER:-rpath,${_preflight_ffmpeg_lib_dir}" "LINKER:-rpath,$<TARGET_FILE_DIR:OBS::libobs>/../../.."
     )
     # OBS's app targets use hardened runtime signing. This test executable is
     # ad-hoc signed and loads the separately signed prebuilt FFmpeg dylibs.
