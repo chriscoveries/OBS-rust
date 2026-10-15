@@ -2757,6 +2757,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		one_screen->setStretchFactor(0, 0);
 		one_screen->setStretchFactor(1, 1);
 		one_screen->setSizes({290, 750});
+		connect(one_screen, &QSplitter::splitterMoved, dialog,
+			[this]() { QTimer::singleShot(0, dialog, [this]() { ResizeBakeoffTableToContents(); }); });
 
 		auto *video_group = new QGroupBox(QObject::tr("Video"), settings);
 		video_group->setObjectName(QStringLiteral("preflight-video-settings"));
@@ -4067,6 +4069,9 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 	}
 	impl->ResizeBakeoffTableToContents();
 	impl->ResizeApplyTableToContents();
+	// The settings column gets its final width only after the dialog is shown. Recompute wrapped row heights
+	// after that first layout so the bake-off table fits its visible rows without blank space below them.
+	QTimer::singleShot(0, this, [this]() { impl->ResizeBakeoffTableToContents(); });
 	const QSize preferred_size(1040, 720);
 	const QScreen *screen = QGuiApplication::primaryScreen();
 	resize(screen ? preferred_size.boundedTo(screen->availableGeometry().size()) : preferred_size);
