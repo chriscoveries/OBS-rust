@@ -7,3 +7,5 @@ else()
 endif()
 add_dependencies(cmocka-tests test_noise_gate_process)
 add_test(NAME test_noise_gate_process COMMAND test_noise_gate_process)
+
+target_compile_definitions(test_noise_gate_process PRIVATE EXPECT_VECTOR_PATH)
