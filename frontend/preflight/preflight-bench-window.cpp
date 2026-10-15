@@ -30,6 +30,7 @@
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFrame>
+#include <QFont>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QGridLayout>
@@ -40,6 +41,7 @@
 #include <QIcon>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -106,6 +108,7 @@ constexpr uint64_t BAKEOFF_CANDIDATE_DURATION_MS = 5'000;
 constexpr size_t MAX_ENGINE_WINDOWS = 120;
 constexpr size_t CHART_HISTORY_SIZE = 120;
 constexpr int MAX_BAKEOFF_TABLE_VIEW_HEIGHT = 280;
+constexpr int MAX_IMPACT_TABLE_VIEW_HEIGHT = 270;
 
 // Reads the text colour the active OBS theme gives a class such as "text-warning", so painted
 // charts use the same warning and danger colours as the Stats window.
@@ -118,6 +121,46 @@ QColor theme_class_color(QWidget *context, const char *classes)
 	return probe.palette().color(QPalette::WindowText);
 }
 
+class VisibleCheckBox final : public QCheckBox {
+public:
+	using QCheckBox::QCheckBox;
+
+protected:
+	void paintEvent(QPaintEvent *) override
+	{
+		QPainter painter(this);
+		const QRect box(1, (height() - 16) / 2, 16, 16);
+		const bool enabled = isEnabled();
+		const QColor outline = enabled ? palette().color(QPalette::Mid)
+					       : palette().color(QPalette::Disabled, QPalette::Mid);
+		painter.setPen(outline);
+		painter.setBrush(isChecked() ? palette().color(QPalette::Highlight) : palette().color(QPalette::Base));
+		painter.drawRoundedRect(box, 2, 2);
+		if (isChecked()) {
+			painter.setPen(QPen(palette().color(QPalette::HighlightedText), 2.0, Qt::SolidLine,
+					    Qt::RoundCap, Qt::RoundJoin));
+			QPainterPath check;
+			check.moveTo(box.left() + box.width() * 0.22, box.center().y());
+			check.lineTo(box.left() + box.width() * 0.43, box.bottom() - box.height() * 0.24);
+			check.lineTo(box.right() - box.width() * 0.18, box.top() + box.height() * 0.22);
+			painter.drawPath(check);
+		}
+		painter.setPen(enabled ? palette().color(QPalette::Text)
+				       : palette().color(QPalette::Disabled, QPalette::Text));
+		painter.drawText(rect().adjusted(24, 0, 0, 0), Qt::AlignLeft | Qt::AlignVCenter, text());
+	}
+};
+
+void set_visible_checkbox_indicator(QCheckBox *checkbox)
+{
+	if (!checkbox) {
+		return;
+	}
+	// Yami's theme: SVG lookup is not available to the offscreen render. This
+	// remains a QCheckBox; its small subclass paints an explicit palette check.
+	checkbox->setProperty("preflightVisibleIndicator", true);
+}
+
 struct CombinedChartSeries {
 	int table_row = -1;
 	QString label;
@@ -125,9 +168,23 @@ struct CombinedChartSeries {
 	std::vector<std::optional<double>> points;
 };
 
+struct ChartHoverLine {
+	QString text;
+	QColor swatch;
+	QColor text_color;
+};
+
+struct ChartHoverSample {
+	QString time;
+	std::vector<ChartHoverLine> lines;
+};
+
 class CombinedMetricChart final : public QWidget {
 	std::vector<CombinedChartSeries> series;
+	std::vector<ChartHoverSample> hover_samples;
+	QRectF plot_rect;
 	int emphasized_row = -1;
+	int hovered_index = -1;
 
 	static double nice_step(double raw_step)
 	{
@@ -148,8 +205,9 @@ public:
 	explicit CombinedMetricChart(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName(QStringLiteral("preflight-combined-chart"));
-		setMinimumHeight(220);
+		setMinimumHeight(140);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+		setMouseTracking(true);
 		setProperty("preflightStartsAtZero", true);
 	}
 
@@ -166,13 +224,22 @@ public:
 		update();
 	}
 
+	void SetHoverSamples(std::vector<ChartHoverSample> values)
+	{
+		hover_samples = std::move(values);
+		hovered_index = -1;
+		setProperty("preflightHoverText", QString());
+		update();
+	}
+
 protected:
 	void paintEvent(QPaintEvent *) override
 	{
 		QPainter painter(this);
 		painter.setRenderHint(QPainter::Antialiasing);
 		painter.fillRect(rect(), palette().color(QPalette::Base));
-		const QRectF plot = QRectF(rect()).adjusted(64, 26, -12, -18);
+		const QRectF plot = QRectF(rect()).adjusted(54, 24, -10, -16);
+		plot_rect = plot;
 		QStringList series_names;
 		QStringList series_colors;
 		QStringList latest_values;
@@ -263,10 +330,85 @@ protected:
 			painter.setPen(QPen(stroke, emphasized_row == line.table_row ? 3.4 : 1.8));
 			painter.drawPath(path);
 		}
+		if (hovered_index >= 0 && static_cast<size_t>(hovered_index) < hover_samples.size()) {
+			const auto &sample = hover_samples[static_cast<size_t>(hovered_index)];
+			const qreal x = plot.left() + plot.width() * hovered_index /
+							      std::max(1, static_cast<int>(hover_samples.size()) - 1);
+			painter.setPen(QPen(palette().color(QPalette::Text), 1, Qt::DashLine));
+			painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+			for (const auto &line : series) {
+				if (static_cast<size_t>(hovered_index) >= line.points.size() ||
+				    !line.points[static_cast<size_t>(hovered_index)]) {
+					continue;
+				}
+				const qreal y =
+					plot.bottom() -
+					plot.height() * (*line.points[static_cast<size_t>(hovered_index)] / maximum);
+				painter.setPen(QPen(palette().color(QPalette::Base), 1.5));
+				painter.setBrush(line.color);
+				painter.drawEllipse(QPointF(x, y), 4.0, 4.0);
+			}
+
+			QStringList tooltip_lines{sample.time};
+			for (const auto &line : sample.lines) {
+				tooltip_lines.push_back(line.text);
+			}
+			const QString tooltip_text = tooltip_lines.join(QLatin1Char('\n'));
+			setProperty("preflightHoverText", tooltip_text);
+			QFont tooltip_font = font();
+			tooltip_font.setPointSizeF(std::max(8.0, tooltip_font.pointSizeF() - 3.0));
+			const QFontMetrics metrics(tooltip_font);
+			painter.setFont(tooltip_font);
+			int text_width = 0;
+			for (const QString &line : tooltip_lines) {
+				text_width = std::max(text_width, metrics.horizontalAdvance(line));
+			}
+			const int line_height = metrics.height() + 2;
+			const QRectF panel(std::max(plot.left() + 8, plot.right() - text_width - 30), 3,
+					   text_width + 20, line_height * tooltip_lines.size() + 12);
+			painter.setPen(palette().color(QPalette::Mid));
+			painter.setBrush(palette().color(QPalette::Base));
+			painter.drawRoundedRect(panel, 3, 3);
+			painter.setPen(palette().color(QPalette::Text));
+			painter.drawText(QPointF(panel.left() + 10, panel.top() + 6 + metrics.ascent()), sample.time);
+			qreal text_y = panel.top() + 6 + line_height + metrics.ascent();
+			for (const auto &line : sample.lines) {
+				painter.setPen(line.swatch);
+				painter.drawText(QPointF(panel.left() + 10, text_y), QStringLiteral("■"));
+				painter.setPen(line.text_color);
+				painter.drawText(QPointF(panel.left() + 25, text_y), line.text);
+				text_y += line_height;
+			}
+		}
 		if (!has_points) {
 			painter.setPen(palette().color(QPalette::Text));
 			painter.drawText(plot, Qt::AlignCenter, QStringLiteral("Waiting"));
 		}
+	}
+
+	void mouseMoveEvent(QMouseEvent *event) override
+	{
+		if (hover_samples.empty() || !plot_rect.contains(event->position())) {
+			hovered_index = -1;
+			setProperty("preflightHoverIndex", -1);
+			setProperty("preflightHoverText", QString());
+			update();
+			return;
+		}
+		const qreal fraction = (event->position().x() - plot_rect.left()) / plot_rect.width();
+		hovered_index = std::clamp(qRound(fraction * (hover_samples.size() - 1)), 0,
+					   static_cast<int>(hover_samples.size()) - 1);
+		setProperty("preflightHoverIndex", hovered_index);
+		update();
+	}
+
+	void leaveEvent(QEvent *event) override
+	{
+		hovered_index = -1;
+		setProperty("preflightHoverIndex", -1);
+		setProperty("preflightHoverText", QString());
+		update();
+		QWidget::leaveEvent(event);
 	}
 };
 
@@ -373,8 +515,13 @@ class LoupeView final : public QWidget {
 	void draw_zoom(QPainter &painter, const QRectF &panel, const QString &label,
 		       const preflight::loupe::PixelFrame &frame, const preflight::loupe::CropRegion &region) const
 	{
+		painter.save();
+		QFont label_font = painter.font();
+		label_font.setPointSizeF(std::max(8.0, label_font.pointSizeF() - 2.0));
+		painter.setFont(label_font);
 		painter.setPen(palette().color(QPalette::Text));
-		painter.drawText(panel.adjusted(4, 2, -4, -4), Qt::AlignTop | Qt::AlignHCenter, label);
+		painter.drawText(panel.adjusted(2, 2, -2, -4), Qt::AlignTop | Qt::AlignHCenter, label);
+		painter.restore();
 		QRectF viewport = panel.adjusted(4, 24, -4, -4);
 		painter.setPen(palette().color(QPalette::Mid));
 		painter.drawRect(viewport);
@@ -401,10 +548,11 @@ protected:
 	{
 		QPainter painter(this);
 		painter.fillRect(rect(), palette().color(QPalette::Base));
-		const QRectF bounds = QRectF(rect()).adjusted(6, 5, -6, -6);
-		const qreal gap = 8;
-		const qreal preview_width = std::max<qreal>(260, bounds.width() * 0.46);
+		const QRectF bounds = QRectF(rect()).adjusted(2, 2, -2, -2);
+		const qreal gap = 5;
+		const qreal preview_width = std::max<qreal>(260, bounds.width() * 0.60);
 		const qreal zoom_width = (bounds.width() - preview_width - gap * 3) / 3;
+		setProperty("preflightMainPreviewShare", preview_width / bounds.width());
 		preview_panel = QRectF(bounds.left(), bounds.top(), preview_width, bounds.height());
 		source_zoom_panel = QRectF(preview_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
 		encoded_zoom_panel = QRectF(source_zoom_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
@@ -425,7 +573,7 @@ protected:
 
 		const auto &source = *stream_pair->source;
 		const auto &encoded = *stream_pair->encoded;
-		const QRectF preview_bounds = preview_panel.adjusted(5, 24, -5, -5);
+		const QRectF preview_bounds = preview_panel.adjusted(2, 22, -2, -2);
 		preview_image_rect = fitted_image_rect(preview_bounds, encoded);
 		painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
 		painter.drawImage(preview_image_rect, image_for(encoded));
@@ -468,10 +616,10 @@ protected:
 			painter.setPen(QPen(palette().color(QPalette::Highlight), 2));
 			painter.drawRect(selection_rect);
 		}
-		draw_zoom(painter, source_zoom_panel, tr("Source · 400%"), source, *active_region);
-		draw_zoom(painter, encoded_zoom_panel, tr("Stream · 400%"), encoded, *active_region);
+		draw_zoom(painter, source_zoom_panel, tr("Source"), source, *active_region);
+		draw_zoom(painter, encoded_zoom_panel, tr("Stream"), encoded, *active_region);
 		if (recording_pair && recording_pair->encoded) {
-			draw_zoom(painter, recording_zoom_panel, tr("Recording · 400%"), *recording_pair->encoded,
+			draw_zoom(painter, recording_zoom_panel, tr("Recording"), *recording_pair->encoded,
 				  *active_region);
 		} else {
 			painter.setPen(palette().color(QPalette::Text));
@@ -608,13 +756,14 @@ public:
 };
 
 struct MetricRowWidgets {
+	QLabel *swatch = nullptr;
 	QLabel *value = nullptr;
-	QLabel *limit = nullptr;
-	QLabel *status = nullptr;
+	QLabel *suffix = nullptr;
 };
 
 struct BenchPoint {
 	uint64_t end_ms = 0;
+	uint64_t encoder_frames = 0;
 	double cpu_percent = 0.0;
 	std::optional<double> gpu_percent;
 	std::optional<double> gpu_renderer_percent;
@@ -774,7 +923,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	QJsonObject simple_quality_expected_settings;
 	std::vector<BakeoffCandidate> bakeoff_candidates;
 	obs_preflight_candidate_plan active_candidate{};
-	std::array<MetricRowWidgets, 9> metric_rows;
+	std::array<MetricRowWidgets, 8> metric_rows;
+	QLabel *throughput_summary_label = nullptr;
 	int emphasized_chart_row = -1;
 	QElapsedTimer bakeoff_elapsed;
 	QString supported_test_mode;
@@ -825,6 +975,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	bool cloudflare_speed_only = false;
 	bool requires_youtube_throwaway_stream = false;
 	bool apply_preview_ready = false;
+	bool apply_completed = false;
 	bool close_when_stopped = false;
 	bool simple_output_advanced = false;
 
@@ -997,8 +1148,10 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					}
 				});
 		} else if (toggle_layout) {
-			toggle_widget = new QCheckBox(QString::fromStdString(name), toggle_layout->parentWidget());
+			toggle_widget =
+				new VisibleCheckBox(QString::fromStdString(name), toggle_layout->parentWidget());
 			toggle_widget->setObjectName(QStringLiteral("preflight-toggle-%1").arg(toggle_widgets.size()));
+			set_visible_checkbox_indicator(toggle_widget);
 			toggle_layout->insertWidget(std::max(0, toggle_layout->count() - 1), toggle_widget);
 			toggle_widgets[source_filter_id] = toggle_widget;
 			QObject::connect(
@@ -1556,9 +1709,11 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	void InvalidateApplyPreview()
 	{
 		apply_preview_ready = false;
+		apply_completed = false;
 		apply_feedback.clear();
 		if (apply_button) {
 			apply_button->setEnabled(false);
+			apply_button->setText(QObject::tr("Apply"));
 		}
 		if (apply_note) {
 			apply_note->setText(QObject::tr("Settling"));
@@ -1595,9 +1750,26 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		for (size_t row = 0; row < plan.changes.size(); ++row) {
 			const auto &change = plan.changes[row];
 			const int table_row = static_cast<int>(row);
-			auto *key = new QTableWidgetItem(change.path);
+			QString visible_key = change.path;
+			if (change.path == QStringLiteral("streamEncoder.json/bitrate")) {
+				visible_key = QObject::tr("Stream bitrate");
+			} else if (change.path == QStringLiteral("streamEncoder.json/preset")) {
+				visible_key = QObject::tr("Stream preset");
+			} else if (change.path == QStringLiteral("recordEncoder.json/crf")) {
+				visible_key = QObject::tr("Record CRF");
+			} else if (change.path == QStringLiteral("Video.OutputCX")) {
+				visible_key = QObject::tr("Output width");
+			} else if (change.path == QStringLiteral("Video.OutputCY")) {
+				visible_key = QObject::tr("Output height");
+			} else if (change.path.startsWith(QStringLiteral("Video.FPS"))) {
+				visible_key = QObject::tr("Output FPS");
+			}
+			auto *key = new QTableWidgetItem(visible_key);
+			key->setToolTip(change.path);
 			auto *before = new QTableWidgetItem(preflight::apply::ValueForDisplay(change.before));
 			auto *after = new QTableWidgetItem(preflight::apply::ValueForDisplay(change.after));
+			before->setToolTip(change.path);
+			after->setToolTip(change.path);
 			for (QTableWidgetItem *item : {key, before, after}) {
 				item->setFlags(item->flags() & ~Qt::ItemIsEditable);
 			}
@@ -1606,7 +1778,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			apply_table->setItem(table_row, 2, after);
 		}
 		ResizeApplyTableToContents();
-		apply_preview_ready = plan.applicable() &&
+		apply_button->setText(apply_completed ? QObject::tr("Applied") : QObject::tr("Apply"));
+		apply_preview_ready = !apply_completed && plan.applicable() &&
 				      (!recorded_apply_preview || enable_recorded_apply_controls_for_test);
 		apply_button->setEnabled(apply_preview_ready);
 		if (!apply_feedback.isEmpty()) {
@@ -1623,6 +1796,16 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	void ApplyConfigChanges()
 	{
 		if (!apply_table || !apply_button || !apply_preview_ready || !apply_plan || !apply_plan->applicable()) {
+			return;
+		}
+		if (recorded_apply_preview) {
+			// Recorded render fixtures exercise the button transition without writing OBS config.
+			apply_completed = true;
+			apply_feedback = QObject::tr("Applied · %1 mode kept")
+						 .arg(apply_plan->mode == preflight::apply::OutputMode::Simple
+							      ? QObject::tr("Simple")
+							      : QObject::tr("Advanced"));
+			RefreshApplyPreview();
 			return;
 		}
 		OBSBasic *main = OBSBasic::Get();
@@ -1670,6 +1853,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		if (!main->Active()) {
 			main->ResetOutputs();
 		}
+		apply_completed = true;
 		apply_feedback = QObject::tr("Applied · %1 mode kept")
 					 .arg(displayed.mode == preflight::apply::OutputMode::Simple
 						      ? QObject::tr("Simple")
@@ -2134,18 +2318,18 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				encoder_label.chop(4);
 			}
 			encoder_label.replace(QLatin1Char('_'), QLatin1Char(' '));
-			const QString candidate_label = QStringLiteral("%1\n%2×%3 · %4fps")
-								.arg(encoder_label)
-								.arg(candidate.mode.width)
-								.arg(candidate.mode.height)
-								.arg(fps);
-			bakeoff_table->setItem(static_cast<int>(row), 0, new QTableWidgetItem(candidate_label));
-			bakeoff_table->setItem(static_cast<int>(row), 1, new QTableWidgetItem(QObject::tr("Waiting")));
-			auto *use = new QPushButton(QObject::tr("Use these"), bakeoff_table);
-			use->setObjectName(QStringLiteral("preflight-bakeoff-use-%1").arg(row));
-			QObject::connect(use, &QPushButton::clicked, dialog,
-					 [this, row]() { UseBakeoffCandidate(row); });
-			bakeoff_table->setCellWidget(static_cast<int>(row), 2, use);
+			const QString candidate_details = QStringLiteral("%1 · %2×%3 · %4 fps")
+								  .arg(encoder_label)
+								  .arg(candidate.mode.width)
+								  .arg(candidate.mode.height)
+								  .arg(fps);
+			auto *candidate_item = new QTableWidgetItem(encoder_label);
+			candidate_item->setToolTip(
+				QObject::tr("%1\nDouble-click to use these settings").arg(candidate_details));
+			bakeoff_table->setItem(static_cast<int>(row), 0, candidate_item);
+			auto *result_item = new QTableWidgetItem(QObject::tr("Waiting"));
+			result_item->setToolTip(candidate_details);
+			bakeoff_table->setItem(static_cast<int>(row), 1, result_item);
 		}
 		ResizeBakeoffTableToContents();
 		SetBakeoffStatus(QObject::tr("%1 candidates · %2 s each")
@@ -2163,13 +2347,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 
 	void SetBakeoffUseActionsEnabled(bool enabled)
 	{
-		if (!bakeoff_table) {
-			return;
-		}
-		for (int row = 0; row < bakeoff_table->rowCount(); ++row) {
-			if (auto *use = qobject_cast<QPushButton *>(bakeoff_table->cellWidget(row, 2))) {
-				use->setEnabled(enabled);
-			}
+		if (bakeoff_table) {
+			bakeoff_table->setEnabled(enabled);
 		}
 	}
 
@@ -2222,13 +2401,13 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			if (!window) {
 				return QStringLiteral("—");
 			}
-			QString text = QStringLiteral("%1 · CPU %2%")
-					       .arg(BakeoffVerdictText(window->value.verdict))
-					       .arg(window->value.cpu_percent, 0, 'f', 1);
-			if (window->gpu_percent) {
-				text += QStringLiteral(" · GPU %1%").arg(*window->gpu_percent, 0, 'f', 1);
-			}
-			return text;
+			const QString values =
+				window->gpu_percent
+					? QStringLiteral("CPU %1% · GPU %2%")
+						  .arg(window->value.cpu_percent, 0, 'f', 1)
+						  .arg(*window->gpu_percent, 0, 'f', 1)
+					: QStringLiteral("CPU %1%").arg(window->value.cpu_percent, 0, 'f', 1);
+			return QStringLiteral("%1\n%2").arg(BakeoffVerdictText(window->value.verdict), values);
 		};
 		auto signed_value = [](double value, int precision) {
 			const QString magnitude = QString::number(std::abs(value), 'f', precision);
@@ -2243,29 +2422,41 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			     description == QStringLiteral("Stream bitrate")) &&
 			    key == QStringLiteral("bitrate")) {
 				change_label = QObject::tr("Stream bitrate");
+			} else if (description == QStringLiteral("Live captions") && key == QStringLiteral("enabled")) {
+				change_label = QObject::tr("Live captions");
 			} else if (!key.isEmpty()) {
 				change_label += QStringLiteral(" ") + key;
 			}
 			const QString change = QStringLiteral("%1 %2 → %3")
 						       .arg(change_label, QString::fromStdString(entry.old_value),
 							    QString::fromStdString(entry.new_value));
-			QString deltas = QStringLiteral("—");
+			QStringList delta_lines;
+			QStringList full_delta_lines;
 			if (entry.deltas) {
 				const auto &delta = *entry.deltas;
-				deltas = QStringLiteral("CPU %1 pp").arg(signed_value(delta.cpu_percentage_points, 1));
+				auto add_delta = [&delta_lines, &full_delta_lines,
+						  &signed_value](const QString &name, double value, int precision,
+								 const QString &unit) {
+					const double smallest_visible = 0.5 * std::pow(10.0, -precision);
+					const QString line = QStringLiteral("%1 %2 %3")
+								     .arg(name, signed_value(value, precision), unit);
+					full_delta_lines.push_back(line);
+					if (std::abs(value) >= smallest_visible) {
+						delta_lines.push_back(line);
+					}
+				};
+				add_delta(QObject::tr("CPU"), delta.cpu_percentage_points, 1, QObject::tr("pp"));
 				if (delta.gpu_percentage_points) {
-					deltas += QStringLiteral(" · GPU %1 pp")
-							  .arg(signed_value(*delta.gpu_percentage_points, 1));
+					add_delta(QObject::tr("GPU"), *delta.gpu_percentage_points, 1,
+						  QObject::tr("pp"));
 				}
-				deltas += QStringLiteral(" · Render %1 ms · Skip %2 pp · Missed %3 pp · Drop %4 pp · "
-							 "Bitrate %5 kb/s · %6 → %7")
-						  .arg(signed_value(delta.render_time_ms, 2),
-						       signed_value(delta.encoder_skipped_percentage_points, 2),
-						       signed_value(delta.missed_percentage_points, 2),
-						       signed_value(delta.output_dropped_percentage_points, 2),
-						       signed_value(delta.bitrate_kbps, 0),
-						       BakeoffVerdictText(delta.verdict_before),
-						       BakeoffVerdictText(delta.verdict_after));
+				add_delta(QObject::tr("Render"), delta.render_time_ms, 2, QObject::tr("ms"));
+				add_delta(QObject::tr("Skipped"), delta.encoder_skipped_percentage_points, 2,
+					  QObject::tr("pp"));
+				add_delta(QObject::tr("Missed"), delta.missed_percentage_points, 2, QObject::tr("pp"));
+				add_delta(QObject::tr("Dropped"), delta.output_dropped_percentage_points, 2,
+					  QObject::tr("pp"));
+				add_delta(QObject::tr("Bitrate"), delta.bitrate_kbps, 0, QObject::tr("kb/s"));
 			}
 			const QString state =
 				entry.state == preflight::bench::ImpactState::Settling   ? QObject::tr("Settling")
@@ -2276,6 +2467,10 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			const int index = static_cast<int>(row);
 			auto *change_item = new QTableWidgetItem(change);
 			auto *before_item = new QTableWidgetItem(window_text(entry.baseline));
+			QFont compact_values_font = before_item->font();
+			compact_values_font.setPointSizeF(9.0);
+			compact_values_font.setStretch(90);
+			before_item->setFont(compact_values_font);
 			QString after_text = entry.after ? window_text(entry.after) : QStringLiteral("—");
 			if (entry.state == preflight::bench::ImpactState::Settling) {
 				after_text = QObject::tr("Settling");
@@ -2283,7 +2478,15 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				after_text = QObject::tr("Waiting");
 			}
 			auto *after_item = new QTableWidgetItem(after_text);
-			auto *delta_item = new QTableWidgetItem(deltas);
+			after_item->setFont(compact_values_font);
+			auto *delta_item = new QTableWidgetItem(
+				delta_lines.isEmpty() ? QStringLiteral("—")
+						      : delta_lines.mid(0, 3).join(QLatin1Char('\n')));
+			delta_item->setToolTip(full_delta_lines.isEmpty() ? QStringLiteral("—")
+									  : full_delta_lines.join(QLatin1Char('\n')));
+			QFont compact_delta_font = delta_item->font();
+			compact_delta_font.setPointSizeF(8.5);
+			delta_item->setFont(compact_delta_font);
 			auto *state_item = new QTableWidgetItem(state);
 			state_item->setData(Qt::UserRole, state);
 			impact_table->setItem(index, 0, change_item);
@@ -2291,10 +2494,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			impact_table->setItem(index, 2, after_item);
 			impact_table->setItem(index, 3, delta_item);
 			impact_table->setItem(index, 4, state_item);
-			// Keep complete and settling rows visible together; longer histories scroll.
-			impact_table->setRowHeight(index, 94);
 		}
-		impact_table->setMaximumHeight(230);
+		impact_table->resizeRowsToContents();
+		const int content_height = impact_table->horizontalHeader()->sizeHint().height() +
+					   impact_table->verticalHeader()->length() + impact_table->frameWidth() * 2 +
+					   2;
+		const int visible_height = std::min(content_height, MAX_IMPACT_TABLE_VIEW_HEIGHT);
+		impact_table->setMinimumHeight(visible_height);
+		impact_table->setMaximumHeight(visible_height);
 	}
 
 	bool PrepareRecordingPath()
@@ -2398,10 +2605,12 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		if (!metric_table) {
 			return;
 		}
-		// Show all nine metrics without a table scroll bar; the combined chart takes the remaining height.
-		metric_table->resizeRowsToContents();
-		metric_table->setFixedHeight(metric_table->horizontalHeader()->sizeHint().height() +
-					     metric_table->verticalHeader()->length() + metric_table->frameWidth() * 2);
+		constexpr int LEGEND_ROW_HEIGHT = 22;
+		for (int row = 0; row < metric_table->rowCount(); ++row) {
+			metric_table->setRowHeight(row, LEGEND_ROW_HEIGHT);
+		}
+		metric_table->setFixedHeight(metric_table->rowCount() * LEGEND_ROW_HEIGHT +
+					     metric_table->frameWidth() * 2 + 2);
 	}
 
 	void ResizeApplyTableToContents()
@@ -2478,12 +2687,15 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		left_scroll->setObjectName(QStringLiteral("preflight-settings-scroll"));
 		left_scroll->setWidgetResizable(true);
 		left_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-		left_scroll->setMinimumWidth(350);
+		left_scroll->setMinimumWidth(0);
 		auto *settings = new QWidget(left_scroll);
 		settings->setObjectName(QStringLiteral("preflight-settings"));
+		settings->setMinimumWidth(0);
+		settings->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 		auto *settings_layout = new QVBoxLayout(settings);
 		settings_layout->setContentsMargins(4, 4, 8, 4);
 		settings_layout->setSpacing(8);
+		settings_layout->setSizeConstraint(QLayout::SetNoConstraint);
 		left_scroll->setWidget(settings);
 		one_screen->addWidget(left_scroll);
 
@@ -2493,9 +2705,9 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		right_layout->setContentsMargins(8, 4, 4, 4);
 		right_layout->setSpacing(8);
 		one_screen->addWidget(right_side);
-		one_screen->setStretchFactor(0, 4);
-		one_screen->setStretchFactor(1, 6);
-		one_screen->setSizes({430, 700});
+		one_screen->setStretchFactor(0, 0);
+		one_screen->setStretchFactor(1, 1);
+		one_screen->setSizes({290, 750});
 
 		auto *video_group = new QGroupBox(QObject::tr("Video"), settings);
 		video_group->setObjectName(QStringLiteral("preflight-video-settings"));
@@ -2545,7 +2757,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			fps_combo->setCurrentIndex(fps_combo->findData(
 				static_cast<uint>(video_settings.fps_divisor ? video_settings.fps_divisor : 1)));
 		}
-		video_form->addRow(QObject::tr("Output resolution"), resolution_combo);
+		video_form->addRow(QObject::tr("Resolution"), resolution_combo);
 		video_form->addRow(QObject::tr("FPS"), fps_combo);
 		auto *canvas_note =
 			new QLabel(QObject::tr("Base canvas: %1 × %2 (fixed while running)")
@@ -2553,14 +2765,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					   .arg(video_settings.base_height ? video_settings.base_height : 1080),
 				   video_group);
 		canvas_note->setObjectName(QStringLiteral("preflight-base-canvas-note"));
+		canvas_note->setWordWrap(true);
 		setClasses(canvas_note, "text-muted");
 		video_form->addRow(QString(), canvas_note);
 		settings_layout->addWidget(video_group);
 
-		metric_table = new QTableWidget(static_cast<int>(metric_rows.size()), 4, right_side);
+		metric_table = new QTableWidget(4, 2, right_side);
 		metric_table->setObjectName(QStringLiteral("preflight-metric-table"));
-		metric_table->setHorizontalHeaderLabels(
-			{QObject::tr("Metric"), QObject::tr("Value"), QObject::tr("Limit"), QObject::tr("Status")});
+		metric_table->horizontalHeader()->hide();
 		metric_table->verticalHeader()->hide();
 		metric_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		metric_table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -2568,79 +2780,73 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		metric_table->setShowGrid(false);
 		metric_table->setWordWrap(false);
 		metric_table->setFocusPolicy(Qt::NoFocus);
-		// The metric name, value and limit stay compact like OBS Stats.
-		metric_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-		metric_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-		metric_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-		metric_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-		metric_table->horizontalHeader()->setStretchLastSection(false);
-		metric_table->horizontalHeader()->setMinimumSectionSize(72);
-		metric_table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-		metric_table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+		metric_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+		metric_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 		metric_table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-		const std::array<QString, 9> metric_names = {QObject::tr("CPU"),         QObject::tr("GPU"),
-							     QObject::tr("Render"),      QObject::tr("Missed"),
-							     QObject::tr("Skipped"),     QObject::tr("Dropped"),
-							     QObject::tr("Congestion"),  QObject::tr("Bitrate"),
-							     QObject::tr("Connect time")};
-		const std::array<QString, 9> metric_limits = {QObject::tr("—"),       QObject::tr("—"),
-							      QObject::tr("—"),       QObject::tr("5 %"),
-							      QObject::tr("5 %"),     QObject::tr("5 %"),
-							      QObject::tr("66.67 %"), QObject::tr("—"),
-							      QObject::tr("—")};
 		const std::array<QColor, 7> metric_colors = {QColor("#56B4E9"), QColor("#0072B2"), QColor("#E69F00"),
 							     QColor("#CC79A7"), QColor("#F0E442"), QColor("#D55E00"),
 							     QColor("#009E73")};
 		for (size_t row = 0; row < metric_rows.size(); ++row) {
-			auto *metric = new QTableWidgetItem(metric_names[row]);
-			metric->setFlags(metric->flags() & ~Qt::ItemIsEditable);
-			if (row < metric_colors.size()) {
-				QPixmap swatch(12, 12);
-				swatch.fill(metric_colors[row]);
-				metric->setIcon(QIcon(swatch));
-			}
-			metric_table->setItem(static_cast<int>(row), 0, metric);
-			auto *value = new QLabel(QStringLiteral("—"), metric_table);
+			auto *cell = new QWidget(metric_table);
+			cell->setObjectName(QStringLiteral("preflight-metric-cell-%1").arg(row));
+			auto *cell_layout = new QHBoxLayout(cell);
+			cell_layout->setContentsMargins(2, 0, 2, 0);
+			cell_layout->setSpacing(4);
+			auto *swatch = new QLabel(QStringLiteral("■"), cell);
+			swatch->setObjectName(QStringLiteral("preflight-metric-swatch-%1").arg(row));
+			swatch->setStyleSheet(
+				QStringLiteral("color: %1").arg(metric_colors[row % metric_colors.size()].name()));
+			auto *value = new QLabel(QStringLiteral("—"), cell);
 			value->setObjectName(QStringLiteral("preflight-metric-value-%1").arg(row));
+			QFont metric_font = value->font();
+			metric_font.setPointSizeF(8.5);
+			value->setFont(metric_font);
 			setClasses(value, "text-bold");
-			value->setContentsMargins(12, 0, 16, 0);
-			metric_table->setCellWidget(static_cast<int>(row), 1, value);
-			auto *limit = new QLabel(metric_limits[row], metric_table);
-			limit->setObjectName(QStringLiteral("preflight-metric-limit-%1").arg(row));
-			limit->setContentsMargins(6, 0, 8, 0);
-			metric_table->setCellWidget(static_cast<int>(row), 2, limit);
-			auto *status = new QLabel(QStringLiteral("—"), metric_table);
-			status->setObjectName(QStringLiteral("preflight-metric-status-%1").arg(row));
-			metric_table->setCellWidget(static_cast<int>(row), 3, status);
-			metric_rows[row] = {value, limit, status};
+			auto *suffix = new QLabel(cell);
+			suffix->setObjectName(QStringLiteral("preflight-metric-suffix-%1").arg(row));
+			suffix->setFont(metric_font);
+			setClasses(suffix, "text-muted");
+			cell_layout->addWidget(swatch);
+			cell_layout->addWidget(value);
+			cell_layout->addWidget(suffix);
+			cell_layout->addStretch(1);
+			metric_table->setCellWidget(static_cast<int>(row / 2), static_cast<int>(row % 2), cell);
+			metric_rows[row] = {swatch, value, suffix};
 		}
-		connect(metric_table, &QTableWidget::cellClicked, dialog, [this](int row, int) {
-			if (row < 0 || row >= 7 || !combined_chart) {
+		connect(metric_table, &QTableWidget::cellClicked, dialog, [this](int row, int column) {
+			const int metric_index = row * 2 + column;
+			if (metric_index < 0 || metric_index >= 7 || !combined_chart) {
 				return;
 			}
-			emphasized_chart_row = emphasized_chart_row == row ? -1 : row;
+			emphasized_chart_row = emphasized_chart_row == metric_index ? -1 : metric_index;
 			combined_chart->SetEmphasizedRow(emphasized_chart_row);
 		});
 		ResizeMetricTableToContents();
 		auto *metrics_group = new QGroupBox(QObject::tr("Live stats"), right_side);
 		metrics_group->setObjectName(QStringLiteral("preflight-metrics"));
 		auto *metrics_layout = new QVBoxLayout(metrics_group);
-		metrics_layout->setContentsMargins(6, 8, 6, 6);
+		metrics_layout->setContentsMargins(4, 4, 4, 4);
+		metrics_layout->setSpacing(2);
 		metrics_layout->addWidget(metric_table);
 		combined_chart = new CombinedMetricChart(metrics_group);
 		combined_chart->setObjectName(QStringLiteral("preflight-combined-chart"));
 		metrics_layout->addWidget(combined_chart, 1);
+		throughput_summary_label = new QLabel(QObject::tr("Waiting"), metrics_group);
+		throughput_summary_label->setObjectName(QStringLiteral("preflight-throughput-summary"));
+		setClasses(throughput_summary_label, "text-muted");
+		metrics_layout->addWidget(throughput_summary_label, 0);
 		right_layout->addWidget(metrics_group);
 
 		auto *preview_group = new QGroupBox(QObject::tr("Live encoded preview"), right_side);
 		preview_group->setObjectName(QStringLiteral("preflight-live-preview"));
 		auto *preview_layout = new QVBoxLayout(preview_group);
+		preview_layout->setContentsMargins(3, 3, 3, 3);
 		loupe_status_label = new QLabel(QObject::tr("Waiting"), preview_group);
 		loupe_status_label->setWordWrap(true);
 		loupe_view = new LoupeView(preview_group);
 		loupe_view->setObjectName(QStringLiteral("preflight-loupe-view"));
-		loupe_view->setMinimumHeight(220);
-		loupe_view->setMaximumHeight(350);
+		loupe_view->setMinimumHeight(125);
+		loupe_view->setMaximumHeight(400);
 		preview_layout->addWidget(loupe_view, 1);
 		preview_layout->addWidget(loupe_status_label);
 		right_layout->insertWidget(0, preview_group, 2);
@@ -2652,6 +2858,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		impact_table->setHorizontalHeaderLabels({QObject::tr("Change"), QObject::tr("Before"),
 							 QObject::tr("After"), QObject::tr("Δ"), QObject::tr("State")});
 		impact_table->verticalHeader()->hide();
+		impact_table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
 		impact_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		impact_table->setWordWrap(true);
 		impact_table->setTextElideMode(Qt::ElideNone);
@@ -2663,17 +2870,17 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		impact_header->setSectionResizeMode(3, QHeaderView::Stretch);
 		impact_header->setSectionResizeMode(4, QHeaderView::Fixed);
 		impact_header->setMinimumSectionSize(48);
-		impact_table->setColumnWidth(0, 150);
-		impact_table->setColumnWidth(1, 148);
-		impact_table->setColumnWidth(2, 148);
-		impact_table->setColumnWidth(4, 76);
-		impact_table->setMaximumHeight(230);
+		impact_table->setColumnWidth(0, 130);
+		impact_table->setColumnWidth(1, 140);
+		impact_table->setColumnWidth(2, 140);
+		impact_table->setColumnWidth(4, 74);
+		impact_table->setMaximumHeight(MAX_IMPACT_TABLE_VIEW_HEIGHT);
 		impact_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
 		impact_layout->addWidget(impact_table);
 		right_layout->addWidget(impact_group);
-		right_layout->setStretch(0, 3);
-		right_layout->setStretch(1, 2);
-		right_layout->setStretch(2, 0);
+		right_layout->setStretch(0, 4);
+		right_layout->setStretch(1, 3);
+		right_layout->setStretch(2, 2);
 
 		auto *stream_group = new QGroupBox(QObject::tr("Stream encoder"), settings);
 		stream_group->setObjectName(QStringLiteral("preflight-stream-settings"));
@@ -2685,6 +2892,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				new QLabel(setup_error.isEmpty() ? QObject::tr("Stream encoder: settings unavailable")
 								 : setup_error,
 					   stream_group));
+			if (recorded_apply_preview) {
+				QLabel *note = qobject_cast<QLabel *>(stream_settings_layout->itemAt(0)->widget());
+				if (note) {
+					note->setObjectName(QStringLiteral("preflight-stream-settings-note"));
+					note->setText(QObject::tr("Settings not recorded"));
+					setClasses(note, "text-muted");
+				}
+			}
 		}
 		settings_layout->addWidget(stream_group);
 		auto *recording_group = new QGroupBox(QObject::tr("Recording encoder"), settings);
@@ -2738,15 +2953,18 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		if (recording_encoder_properties) {
 			recording_layout->addWidget(recording_encoder_properties);
 		} else {
-			recording_layout->addWidget(
-				new QLabel(QObject::tr("Recording encoder: settings unavailable"), recording_group));
+			auto *recording_note = new QLabel(QObject::tr("Settings unavailable"), recording_group);
+			recording_note->setWordWrap(true);
+			setClasses(recording_note, "text-muted");
+			recording_layout->addWidget(recording_note);
 		}
 		settings_layout->addWidget(recording_group);
 		auto *toggle_group = new QGroupBox(QObject::tr("Live filters"), settings);
 		toggle_group->setObjectName(QStringLiteral("preflight-feature-toggles"));
 		toggle_layout = new QVBoxLayout(toggle_group);
-		captions_toggle = new QCheckBox(QObject::tr("Live captions (on-device)"), toggle_group);
+		captions_toggle = new VisibleCheckBox(QObject::tr("Live captions (on-device)"), toggle_group);
 		captions_toggle->setObjectName(QStringLiteral("preflight-toggle-live-captions"));
+		set_visible_checkbox_indicator(captions_toggle);
 		captions_toggle->setEnabled(false);
 		captions_toggle->setToolTip(QObject::tr("Not available"));
 		toggle_layout->addWidget(captions_toggle);
@@ -2764,34 +2982,37 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		bakeoff_group->setObjectName(QStringLiteral("preflight-bakeoff-group"));
 		bakeoff_group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
 		auto *bakeoff_layout = new QVBoxLayout(bakeoff_group);
-		auto *bakeoff_controls = new QHBoxLayout;
 		bakeoff_status_label = new QLabel(QObject::tr("Waiting"), bakeoff_group);
 		bakeoff_status_label->setWordWrap(true);
+		auto *bakeoff_controls = new QHBoxLayout;
 		bakeoff_button = new QPushButton(QObject::tr("Try every encoder…"), bakeoff_group);
 		bakeoff_button->setObjectName(QStringLiteral("preflight-bakeoff-button"));
-		bakeoff_controls->addWidget(bakeoff_status_label, 1);
+		bakeoff_controls->addStretch(1);
 		bakeoff_controls->addWidget(bakeoff_button);
-		bakeoff_table = new QTableWidget(0, 3, bakeoff_group);
+		bakeoff_table = new QTableWidget(0, 2, bakeoff_group);
 		bakeoff_table->setObjectName(QStringLiteral("preflight-bakeoff-table"));
-		bakeoff_table->setHorizontalHeaderLabels(
-			{QObject::tr("Candidate"), QObject::tr("Result"), QObject::tr("Action")});
+		bakeoff_table->setHorizontalHeaderLabels({QObject::tr("Candidate"), QObject::tr("Result")});
 		bakeoff_table->verticalHeader()->hide();
 		bakeoff_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		bakeoff_table->setSelectionBehavior(QAbstractItemView::SelectRows);
 		bakeoff_table->setSortingEnabled(false);
 		bakeoff_table->setWordWrap(true);
 		bakeoff_table->setTextElideMode(Qt::ElideNone);
-		// Keep the action label intact in the narrower settings column; let the
-		// candidate and result descriptions wrap into the remaining space.
-		bakeoff_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+		bakeoff_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 		bakeoff_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-		bakeoff_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
-		bakeoff_table->horizontalHeader()->resizeSection(0, 108);
-		bakeoff_table->horizontalHeader()->resizeSection(2, 104);
+		bakeoff_table->horizontalHeader()->setStretchLastSection(false);
+		bakeoff_table->horizontalHeader()->setMinimumSectionSize(56);
 		bakeoff_table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-		bakeoff_table->verticalHeader()->setMinimumSectionSize(48);
+		bakeoff_table->verticalHeader()->setMinimumSectionSize(28);
 		bakeoff_table->setMinimumHeight(0);
 		bakeoff_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		connect(bakeoff_table, &QTableWidget::cellDoubleClicked, dialog, [this](int row, int) {
+			if (row >= 0) {
+				UseBakeoffCandidate(static_cast<size_t>(row));
+			}
+		});
+		bakeoff_layout->addWidget(bakeoff_status_label);
 		bakeoff_layout->addLayout(bakeoff_controls);
 		bakeoff_layout->addWidget(bakeoff_table);
 		settings_layout->addWidget(bakeoff_group);
@@ -2811,11 +3032,12 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			apply_table = new QTableWidget(0, 3, apply_group);
 			apply_table->setObjectName(QStringLiteral("preflight-apply-diff"));
 			apply_table->setHorizontalHeaderLabels(
-				{QObject::tr("Config key"), QObject::tr("Current"), QObject::tr("Proposed")});
+				{QObject::tr("Setting"), QObject::tr("Current"), QObject::tr("Proposed")});
 			apply_table->verticalHeader()->hide();
 			apply_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 			apply_table->setWordWrap(true);
 			apply_table->setTextElideMode(Qt::ElideNone);
+			apply_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 			apply_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 			apply_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
 			apply_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
@@ -2868,25 +3090,24 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			const auto &recorded = recorded_data.bakeoff_rows[row];
 			const auto &result = recorded.result;
 			const int table_row = static_cast<int>(row);
-			const QString candidate_label = recorded.encoder + QStringLiteral("\n") + recorded.resolution +
-							QStringLiteral(" · ") + recorded.fps + QStringLiteral(" fps");
-			auto *candidate_item = new QTableWidgetItem(candidate_label);
-			candidate_item->setToolTip(candidate_label);
+			const QString candidate_details = recorded.encoder + QStringLiteral(" · ") +
+							  recorded.resolution + QStringLiteral(" · ") + recorded.fps +
+							  QStringLiteral(" fps");
+			auto *candidate_item = new QTableWidgetItem(recorded.encoder);
+			candidate_item->setToolTip(
+				QObject::tr("%1\nDouble-click to use these settings").arg(candidate_details));
 			bakeoff_table->setItem(table_row, 0, candidate_item);
-			const QString result_summary =
-				QStringLiteral("%1 ms · %2% skipped · %3")
+			const QString result_detail =
+				QStringLiteral("%1 ms headroom · %2% skipped · %3")
 					.arg(result.render_headroom_ns / 1'000'000.0, 0, 'f', 2)
 					.arg(result.encoder_skip_percent, 0, 'f', 2)
-					.arg(BakeoffVerdictText(result.verdict)) +
-				QStringLiteral(" · ") +
-				QString::fromStdString(preflight::bench::BuildVerdictReason(result));
+					.arg(QString::fromStdString(preflight::bench::BuildVerdictReason(result)));
+			const QString result_summary = QStringLiteral("%1 · %2 ms")
+							       .arg(BakeoffVerdictText(result.verdict))
+							       .arg(result.render_headroom_ns / 1'000'000.0, 0, 'f', 2);
 			auto *result_item = new QTableWidgetItem(result_summary);
-			result_item->setToolTip(result_summary);
+			result_item->setToolTip(result_detail);
 			bakeoff_table->setItem(table_row, 1, result_item);
-			auto *use = new QPushButton(QObject::tr("Use these"), bakeoff_table);
-			use->setObjectName(QStringLiteral("preflight-bakeoff-use-%1").arg(row));
-			use->setEnabled(false); // Recorded render fixtures have no live encoder to load.
-			bakeoff_table->setCellWidget(table_row, 2, use);
 		}
 		ResizeBakeoffTableToContents();
 		bakeoff_status_label->setText(QObject::tr("Recorded results"));
@@ -2919,6 +3140,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		last_window_end_ms = window.end_ms;
 		BenchPoint point;
 		point.end_ms = window.end_ms;
+		point.encoder_frames = window.encoder_frames;
 		point.cpu_percent = window.cpu_percent;
 		point.gpu_percent = gpu.gpu_percent;
 		point.gpu_renderer_percent = gpu.renderer_percent;
@@ -2969,6 +3191,15 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			}
 			return std::pair{QObject::tr("OK"), ""};
 		};
+		auto marker = [](const char *status_class) {
+			return strcmp(status_class, "text-danger") == 0    ? QStringLiteral("✕ ")
+			       : strcmp(status_class, "text-warning") == 0 ? QStringLiteral("▲ ")
+									   : QString();
+		};
+		auto status_color = [this](const char *status_class) {
+			return status_class[0] ? theme_class_color(dialog, status_class)
+					       : dialog->palette().color(QPalette::Text);
+		};
 		const double render_fraction =
 			point.frame_interval_ms > 0.0 ? point.average_frame_time_ms / point.frame_interval_ms : 0.0;
 		const auto render_status =
@@ -2987,56 +3218,191 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			band(point.dropped_percent, OBS_STATS_WARNING_PERCENT, OBS_STATS_DANGER_PERCENT);
 		const auto congestion_status =
 			band(point.congestion_percent, OBS_CONGESTION_WARNING_PERCENT, OBS_CONGESTION_DANGER_PERCENT);
-		const std::array<QString, 9> values = {
-			QStringLiteral("%1 %").arg(point.cpu_percent, 0, 'f', 1),
-			point.gpu_percent ? QStringLiteral("%1 %").arg(*point.gpu_percent, 0, 'f', 1)
-					  : QObject::tr("Not available"),
-			QStringLiteral("%1 / %2 ms")
-				.arg(point.average_frame_time_ms, 0, 'f', 2)
-				.arg(point.frame_interval_ms, 0, 'f', 2),
-			QStringLiteral("%1 %").arg(point.render_lag_percent, 0, 'f', 2),
-			QStringLiteral("%1 %").arg(point.encoder_skipped_percent, 0, 'f', 2),
-			QStringLiteral("%1 %").arg(point.dropped_percent, 0, 'f', 2),
-			QStringLiteral("%1 %").arg(point.congestion_percent, 0, 'f', 1),
-			QStringLiteral("%1 kb/s").arg(point.bitrate_kbps, 0, 'f', 0),
-			point.connect_time_ms <= 0 ? QObject::tr("Waiting")
-						   : QStringLiteral("%1 ms").arg(point.connect_time_ms, 0, 'f', 0),
-		};
 		const double interval_ms = point.frame_interval_ms;
-		metric_rows[2].limit->setText(QStringLiteral("%1 ms").arg(interval_ms, 0, 'f', 2));
-		const std::array<QString, 9> limits = {QStringLiteral("—"),          QStringLiteral("—"),
-						       metric_rows[2].limit->text(), QStringLiteral("5 %"),
-						       QStringLiteral("5 %"),        QStringLiteral("5 %"),
-						       QStringLiteral("66.67 %"),    QStringLiteral("—"),
-						       QStringLiteral("—")};
-		const std::array<QString, 9> statuses = {
-			QObject::tr("—"),
-			point.gpu_percent ? QObject::tr("—") : QObject::tr("Not available"),
-			render_status.first,
-			missed_status.first,
-			skipped_status.first,
-			dropped_status.first,
-			congestion_status.first,
-			QObject::tr("—"),
-			point.connect_time_ms <= 0 ? QObject::tr("Waiting") : QObject::tr("—")};
-		const std::array<const char *, 9> classes = {"",
-							     "",
-							     render_status.second,
-							     missed_status.second,
-							     skipped_status.second,
-							     dropped_status.second,
-							     congestion_status.second,
-							     "",
-							     ""};
+		const auto encoder_frames_status = point.encoder_frames == 0
+							   ? std::pair{QObject::tr("Fail"), "text-danger"}
+							   : std::pair{QObject::tr("OK"), ""};
+		const QString stats_limits = QStringLiteral("%1 · %2")
+						     .arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
+						     .arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0);
+		const QString render_limits = QStringLiteral("%1 · %2 ms")
+						      .arg(interval_ms * OBS_RENDER_WARNING_FRACTION, 0, 'f', 2)
+						      .arg(interval_ms * OBS_RENDER_DANGER_FRACTION, 0, 'f', 2);
+		const QString congestion_limits = QStringLiteral("%1 · %2 %")
+							  .arg(OBS_CONGESTION_WARNING_PERCENT, 0, 'f', 2)
+							  .arg(OBS_CONGESTION_DANGER_PERCENT, 0, 'f', 2);
+		const std::array<QString, 8> values = {
+			QStringLiteral("CPU %1 %").arg(point.cpu_percent, 0, 'f', 1),
+			point.gpu_percent ? QStringLiteral("GPU %1 %").arg(*point.gpu_percent, 0, 'f', 1)
+					  : QObject::tr("GPU unavailable"),
+			QStringLiteral("Render %1%2")
+				.arg(marker(render_status.second))
+				.arg(point.average_frame_time_ms, 0, 'f', 2),
+			QStringLiteral("Missed %1%2 %")
+				.arg(marker(missed_status.second))
+				.arg(point.render_lag_percent, 0, 'f', 2),
+			QStringLiteral("Skipped %1%2 %")
+				.arg(marker(skipped_status.second))
+				.arg(point.encoder_skipped_percent, 0, 'f', 2),
+			QStringLiteral("Dropped %1%2 %")
+				.arg(marker(dropped_status.second))
+				.arg(point.dropped_percent, 0, 'f', 2),
+			QStringLiteral("Congestion %1%2 %")
+				.arg(marker(congestion_status.second))
+				.arg(point.congestion_percent, 0, 'f', 1),
+			QStringLiteral("Encoder %1%2 frames")
+				.arg(marker(encoder_frames_status.second))
+				.arg(point.encoder_frames),
+		};
+		const std::array<QString, 8> suffixes = {
+			QString(),
+			QString(),
+			QStringLiteral("/ %1").arg(render_limits),
+			QStringLiteral("/ %1 %").arg(stats_limits),
+			QStringLiteral("/ %1 %").arg(stats_limits),
+			QStringLiteral("/ %1 %").arg(stats_limits),
+			QStringLiteral("/ %1").arg(congestion_limits),
+			QString(),
+		};
+		const std::array<const char *, 8> classes = {
+			"",
+			"",
+			render_status.second,
+			missed_status.second,
+			skipped_status.second,
+			dropped_status.second,
+			congestion_status.second,
+			encoder_frames_status.second,
+		};
+		const std::array<QString, 8> tooltip_limits = {
+			QObject::tr("No OBS CPU warning threshold. Information only."),
+			QObject::tr("No OBS GPU warning threshold. Information only."),
+			QStringLiteral("Warning %1 ms · danger %2 ms · OBS frame timing")
+				.arg(interval_ms * OBS_RENDER_WARNING_FRACTION, 0, 'f', 2)
+				.arg(interval_ms * OBS_RENDER_DANGER_FRACTION, 0, 'f', 2),
+			QStringLiteral("Warning %1% · danger %2% · OBS Stats")
+				.arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
+				.arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0),
+			QStringLiteral("Warning %1% · danger %2% · OBS encoder status bar")
+				.arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
+				.arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0),
+			QStringLiteral("Warning %1% · danger %2% · OBS Stats")
+				.arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
+				.arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0),
+			QStringLiteral("Warning %1% · danger %2% · OBS wizard congestion")
+				.arg(OBS_CONGESTION_WARNING_PERCENT, 0, 'f', 2)
+				.arg(OBS_CONGESTION_DANGER_PERCENT, 0, 'f', 2),
+			QObject::tr("Fail when the encoder emits no frames in the sample window."),
+		};
 		for (size_t index = 0; index < metric_rows.size(); ++index) {
 			metric_rows[index].value->setText(values[index]);
-			metric_rows[index].limit->setText(limits[index]);
-			metric_rows[index].status->setText(statuses[index]);
+			metric_rows[index].suffix->setText(suffixes[index]);
+			metric_rows[index].value->setToolTip(tooltip_limits[index]);
+			metric_rows[index].suffix->setToolTip(tooltip_limits[index]);
+			metric_rows[index].swatch->setToolTip(tooltip_limits[index]);
 			setClasses(metric_rows[index].value, classes[index]);
-			setClasses(metric_rows[index].status, classes[index]);
 		}
+		if (point.encoder_frames == 0) {
+			metric_rows[7].swatch->setStyleSheet(
+				QStringLiteral("color: %1").arg(theme_class_color(dialog, "text-danger").name()));
+		} else {
+			metric_rows[7].swatch->setStyleSheet(QStringLiteral("color: palette(mid)"));
+		}
+		const QString bitrate = QStringLiteral("%1 kb/s").arg(point.bitrate_kbps, 0, 'f', 0);
+		const QString connect_time =
+			point.connect_time_ms <= 0
+				? QObject::tr("connect waiting")
+				: QStringLiteral("connect %1 ms").arg(point.connect_time_ms, 0, 'f', 0);
+		throughput_summary_label->setText(QStringLiteral("%1 · %2").arg(bitrate, connect_time));
 		ResizeMetricTableToContents();
 		combined_chart->SetSeries(NormalizedChartSeries());
+
+		const std::array<QColor, 7> series_colors = {
+			QColor("#56B4E9"), QColor("#0072B2"), QColor("#E69F00"), QColor("#CC79A7"),
+			QColor("#F0E442"), QColor("#D55E00"), QColor("#009E73"),
+		};
+		std::vector<ChartHoverSample> hover_samples;
+		hover_samples.reserve(points.size());
+		for (const BenchPoint &sample_point : points) {
+			const double sample_interval = sample_point.frame_interval_ms;
+			const double sample_render_ratio =
+				sample_interval > 0.0 ? sample_point.average_frame_time_ms / sample_interval : 0.0;
+			auto sample_band = [&band](double value, double warning, double danger) {
+				return band(value, warning, danger);
+			};
+			auto add_line = [&sample_band, &marker, &status_color,
+					 &series_colors](ChartHoverSample &sample, const QString &name,
+							 const QString &value, const QString &limits,
+							 size_t series_index, std::pair<QString, const char *> state) {
+				const QString label =
+					name + QLatin1Char(' ') + marker(state.second) + value +
+					(limits.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(limits));
+				sample.lines.push_back(
+					{label, series_colors[series_index], status_color(state.second)});
+			};
+			ChartHoverSample sample;
+			const double relative_seconds =
+				(sample_point.end_ms <= point.end_ms
+					 ? static_cast<double>(point.end_ms - sample_point.end_ms)
+					 : 0.0) /
+				1000.0;
+			sample.time = QStringLiteral("t −%1 s").arg(relative_seconds, 0, 'f', 1);
+			QString cpu_gpu = QStringLiteral("CPU %1 %").arg(sample_point.cpu_percent, 0, 'f', 1);
+			if (sample_point.gpu_percent) {
+				cpu_gpu += QStringLiteral(" · GPU %1 %").arg(*sample_point.gpu_percent, 0, 'f', 1);
+			} else {
+				cpu_gpu += QObject::tr(" · GPU unavailable");
+			}
+			sample.lines.push_back({cpu_gpu, series_colors[0], dialog->palette().color(QPalette::Text)});
+			add_line(sample, QObject::tr("Render"),
+				 QStringLiteral("%1 ms (%2 % of %3 ms)")
+					 .arg(sample_point.average_frame_time_ms, 0, 'f', 2)
+					 .arg(sample_render_ratio * 100.0, 0, 'f', 0)
+					 .arg(sample_interval, 0, 'f', 2),
+				 QString(), 2,
+				 sample_band(sample_render_ratio, OBS_RENDER_WARNING_FRACTION,
+					     OBS_RENDER_DANGER_FRACTION));
+			const auto missed_status = sample_band(sample_point.render_lag_percent,
+							       OBS_STATS_WARNING_PERCENT, OBS_STATS_DANGER_PERCENT);
+			const auto sample_skip = sample_band(sample_point.encoder_skipped_percent,
+							     OBS_STATS_WARNING_PERCENT, OBS_STATS_DANGER_PERCENT);
+			const char *missed_skip_class = missed_status.second;
+			if (strcmp(sample_skip.second, "text-danger") == 0 ||
+			    (!missed_skip_class[0] && sample_skip.second[0])) {
+				missed_skip_class = sample_skip.second;
+			}
+			const QString missed_skipped =
+				QStringLiteral("Missed %1%2 % · Skipped %3%4 % (warn %5% · danger %6%)")
+					.arg(marker(missed_status.second))
+					.arg(sample_point.render_lag_percent, 0, 'f', 2)
+					.arg(marker(sample_skip.second))
+					.arg(sample_point.encoder_skipped_percent, 0, 'f', 2)
+					.arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
+					.arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0);
+			sample.lines.push_back({missed_skipped, series_colors[3], status_color(missed_skip_class)});
+			add_line(sample, QObject::tr("Dropped"),
+				 QStringLiteral("%1 %").arg(sample_point.dropped_percent, 0, 'f', 2),
+				 QStringLiteral("warn %1% · danger %2%")
+					 .arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
+					 .arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0),
+				 5,
+				 sample_band(sample_point.dropped_percent, OBS_STATS_WARNING_PERCENT,
+					     OBS_STATS_DANGER_PERCENT));
+			add_line(sample, QObject::tr("Congestion"),
+				 QStringLiteral("%1 %").arg(sample_point.congestion_percent, 0, 'f', 1),
+				 QStringLiteral("warn %1% · danger %2%")
+					 .arg(OBS_CONGESTION_WARNING_PERCENT, 0, 'f', 2)
+					 .arg(OBS_CONGESTION_DANGER_PERCENT, 0, 'f', 2),
+				 6,
+				 sample_band(sample_point.congestion_percent, OBS_CONGESTION_WARNING_PERCENT,
+					     OBS_CONGESTION_DANGER_PERCENT));
+			sample.lines.push_back({QStringLiteral("Bitrate %1 kb/s · connect %2 ms")
+							.arg(sample_point.bitrate_kbps, 0, 'f', 0)
+							.arg(sample_point.connect_time_ms, 0, 'f', 0),
+						series_colors[0], dialog->palette().color(QPalette::Text)});
+			hover_samples.push_back(std::move(sample));
+		}
+		combined_chart->SetHoverSamples(std::move(hover_samples));
 	}
 
 	void UpdateVerdict()
@@ -3082,10 +3448,16 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		candidate_render_headroom_ns = window.render_headroom_ns;
 		candidate_encoder_skip_percent = window.encoder_skip_percent;
 		bakeoff_candidate_reason = QString::fromStdString(preflight::bench::BuildVerdictReason(window));
-		SetBakeoffCell(1, QStringLiteral("%1 ms · %2% skipped · %3")
-					  .arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2)
-					  .arg(candidate_encoder_skip_percent, 0, 'f', 2)
-					  .arg(BakeoffVerdictText(candidate_verdict)));
+		SetBakeoffCell(1, QStringLiteral("%1 · %2 ms")
+					  .arg(BakeoffVerdictText(candidate_verdict))
+					  .arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2));
+		if (bakeoff_table && active_bakeoff_row < static_cast<size_t>(bakeoff_table->rowCount())) {
+			bakeoff_table->item(static_cast<int>(active_bakeoff_row), 1)
+				->setToolTip(QStringLiteral("%1 ms headroom · %2% skipped · %3")
+						     .arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2)
+						     .arg(candidate_encoder_skip_percent, 0, 'f', 2)
+						     .arg(bakeoff_candidate_reason));
+		}
 	}
 
 	void CompleteBakeoffCandidate(int32_t verdict, const QString &reason)
@@ -3100,12 +3472,15 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			SetBakeoffStatus(QObject::tr("Bake-off result: could not record"));
 		}
 		bakeoff_candidate_active = false;
-		SetBakeoffCell(1, QStringLiteral("%1 ms · %2% skipped · %3 · %4")
-					  .arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2)
-					  .arg(candidate_encoder_skip_percent, 0, 'f', 2)
+		SetBakeoffCell(1, QStringLiteral("%1 · %2 ms")
 					  .arg(BakeoffVerdictText(candidate_verdict))
-					  .arg(final_reason.isEmpty() ? QObject::tr("Not available") : final_reason));
-		bakeoff_table->item(static_cast<int>(active_bakeoff_row), 1)->setToolTip(final_reason);
+					  .arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2));
+		bakeoff_table->item(static_cast<int>(active_bakeoff_row), 1)
+			->setToolTip(
+				QStringLiteral("%1 ms headroom · %2% skipped\n%3")
+					.arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2)
+					.arg(candidate_encoder_skip_percent, 0, 'f', 2)
+					.arg(final_reason.isEmpty() ? QObject::tr("Not available") : final_reason));
 		bakeoff_table->scrollToItem(bakeoff_table->item(static_cast<int>(active_bakeoff_row), 0));
 		bakeoff_waiting_for_stop = true;
 		StopLoupe();

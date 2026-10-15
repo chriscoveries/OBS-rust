@@ -2,6 +2,7 @@
 #include "../preflight/preflight-apply-plan.hpp"
 
 #include <QApplication>
+#include <QAbstractScrollArea>
 #include <QCheckBox>
 #include <QDir>
 #include <QFile>
@@ -10,6 +11,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPixmap>
 #include <QPushButton>
 #include <QScrollArea>
@@ -166,6 +168,13 @@ static void save_png(QWidget &widget, const QString &path)
 	require_nonblank(pixmap, "screenshot is blank");
 	require(pixmap.save(path, "PNG"), "could not save screenshot PNG");
 	std::cout << QFileInfo(path).absoluteFilePath().toStdString() << '\n';
+}
+
+static bool same_image(const QString &first, const QString &second)
+{
+	const QImage first_image(first);
+	const QImage second_image(second);
+	return !first_image.isNull() && first_image == second_image;
 }
 
 static void test_apply_plans()
@@ -624,6 +633,7 @@ int main(int argc, char **argv)
 			"golden trace verdicts did not cover pass, marginal and fail");
 
 		PreflightBenchWindowRecordedData recorded;
+		recorded.enable_recorded_apply_controls_for_test = true;
 		recorded.windows = congested_windows;
 		recorded.gpu_samples.resize(congested_windows.size(), preflight::gpu::Sample{54.0, 41.0, 28.0, 16.0});
 		recorded.bakeoff_rows = {
@@ -677,7 +687,7 @@ int main(int argc, char **argv)
 							     {{QStringLiteral("OutputCX"), 1280}});
 
 		PreflightBenchWindow window(recorded);
-		window.resize(1500, 1280);
+		window.resize(1040, 720);
 		window.show(); // Qt's offscreen platform keeps this out of the display.
 		QApplication::processEvents();
 
@@ -695,10 +705,23 @@ int main(int argc, char **argv)
 		require(summary && one_screen && one_screen->count() == 2 && settings && right_side &&
 				window.findChildren<QTabWidget *>().empty(),
 			"Preflight must use the single-screen settings and preview layout without tabs");
+		const QList<int> splitter_sizes = one_screen->sizes();
+		require(splitter_sizes.size() == 2 &&
+				splitter_sizes[0] < (splitter_sizes[0] + splitter_sizes[1]) * 0.33,
+			"settings panel is not using the narrower default split");
 		auto *captions_toggle = window.findChild<QCheckBox *>(QStringLiteral("preflight-toggle-live-captions"));
 		auto *impact_list = window.findChild<QTableWidget *>(QStringLiteral("preflight-impact-list"));
 		require(captions_toggle && captions_toggle->isEnabled() && captions_toggle->isChecked(),
 			"recorded live captions toggle is not enabled and on");
+		require(captions_toggle->property("preflightVisibleIndicator").toBool(),
+			"Yami live captions checkbox has no visible state indicator");
+		const QImage checked_toggle = captions_toggle->grab().toImage();
+		captions_toggle->setChecked(false);
+		QApplication::processEvents();
+		const QImage unchecked_toggle = captions_toggle->grab().toImage();
+		captions_toggle->setChecked(true);
+		require(!checked_toggle.isNull() && !unchecked_toggle.isNull() && checked_toggle != unchecked_toggle,
+			"live captions on/off states do not paint differently");
 		require(impact_list && impact_list->columnCount() == 5 && impact_list->rowCount() == 2 &&
 				impact_list->horizontalHeaderItem(0)->text() == QStringLiteral("Change") &&
 				impact_list->horizontalHeaderItem(1)->text() == QStringLiteral("Before") &&
@@ -707,34 +730,61 @@ int main(int argc, char **argv)
 				impact_list->horizontalHeaderItem(4)->text() == QStringLiteral("State"),
 			"impact list is missing its Change/Before/After/Delta/State columns");
 		require(impact_list->item(0, 0)->text() == QStringLiteral("Stream bitrate 6000 → 4500") &&
-				impact_list->item(0, 1)->text() == QStringLiteral("Pass · CPU 55.0% · GPU 35.0%") &&
-				impact_list->item(0, 2)->text() == QStringLiteral("Marginal · CPU 70.0% · GPU 54.0%") &&
-				impact_list->item(0, 3)->text().contains(QStringLiteral("CPU +15.0 pp")) &&
-				impact_list->item(0, 3)->text().contains(QStringLiteral("GPU +19.0 pp")) &&
-				impact_list->item(0, 3)->text().contains(QStringLiteral("Drop +3.33 pp")) &&
+				impact_list->item(0, 1)->text() == QStringLiteral("Pass\nCPU 55.0% · GPU 35.0%") &&
+				impact_list->item(0, 2)->text() == QStringLiteral("Marginal\nCPU 70.0% · GPU 54.0%") &&
+				impact_list->item(0, 3)->text() ==
+					QStringLiteral("CPU +15.0 pp\nGPU +19.0 pp\nRender −1.00 ms") &&
+				impact_list->item(0, 3)->toolTip().contains(QStringLiteral("Skipped +0.00 pp")) &&
+				impact_list->item(0, 3)->toolTip().contains(QStringLiteral("Bitrate −3400 kb/s")) &&
 				impact_list->item(0, 4)->text() == QStringLiteral("Complete") &&
 				impact_list->item(1, 2)->text() == QStringLiteral("Settling") &&
 				impact_list->item(1, 4)->text() == QStringLiteral("Settling") &&
-				impact_list->rowHeight(0) >= 90 && impact_list->rowHeight(1) >= 90,
+				impact_list->rowHeight(0) >= 36 && impact_list->rowHeight(1) >= 30,
 			"impact rows are missing their before/after values, deltas or settling state");
+		QApplication::processEvents();
+		const int impact_content_height = impact_list->horizontalHeader()->sizeHint().height() +
+						  impact_list->verticalHeader()->length() +
+						  impact_list->frameWidth() * 2;
+		require(impact_list->verticalScrollBar()->maximum() == 0 &&
+				impact_list->height() >= impact_content_height - 2,
+			"both impact rows are not fully visible at 1040×720");
+		auto *impact_group = window.findChild<QWidget *>(QStringLiteral("preflight-impact-group"));
+		require(impact_group && impact_group->isVisible() &&
+				impact_group->geometry().bottom() <= right_side->height(),
+			"impact table group is clipped below the 1040×720 right column");
 
 		auto *metric_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-metric-table"));
-		require(metric_table && metric_table->rowCount() == 9 && metric_table->columnCount() == 4 &&
-				metric_table->horizontalHeaderItem(0)->text() == QStringLiteral("Metric") &&
-				metric_table->horizontalHeaderItem(1)->text() == QStringLiteral("Value") &&
-				metric_table->horizontalHeaderItem(2)->text() == QStringLiteral("Limit") &&
-				metric_table->horizontalHeaderItem(3)->text() == QStringLiteral("Status"),
-			"Live bench is missing the compact Stats-style metric table");
-		for (int row = 0; row < metric_table->rowCount(); ++row) {
-			require(metric_table->item(row, 0) && metric_table->cellWidget(row, 1) &&
-					metric_table->cellWidget(row, 2) && metric_table->cellWidget(row, 3),
-				"metric row is missing its value, limit or status");
+		require(metric_table && metric_table->rowCount() == 4 && metric_table->columnCount() == 2 &&
+				metric_table->horizontalHeader()->isHidden() &&
+				metric_table->horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOff,
+			"Live stats are not presented as a compact two-column legend");
+		for (int index = 0; index < 8; ++index) {
+			require(window.findChild<QLabel *>(QStringLiteral("preflight-metric-value-%1").arg(index)) &&
+					window.findChild<QLabel *>(
+						QStringLiteral("preflight-metric-swatch-%1").arg(index)) &&
+					window.findChild<QLabel *>(
+						QStringLiteral("preflight-metric-suffix-%1").arg(index)),
+				"compact metric legend is missing a value, swatch or suffix");
 		}
+		auto *dropped_value = window.findChild<QLabel *>(QStringLiteral("preflight-metric-value-5"));
+		auto *congestion_suffix = window.findChild<QLabel *>(QStringLiteral("preflight-metric-suffix-6"));
+		auto *render_suffix = window.findChild<QLabel *>(QStringLiteral("preflight-metric-suffix-2"));
+		require(dropped_value && dropped_value->text() == QStringLiteral("Dropped ▲ 3.33 %") &&
+				dropped_value->toolTip().contains(QStringLiteral("Warning 1% · danger 5%")) &&
+				congestion_suffix && congestion_suffix->text() == QStringLiteral("/ 33.33 · 66.67 %") &&
+				render_suffix && render_suffix->text() == QStringLiteral("/ 12.50 · 16.67 ms") &&
+				reason_label->text().contains(QStringLiteral("Dropped")) &&
+				reason_label->text().contains(QStringLiteral("1%")),
+			"legend limits and verdict threshold do not agree or their sources are missing from tooltips");
 		auto *combined_chart = window.findChild<QWidget *>(QStringLiteral("preflight-combined-chart"));
-		require(combined_chart && combined_chart->isVisible() && combined_chart->minimumHeight() >= 220 &&
+		require(combined_chart && combined_chart->isVisible() && combined_chart->minimumHeight() >= 120 &&
 				combined_chart->property("preflightStartsAtZero").toBool(),
 			"combined normalized chart is missing or too small");
 		combined_chart->repaint();
+		auto *loupe_widget = window.findChild<QWidget *>(QStringLiteral("preflight-loupe-view"));
+		require(loupe_widget && loupe_widget->property("preflightMainPreviewShare").toDouble() >= 0.59 &&
+				combined_chart->height() > metric_table->height(),
+			"main preview or chart did not receive the space freed by the compact legend");
 		QStringList axis = combined_chart->property("preflightYAxisLabels").toStringList();
 		require(axis.size() == 5 && axis.front() == QStringLiteral("120") &&
 				axis.back() == QStringLiteral("0") &&
@@ -764,23 +814,31 @@ int main(int argc, char **argv)
 				combined_chart->property("preflightLimitLabel").toString() == QStringLiteral("Limit"),
 			"combined chart is missing its OBS limit line");
 		auto *gpu_value = window.findChild<QLabel *>(QStringLiteral("preflight-metric-value-1"));
-		require(gpu_value && gpu_value->text() == QStringLiteral("54.0 %"),
+		require(gpu_value && gpu_value->text() == QStringLiteral("GPU 54.0 %"),
 			"GPU row did not show the recorded utilization sample");
-		require(metric_table->horizontalHeader()->sectionResizeMode(0) == QHeaderView::Stretch &&
-				metric_table->horizontalHeader()->sectionResizeMode(3) ==
-					QHeaderView::ResizeToContents &&
-				metric_table->columnWidth(3) < metric_table->width() / 2,
-			"Live stats Status column consumed the spare table width");
-		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 1),
-					  Q_ARG(int, 0));
+		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0),
+					  Q_ARG(int, 1));
 		QApplication::processEvents();
 		require(combined_chart->property("preflightEmphasizedRow").toInt() == 1,
 			"clicking the GPU legend row did not emphasize its series");
-		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 1),
-					  Q_ARG(int, 0));
+		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0),
+					  Q_ARG(int, 1));
 		QApplication::processEvents();
 		require(combined_chart->property("preflightEmphasizedRow").toInt() == -1,
 			"clicking the emphasized row again did not restore all series");
+		const QPoint hover_position(combined_chart->width() / 2 + 22, combined_chart->height() / 2);
+		QMouseEvent hover_event(QEvent::MouseMove, QPointF(hover_position), QPointF(hover_position),
+					Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+		QApplication::sendEvent(combined_chart, &hover_event);
+		QApplication::processEvents();
+		const QString expected_hover =
+			QStringLiteral("t −2.0 s\nCPU 70.0 % · GPU 54.0 %\nRender 7.00 ms (42 % of 16.67 ms)\n"
+				       "Missed 0.00 % · Skipped 0.00 % (warn 1% · danger 5%)\n"
+				       "Dropped ▲ 3.33 % (warn 1% · danger 5%)\n"
+				       "Congestion ▲ 35.0 % (warn 33.33% · danger 66.67%)\n"
+				       "Bitrate 1600 kb/s · connect 50 ms");
+		require(combined_chart->property("preflightHoverText").toString() == expected_hover,
+			"chart hover content is not a deterministic sample at the nearest time point");
 
 		obs_preflight_window over_limit{};
 		over_limit.end_ms = 1000;
@@ -803,16 +861,17 @@ int main(int argc, char **argv)
 			"combined chart did not round a 122% data maximum to the next clean 150% tick");
 		high_window.close();
 
+		auto *stream_settings_note =
+			window.findChild<QLabel *>(QStringLiteral("preflight-stream-settings-note"));
+		require(stream_settings_note && stream_settings_note->text() == QStringLiteral("Settings not recorded"),
+			"recorded stream encoder settings are presented as a placeholder");
 		auto *table = window.findChild<QTableWidget *>(QStringLiteral("preflight-bakeoff-table"));
-		require(table && table->rowCount() == 3 && table->columnCount() == 3,
+		require(table && table->rowCount() == 3 && table->columnCount() == 2 &&
+				table->horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOff,
 			"bake-off table does not show compact candidate results");
-		require(table->columnWidth(2) >= table->cellWidget(0, 2)->sizeHint().width(),
-			"bake-off action column clips the Use these button");
 		require(table->wordWrap() &&
 				table->verticalHeader()->sectionResizeMode(0) == QHeaderView::ResizeToContents,
-			"bake-off reasons do not wrap into compact content-sized rows");
-		require(table->rowHeight(0) >= 48,
-			"bake-off rows do not reserve enough height for candidate details and the result reason");
+			"bake-off detail tooltips are not content-sized");
 		const int bakeoff_content_height = table->horizontalHeader()->sizeHint().height() +
 						   table->verticalHeader()->length() + table->frameWidth() * 2;
 		require(table->height() <= bakeoff_content_height + 4,
@@ -829,11 +888,10 @@ int main(int argc, char **argv)
 					table->item(row, 1)->text().contains(row == 0   ? QStringLiteral("Pass")
 									     : row == 1 ? QStringLiteral("Marginal")
 											: QStringLiteral("Fail")) &&
-					table->item(row, 1)->text().contains(expected_reason) &&
-					qobject_cast<QPushButton *>(table->cellWidget(row, 2)) &&
-					qobject_cast<QPushButton *>(table->cellWidget(row, 2))->text() ==
-						QStringLiteral("Use these"),
-				"bake-off row is missing its metrics, reason or Use these action");
+					table->item(row, 1)->text().contains(QStringLiteral("ms")) &&
+					table->item(row, 1)->toolTip().contains(expected_reason) &&
+					table->item(row, 0)->toolTip().contains(QStringLiteral("Double-click")),
+				"bake-off row is missing its compact result or full detail tooltip");
 		}
 		QWidget *loupe_view = window.findChild<QWidget *>(QStringLiteral("preflight-loupe-view"));
 		require(loupe_view && window.findChild<QWidget *>(QStringLiteral("preflight-live-preview")),
@@ -841,11 +899,14 @@ int main(int argc, char **argv)
 		auto *apply_group = window.findChild<QWidget *>(QStringLiteral("preflight-apply-preview"));
 		auto *apply_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-apply-diff"));
 		require(apply_group && apply_table && apply_table->rowCount() == 4 &&
-				apply_table->item(0, 0)->text() == QStringLiteral("streamEncoder.json/bitrate") &&
+				apply_table->item(0, 0)->text() == QStringLiteral("Stream bitrate") &&
+				apply_table->item(0, 0)->toolTip() == QStringLiteral("streamEncoder.json/bitrate") &&
 				apply_table->item(1, 2)->text() == QStringLiteral("fast") &&
-				apply_table->item(2, 0)->text() == QStringLiteral("recordEncoder.json/crf") &&
-				apply_table->item(3, 0)->text() == QStringLiteral("Video.OutputCX"),
-			"recorded Apply preview does not show the exact stream, recording and Video diff");
+				apply_table->item(2, 0)->text() == QStringLiteral("Record CRF") &&
+				apply_table->item(2, 0)->toolTip() == QStringLiteral("recordEncoder.json/crf") &&
+				apply_table->item(3, 0)->text() == QStringLiteral("Output width") &&
+				apply_table->horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOff,
+			"recorded Apply preview does not show friendly keys and raw-key tooltips");
 		const int apply_content_height = apply_table->horizontalHeader()->sizeHint().height() +
 						 apply_table->verticalHeader()->length() +
 						 apply_table->frameWidth() * 2;
@@ -858,15 +919,45 @@ int main(int argc, char **argv)
 		require(QDir().mkpath(output_dir), "could not create PNG output directory");
 		const QString yami_screenshot = QStringLiteral("preflight-yami-emphasized-2x.png");
 		const QString yami_apply_screenshot = QStringLiteral("preflight-yami-apply-state-2x.png");
+		const QString yami_hover_screenshot = QStringLiteral("preflight-yami-hover-2x.png");
 		const QString system_screenshot = QStringLiteral("preflight-system-one-screen-2x.png");
 		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0),
 					  Q_ARG(int, 0));
 		QApplication::processEvents();
-		save_png(window, QDir(output_dir).filePath(yami_screenshot));
-		auto *settings_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-settings-scroll"));
-		require(settings_scroll && apply_group && apply_group->isVisible(),
-			"settings scroll area or Apply preview is missing");
+		QEvent leave_chart(QEvent::Leave);
+		QApplication::sendEvent(combined_chart, &leave_chart);
 		QApplication::processEvents();
+		save_png(window, QDir(output_dir).filePath(yami_screenshot));
+		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0),
+					  Q_ARG(int, 0));
+		QApplication::processEvents();
+		QMouseEvent hover_render_event(QEvent::MouseMove, QPointF(hover_position), QPointF(hover_position),
+					       Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+		QApplication::sendEvent(combined_chart, &hover_render_event);
+		QApplication::processEvents();
+		save_png(window, QDir(output_dir).filePath(yami_hover_screenshot));
+		QApplication::sendEvent(combined_chart, &leave_chart);
+		QApplication::processEvents();
+		require(combined_chart->property("preflightHoverText").toString().isEmpty(),
+			"chart hover panel remains visible after the pointer leaves");
+		auto *settings_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-settings-scroll"));
+		auto *apply_button = window.findChild<QPushButton *>(QStringLiteral("preflight-apply-button"));
+		auto *apply_note = window.findChild<QLabel *>(QStringLiteral("preflight-apply-note"));
+		require(settings_scroll && apply_group && apply_group->isVisible() && apply_button && apply_note,
+			"settings scroll area or Apply preview is missing");
+		window.resize(1500, 1280);
+		QApplication::processEvents();
+		settings_scroll->verticalScrollBar()->setValue(settings_scroll->verticalScrollBar()->maximum());
+		QApplication::processEvents();
+		const QPoint apply_button_position = apply_button->mapTo(settings_scroll->viewport(), QPoint(0, 0));
+		require(settings_scroll->viewport()->rect().contains(
+				QRect(apply_button_position, apply_button->size())),
+			"Apply button is outside the visible settings area in the screenshot");
+		apply_button->click();
+		QApplication::processEvents();
+		require(!apply_button->isEnabled() && apply_button->text() == QStringLiteral("Applied") &&
+				apply_note->text() == QStringLiteral("Applied · Advanced mode kept"),
+			"recorded Apply click did not render the completed button state and outcome");
 		save_png(window, QDir(output_dir).filePath(yami_apply_screenshot));
 
 		require(ApplyOBSThemeForRenderTest(app, {QDir(theme_dir).filePath(QStringLiteral("System.obt"))},
@@ -885,7 +976,7 @@ int main(int argc, char **argv)
 		failed.windows = stale_windows;
 		failed.gpu_samples.resize(stale_windows.size(), preflight::gpu::Sample{54.0, 41.0, 28.0, 16.0});
 		PreflightBenchWindow fail_window(failed);
-		fail_window.resize(1500, 1280);
+		fail_window.resize(1040, 720);
 		fail_window.show();
 		QApplication::processEvents();
 		auto *fail_verdict = fail_window.findChild<QLabel *>(QStringLiteral("preflight-verdict"));
@@ -893,7 +984,19 @@ int main(int argc, char **argv)
 		require(fail_verdict && fail_verdict->text() == QStringLiteral("Fail") && fail_reason &&
 				fail_reason->text() == QStringLiteral("Encoder: 0 frames in window"),
 			"stale-encoder golden trace did not render its deterministic Fail reason");
-		save_png(fail_window, QDir(output_dir).filePath(QStringLiteral("preflight-yami-fail-state-2x.png")));
+		auto *encoder_frames = fail_window.findChild<QLabel *>(QStringLiteral("preflight-metric-value-7"));
+		require(encoder_frames && encoder_frames->text() == QStringLiteral("Encoder ✕ 0 frames"),
+			"Fail reason is missing the zero-frame encoder status row");
+		const QString fail_screenshot = QStringLiteral("preflight-yami-fail-state-2x.png");
+		save_png(fail_window, QDir(output_dir).filePath(fail_screenshot));
+		const QString emphasized_path = QDir(output_dir).filePath(yami_screenshot);
+		const QString apply_path = QDir(output_dir).filePath(yami_apply_screenshot);
+		const QString fail_path = QDir(output_dir).filePath(fail_screenshot);
+		const QString hover_path = QDir(output_dir).filePath(yami_hover_screenshot);
+		require(!same_image(emphasized_path, apply_path) && !same_image(emphasized_path, fail_path) &&
+				!same_image(apply_path, fail_path) && !same_image(hover_path, emphasized_path) &&
+				!same_image(hover_path, apply_path) && !same_image(hover_path, fail_path),
+			"the emphasized, post-Apply, Fail and hover renders must all be distinct images");
 
 	} catch (const std::exception &error) {
 		std::cerr << "FAIL test_preflight_ui_render: " << error.what() << '\n';
