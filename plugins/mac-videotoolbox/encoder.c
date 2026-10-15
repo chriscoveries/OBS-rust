@@ -403,9 +403,12 @@ static OSStatus session_set_colorspace(VTCompressionSessionRef session, enum vid
 void sample_encoded_callback(void *data, void *source, OSStatus status, VTEncodeInfoFlags info_flags,
 			     CMSampleBufferRef buffer)
 {
+	CVPixelBufferRef pixbuf = source;
 
 	if (status != noErr) {
 		log_osstatus(LOG_ERROR, NULL, "encoder callback", status);
+		if (pixbuf)
+			CFRelease(pixbuf);
 		return;
 	}
 
@@ -414,12 +417,14 @@ void sample_encoded_callback(void *data, void *source, OSStatus status, VTEncode
 	}
 
 	CMSimpleQueueRef queue = data;
-	CVPixelBufferRef pixbuf = source;
 	if (buffer != NULL) {
 		CFRetain(buffer);
-		CMSimpleQueueEnqueue(queue, buffer);
+		/* The queue owns this reference only if the enqueue succeeds. */
+		if (CMSimpleQueueEnqueue(queue, buffer) != noErr)
+			CFRelease(buffer);
 	}
-	CFRelease(pixbuf);
+	if (pixbuf)
+		CFRelease(pixbuf);
 }
 
 static inline CFDictionaryRef create_encoder_spec(const char *vt_encoder_id)
@@ -489,7 +494,7 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 {
 	OSStatus code;
 
-	VTCompressionSessionRef s;
+	VTCompressionSessionRef s = NULL;
 
 	const char *codec_name = obs_encoder_get_codec(enc->encoder);
 
@@ -507,12 +512,16 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	code = VTCompressionSessionCreate(kCFAllocatorDefault, enc->width, enc->height, enc->codec_type, encoder_spec,
 					  pixbuf_spec, NULL, &sample_encoded_callback, enc->queue, &s);
 
-	if (code != noErr) {
-		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
-	}
-
 	CFRelease(encoder_spec);
 	CFRelease(pixbuf_spec);
+
+	if (code != noErr) {
+		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
+		return code;
+	}
+
+	/* Own the session before property setup so vt_destroy handles later failures. */
+	enc->session = s;
 
 	CFBooleanRef b = NULL;
 	code = VTSessionCopyProperty(s, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, NULL, &b);
@@ -609,8 +618,6 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	if (code != noErr) {
 		return code;
 	}
-
-	enc->session = s;
 
 	return noErr;
 }
