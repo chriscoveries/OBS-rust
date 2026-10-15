@@ -103,7 +103,15 @@ if(ENABLE_UNIT_TESTS)
     add_dependencies(test_preflight_ui_render obs-preflight-rust)
     if(OS_MACOS)
       get_filename_component(_preflight_ui_ffmpeg_lib_dir "${FFmpeg_avcodec_LIBRARY}" DIRECTORY)
-      target_link_options(test_preflight_ui_render PRIVATE "LINKER:-rpath,${_preflight_ui_ffmpeg_lib_dir}")
+      get_filename_component(_preflight_ui_qt_lib_dir "${Qt6Core_DIR}/../.." ABSOLUTE)
+      target_link_options(
+        test_preflight_ui_render
+        PRIVATE
+          "LINKER:-rpath,${_preflight_ui_ffmpeg_lib_dir}"
+          "LINKER:-rpath,${_preflight_ui_qt_lib_dir}"
+          "LINKER:-rpath,${CMAKE_BINARY_DIR}/libobs/$<CONFIG>"
+          "LINKER:-rpath,${CMAKE_BINARY_DIR}/frontend/api/$<CONFIG>"
+      )
       set_property(TARGET test_preflight_ui_render PROPERTY XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME NO)
     endif()
     add_test(NAME test_preflight_ui_render COMMAND test_preflight_ui_render)
