@@ -1,0 +1,27 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Private P010 HLG recording grade. RGB is display-linear BT.2020,
+ * normalized so 1.0 represents 10,000 nits, as in color.effect.
+ * Every mix must reset all uniforms; the conversion effect is shared. */
+uniform float hdr_recording_enabled = 0.0;
+uniform float hdr_recording_exposure = 1.0;
+uniform float hdr_recording_peak = 1000.0;
+uniform float hdr_recording_knee = 0.8;
+uniform float hdr_recording_soft = 1.0;
+
+float3 hdr_recording_grade(float3 rgb)
+{
+	if (hdr_recording_enabled < 0.5)
+		return rgb;
+
+	float3 nits = max(rgb, float3(0.0, 0.0, 0.0)) * (10000.0 * hdr_recording_exposure);
+	float level = max(nits.r, max(nits.g, nits.b));
+	float mapped = min(level, hdr_recording_peak);
+	if (hdr_recording_soft > 0.5) {
+		float knee = hdr_recording_peak * hdr_recording_knee;
+		float room = hdr_recording_peak - knee;
+		float delta = max(level - knee, 0.0);
+		mapped = level > knee ? hdr_recording_peak - room / (1.0 + delta / room) : level;
+	}
+	float gain = level > 0.0 ? mapped / max(level, 1e-20) : 0.0;
+	return nits * (gain / 10000.0);
+}
