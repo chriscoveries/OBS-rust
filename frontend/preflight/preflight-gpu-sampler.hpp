@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -31,6 +33,7 @@ Sample ParsePdhGpuEngineCounters(std::string_view counters);
 std::optional<double> ParseAmdGpuBusyPercent(std::string_view text);
 std::optional<double> AverageNvmlGpuUtilization(const std::vector<double> &device_percentages);
 std::optional<double> AverageNvmlVideoEncodeUtilization(const std::vector<double> &device_percentages);
+std::optional<double> AveragePercentages(const std::vector<double> &percentages);
 
 /* Averages only values that the provider actually reported. */
 class WindowAverager {

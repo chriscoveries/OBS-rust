@@ -42,21 +42,20 @@ void test_iokit_recorded_dictionary()
 				      static_cast<CFIndex>(xml.size()));
 	require(data != nullptr, "could not create recorded IOKit plist data");
 	CFErrorRef error = nullptr;
-	CFPropertyListRef properties = CFPropertyListCreateWithData(
-		kCFAllocatorDefault, data, kCFPropertyListImmutable, nullptr, &error);
+	CFPropertyListRef properties =
+		CFPropertyListCreateWithData(kCFAllocatorDefault, data, kCFPropertyListImmutable, nullptr, &error);
 	CFRelease(data);
 	if (error) {
 		CFRelease(error);
 	}
 	require(properties && CFGetTypeID(properties) == CFDictionaryGetTypeID(),
 		"recorded IOKit fixture is not a dictionary");
-	const auto sample = preflight::gpu::ParseMacPerformanceStatistics(
-		static_cast<CFDictionaryRef>(properties));
+	const auto sample = preflight::gpu::ParseMacPerformanceStatistics(static_cast<CFDictionaryRef>(properties));
 	CFRelease(properties);
 	require(sample.gpu_percent && *sample.gpu_percent == 37.0,
 		"IOKit Device Utilization % was not parsed from the recorded fixture");
-	require(sample.renderer_percent && *sample.renderer_percent == 21.0 &&
-			sample.tiler_percent && *sample.tiler_percent == 14.0,
+	require(sample.renderer_percent && *sample.renderer_percent == 21.0 && sample.tiler_percent &&
+			*sample.tiler_percent == 14.0,
 		"IOKit renderer or tiler utilization was not parsed");
 	const auto missing = preflight::gpu::ParseMacPerformanceStatistics(nullptr);
 	require(!missing.gpu_percent && !missing.renderer_percent && !missing.tiler_percent,
@@ -67,8 +66,7 @@ void test_iokit_recorded_dictionary()
 void test_provider_fixtures()
 {
 	const auto pdh = preflight::gpu::ParsePdhGpuEngineCounters(fixture("pdh-gpu-engine.txt"));
-	require(pdh.gpu_percent && *pdh.gpu_percent == 25.75,
-		"PDH parser did not sum 3D engine instances");
+	require(pdh.gpu_percent && *pdh.gpu_percent == 25.75, "PDH parser did not sum 3D engine instances");
 	require(pdh.video_encode_percent && *pdh.video_encode_percent == 11.0,
 		"PDH parser did not retain VideoEncode utilization separately");
 	const auto amd = preflight::gpu::ParseAmdGpuBusyPercent(fixture("amd-gpu-busy.txt"));
@@ -99,13 +97,12 @@ void test_window_average_and_unavailable()
 	average.Add({42.0, 20.0, 10.0, 5.0});
 	average.Add({std::nullopt, 30.0, std::nullopt, std::nullopt});
 	const auto result = average.TakeAverage();
-	require(result.gpu_percent && *result.gpu_percent == 42.0 &&
-			result.renderer_percent && *result.renderer_percent == 25.0 &&
-			result.tiler_percent == std::nullopt && result.video_encode_percent == std::nullopt,
+	require(result.gpu_percent && *result.gpu_percent == 42.0 && result.renderer_percent &&
+			*result.renderer_percent == 25.0 && result.tiler_percent && *result.tiler_percent == 10.0 &&
+			result.video_encode_percent && *result.video_encode_percent == 5.0,
 		"GPU window average treated missing samples as zero");
 	const auto empty = average.TakeAverage();
-	require(!empty.gpu_percent && !empty.renderer_percent && !empty.tiler_percent &&
-			!empty.video_encode_percent,
+	require(!empty.gpu_percent && !empty.renderer_percent && !empty.tiler_percent && !empty.video_encode_percent,
 		"an empty GPU window must be unavailable");
 
 	auto unavailable = preflight::gpu::CreateUnavailableSampler();

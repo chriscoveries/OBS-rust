@@ -40,6 +40,18 @@ elseif(OS_LINUX)
   set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/linux/preflight-gpu-sampler.cpp)
 endif()
 target_sources(obs-studio PRIVATE preflight/preflight-gpu-sampler.cpp "${PREFLIGHT_GPU_PLATFORM_SOURCE}")
+if(OS_MACOS)
+  find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
+  find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+  set(PREFLIGHT_GPU_PLATFORM_LIBS "${IOKIT_FRAMEWORK}" "${COREFOUNDATION_FRAMEWORK}")
+elseif(OS_WINDOWS)
+  set(PREFLIGHT_GPU_PLATFORM_LIBS pdh)
+elseif(OS_LINUX)
+  set(PREFLIGHT_GPU_PLATFORM_LIBS ${CMAKE_DL_LIBS})
+endif()
+if(PREFLIGHT_GPU_PLATFORM_LIBS)
+  target_link_libraries(obs-studio PRIVATE ${PREFLIGHT_GPU_PLATFORM_LIBS})
+endif()
 
 if(TARGET obs-preflight-rust)
   target_link_libraries(obs-studio PRIVATE "${OBS_PREFLIGHT_ARCHIVE}" Threads::Threads ${CMAKE_DL_LIBS})
@@ -67,13 +79,8 @@ if(ENABLE_UNIT_TESTS)
     test_preflight_gpu_sampler
     PRIVATE PREFLIGHT_GPU_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/preflight-gpu"
   )
-  if(OS_MACOS)
-    find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
-    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
-    target_link_libraries(test_preflight_gpu_sampler PRIVATE "${IOKIT_FRAMEWORK}" "${COREFOUNDATION_FRAMEWORK}")
-    target_link_libraries(obs-studio PRIVATE "${IOKIT_FRAMEWORK}" "${COREFOUNDATION_FRAMEWORK}")
-  elseif(OS_WINDOWS)
-    target_link_libraries(obs-studio PRIVATE pdh)
+  if(PREFLIGHT_GPU_PLATFORM_LIBS)
+    target_link_libraries(test_preflight_gpu_sampler PRIVATE ${PREFLIGHT_GPU_PLATFORM_LIBS})
   endif()
   add_test(NAME test_preflight_gpu_sampler COMMAND test_preflight_gpu_sampler)
   add_executable(
@@ -104,6 +111,8 @@ if(ENABLE_UNIT_TESTS)
       preflight/preflight-bench-data.cpp
       preflight/preflight-bench-data-obs.cpp
       preflight/preflight-bench-window.cpp
+      preflight/preflight-gpu-sampler.cpp
+      "${PREFLIGHT_GPU_PLATFORM_SOURCE}"
       preflight/preflight-loupe-capture.cpp
       preflight/preflight-loupe-core.cpp
       preflight/preflight-cloudflare-speed-test.cpp
@@ -143,6 +152,9 @@ if(ENABLE_UNIT_TESTS)
         OBS::properties-view
         CURL::libcurl
     )
+    if(PREFLIGHT_GPU_PLATFORM_LIBS)
+      target_link_libraries(test_preflight_ui_render PRIVATE ${PREFLIGHT_GPU_PLATFORM_LIBS})
+    endif()
     add_dependencies(test_preflight_ui_render obs-preflight-rust)
     if(OS_MACOS)
       get_filename_component(_preflight_ui_ffmpeg_lib_dir "${FFmpeg_avcodec_LIBRARY}" DIRECTORY)
