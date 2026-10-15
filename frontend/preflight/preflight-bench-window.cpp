@@ -176,7 +176,7 @@ protected:
 		QStringList series_names;
 		QStringList series_colors;
 		QStringList latest_values;
-		double maximum = 120.0;
+		double data_maximum = 0.0;
 		bool has_points = false;
 		for (const auto &line : series) {
 			series_names.push_back(line.label);
@@ -186,7 +186,7 @@ protected:
 							: QString::number(*line.points.back(), 'f', 2));
 			for (const auto &value : line.points) {
 				if (value && std::isfinite(*value)) {
-					maximum = std::max(maximum, *value);
+					data_maximum = std::max(data_maximum, *value);
 					has_points = true;
 				}
 			}
@@ -194,14 +194,13 @@ protected:
 		setProperty("preflightSeriesNames", series_names);
 		setProperty("preflightSeriesColors", series_colors);
 		setProperty("preflightLatestValues", latest_values);
-		const double step = nice_step(maximum / 4.0);
-		maximum = std::ceil(maximum / (step * 4.0)) * step * 4.0;
-		const double axis_step = maximum / 4.0;
+		// Preserve the specified 120% floor; above it, round the data maximum to a clean tick.
+		const double axis_step = data_maximum <= 120.0 ? 30.0 : nice_step(data_maximum / 4.0);
+		const double maximum = data_maximum <= 120.0 ? 120.0 : std::ceil(data_maximum / axis_step) * axis_step;
 		QStringList y_axis_labels;
 		painter.setPen(palette().color(QPalette::Mid));
-		for (int row = 0; row <= 4; ++row) {
-			const double value = maximum - axis_step * row;
-			const qreal y = plot.top() + plot.height() * row / 4.0;
+		for (double value = maximum; value >= -0.001; value -= axis_step) {
+			const qreal y = plot.bottom() - plot.height() * value / maximum;
 			const QString label = QString::number(qRound(value));
 			y_axis_labels.push_back(label);
 			painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
@@ -211,6 +210,7 @@ protected:
 			painter.setPen(palette().color(QPalette::Mid));
 		}
 		setProperty("preflightYAxisLabels", y_axis_labels);
+		setProperty("preflightYAxisMaximum", maximum);
 		setProperty("preflightYAxisTitle", QStringLiteral("% of limit"));
 		painter.save();
 		painter.translate(14, plot.center().y());
@@ -2237,12 +2237,18 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		for (size_t row = 0; row < entries.size(); ++row) {
 			const auto &entry = entries[row];
 			const QString description = QString::fromStdString(entry.description);
-			const QString change = entry.key.empty()
-						       ? description
-						       : QStringLiteral("%1 · %2: %3 → %4")
-								 .arg(description, QString::fromStdString(entry.key),
-								      QString::fromStdString(entry.old_value),
-								      QString::fromStdString(entry.new_value));
+			const QString key = QString::fromStdString(entry.key);
+			QString change_label = description;
+			if ((description == QStringLiteral("Stream encoder") ||
+			     description == QStringLiteral("Stream bitrate")) &&
+			    key == QStringLiteral("bitrate")) {
+				change_label = QObject::tr("Stream bitrate");
+			} else if (!key.isEmpty()) {
+				change_label += QStringLiteral(" ") + key;
+			}
+			const QString change = QStringLiteral("%1 %2 → %3")
+						       .arg(change_label, QString::fromStdString(entry.old_value),
+							    QString::fromStdString(entry.new_value));
 			QString deltas = QStringLiteral("—");
 			if (entry.deltas) {
 				const auto &delta = *entry.deltas;
@@ -2268,21 +2274,25 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					? QObject::tr("Not available")
 					: QObject::tr("Waiting");
 			const int index = static_cast<int>(row);
-			QString summary = change + QStringLiteral(" · ") + window_text(entry.baseline);
-			if (entry.after) {
-				summary += QStringLiteral(" → ") + window_text(entry.after);
-			} else if (entry.state == preflight::bench::ImpactState::Settling) {
-				summary += QStringLiteral(" → ") + QObject::tr("Settling");
+			auto *change_item = new QTableWidgetItem(change);
+			auto *before_item = new QTableWidgetItem(window_text(entry.baseline));
+			QString after_text = entry.after ? window_text(entry.after) : QStringLiteral("—");
+			if (entry.state == preflight::bench::ImpactState::Settling) {
+				after_text = QObject::tr("Settling");
+			} else if (entry.state == preflight::bench::ImpactState::WaitingForBaseline) {
+				after_text = QObject::tr("Waiting");
 			}
-			auto *item = new QTableWidgetItem(summary + QStringLiteral(" · ") + state);
-			item->setData(Qt::UserRole, state);
-			if (entry.deltas) {
-				item->setText(item->text() + QStringLiteral("\n") + deltas);
-			}
-			impact_table->setItem(index, 0, item);
-			// Keep a complete entry visible even though the vertical header is hidden.
-			// verticalHeader()->length() is zero in that mode and cannot size the table.
-			impact_table->setRowHeight(index, 88);
+			auto *after_item = new QTableWidgetItem(after_text);
+			auto *delta_item = new QTableWidgetItem(deltas);
+			auto *state_item = new QTableWidgetItem(state);
+			state_item->setData(Qt::UserRole, state);
+			impact_table->setItem(index, 0, change_item);
+			impact_table->setItem(index, 1, before_item);
+			impact_table->setItem(index, 2, after_item);
+			impact_table->setItem(index, 3, delta_item);
+			impact_table->setItem(index, 4, state_item);
+			// Keep complete and settling rows visible together; longer histories scroll.
+			impact_table->setRowHeight(index, 94);
 		}
 		impact_table->setMaximumHeight(230);
 	}
@@ -2559,10 +2569,11 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		metric_table->setWordWrap(false);
 		metric_table->setFocusPolicy(Qt::NoFocus);
 		// The metric name, value and limit stay compact like OBS Stats.
-		metric_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+		metric_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
 		metric_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 		metric_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-		metric_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+		metric_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+		metric_table->horizontalHeader()->setStretchLastSection(false);
 		metric_table->horizontalHeader()->setMinimumSectionSize(72);
 		metric_table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 		metric_table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
@@ -2636,14 +2647,26 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		auto *impact_group = new QGroupBox(QObject::tr("Impact"), right_side);
 		impact_group->setObjectName(QStringLiteral("preflight-impact-group"));
 		auto *impact_layout = new QVBoxLayout(impact_group);
-		impact_table = new QTableWidget(0, 1, impact_group);
+		impact_table = new QTableWidget(0, 5, impact_group);
 		impact_table->setObjectName(QStringLiteral("preflight-impact-list"));
-		impact_table->setHorizontalHeaderLabels({QObject::tr("Change · baseline · after · delta")});
+		impact_table->setHorizontalHeaderLabels({QObject::tr("Change"), QObject::tr("Before"),
+							 QObject::tr("After"), QObject::tr("Δ"), QObject::tr("State")});
 		impact_table->verticalHeader()->hide();
 		impact_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		impact_table->setWordWrap(true);
 		impact_table->setTextElideMode(Qt::ElideNone);
-		impact_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+		auto *impact_header = impact_table->horizontalHeader();
+		impact_header->setStretchLastSection(false);
+		impact_header->setSectionResizeMode(0, QHeaderView::Fixed);
+		impact_header->setSectionResizeMode(1, QHeaderView::Fixed);
+		impact_header->setSectionResizeMode(2, QHeaderView::Fixed);
+		impact_header->setSectionResizeMode(3, QHeaderView::Stretch);
+		impact_header->setSectionResizeMode(4, QHeaderView::Fixed);
+		impact_header->setMinimumSectionSize(48);
+		impact_table->setColumnWidth(0, 150);
+		impact_table->setColumnWidth(1, 148);
+		impact_table->setColumnWidth(2, 148);
+		impact_table->setColumnWidth(4, 76);
 		impact_table->setMaximumHeight(230);
 		impact_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
 		impact_layout->addWidget(impact_table);

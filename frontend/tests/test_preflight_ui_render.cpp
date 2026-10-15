@@ -699,13 +699,24 @@ int main(int argc, char **argv)
 		auto *impact_list = window.findChild<QTableWidget *>(QStringLiteral("preflight-impact-list"));
 		require(captions_toggle && captions_toggle->isEnabled() && captions_toggle->isChecked(),
 			"recorded live captions toggle is not enabled and on");
-		require(impact_list && impact_list->columnCount() == 1 && impact_list->rowCount() == 2 &&
-				impact_list->item(0, 0) &&
-				impact_list->item(0, 0)->data(Qt::UserRole).toString() == QStringLiteral("Complete") &&
-				impact_list->item(0, 0)->text().contains(QStringLiteral("GPU +19.0 pp")) &&
-				impact_list->item(1, 0) &&
-				impact_list->item(1, 0)->data(Qt::UserRole).toString() == QStringLiteral("Settling"),
-			"one-screen render omitted completed deltas or the settling state");
+		require(impact_list && impact_list->columnCount() == 5 && impact_list->rowCount() == 2 &&
+				impact_list->horizontalHeaderItem(0)->text() == QStringLiteral("Change") &&
+				impact_list->horizontalHeaderItem(1)->text() == QStringLiteral("Before") &&
+				impact_list->horizontalHeaderItem(2)->text() == QStringLiteral("After") &&
+				impact_list->horizontalHeaderItem(3)->text() == QStringLiteral("Δ") &&
+				impact_list->horizontalHeaderItem(4)->text() == QStringLiteral("State"),
+			"impact list is missing its Change/Before/After/Delta/State columns");
+		require(impact_list->item(0, 0)->text() == QStringLiteral("Stream bitrate 6000 → 4500") &&
+				impact_list->item(0, 1)->text() == QStringLiteral("Pass · CPU 55.0% · GPU 35.0%") &&
+				impact_list->item(0, 2)->text() == QStringLiteral("Marginal · CPU 70.0% · GPU 54.0%") &&
+				impact_list->item(0, 3)->text().contains(QStringLiteral("CPU +15.0 pp")) &&
+				impact_list->item(0, 3)->text().contains(QStringLiteral("GPU +19.0 pp")) &&
+				impact_list->item(0, 3)->text().contains(QStringLiteral("Drop +3.33 pp")) &&
+				impact_list->item(0, 4)->text() == QStringLiteral("Complete") &&
+				impact_list->item(1, 2)->text() == QStringLiteral("Settling") &&
+				impact_list->item(1, 4)->text() == QStringLiteral("Settling") &&
+				impact_list->rowHeight(0) >= 90 && impact_list->rowHeight(1) >= 90,
+			"impact rows are missing their before/after values, deltas or settling state");
 
 		auto *metric_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-metric-table"));
 		require(metric_table && metric_table->rowCount() == 9 && metric_table->columnCount() == 4 &&
@@ -725,12 +736,14 @@ int main(int argc, char **argv)
 			"combined normalized chart is missing or too small");
 		combined_chart->repaint();
 		QStringList axis = combined_chart->property("preflightYAxisLabels").toStringList();
-		require(axis.size() == 5 && axis.back() == QStringLiteral("0") &&
+		require(axis.size() == 5 && axis.front() == QStringLiteral("120") &&
+				axis.back() == QStringLiteral("0") &&
 				std::all_of(axis.begin(), axis.end(),
 					    [](const QString &label) { return !label.contains('.'); }) &&
+				combined_chart->property("preflightYAxisMaximum").toDouble() == 120.0 &&
 				combined_chart->property("preflightYAxisTitle").toString() ==
 					QStringLiteral("% of limit"),
-			"combined chart axis must start at zero with rounded percent-of-limit ticks");
+			"combined chart axis must use a 120% top for data below that limit");
 		require(combined_chart->property("preflightSeriesNames").toStringList() ==
 					QStringList({QStringLiteral("CPU"), QStringLiteral("GPU"),
 						     QStringLiteral("Render"), QStringLiteral("Missed"),
@@ -753,6 +766,11 @@ int main(int argc, char **argv)
 		auto *gpu_value = window.findChild<QLabel *>(QStringLiteral("preflight-metric-value-1"));
 		require(gpu_value && gpu_value->text() == QStringLiteral("54.0 %"),
 			"GPU row did not show the recorded utilization sample");
+		require(metric_table->horizontalHeader()->sectionResizeMode(0) == QHeaderView::Stretch &&
+				metric_table->horizontalHeader()->sectionResizeMode(3) ==
+					QHeaderView::ResizeToContents &&
+				metric_table->columnWidth(3) < metric_table->width() / 2,
+			"Live stats Status column consumed the spare table width");
 		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 1),
 					  Q_ARG(int, 0));
 		QApplication::processEvents();
@@ -763,6 +781,27 @@ int main(int argc, char **argv)
 		QApplication::processEvents();
 		require(combined_chart->property("preflightEmphasizedRow").toInt() == -1,
 			"clicking the emphasized row again did not restore all series");
+
+		obs_preflight_window over_limit{};
+		over_limit.end_ms = 1000;
+		over_limit.frame_interval_ns = 16'666'667;
+		over_limit.average_frame_time_ns = 8'000'000;
+		over_limit.encoder_frames = 100;
+		over_limit.output_drop_percent = 6.1;
+		over_limit.verdict = OBS_PREFLIGHT_FAIL;
+		PreflightBenchWindowRecordedData high_data;
+		high_data.apply_preview = recorded.apply_preview;
+		high_data.windows.push_back(over_limit);
+		PreflightBenchWindow high_window(high_data);
+		high_window.resize(1500, 1280);
+		high_window.show();
+		QApplication::processEvents();
+		auto *high_chart = high_window.findChild<QWidget *>(QStringLiteral("preflight-combined-chart"));
+		require(high_chart, "over-limit fixture did not build its combined chart");
+		high_chart->repaint();
+		require(high_chart->property("preflightYAxisMaximum").toDouble() == 150.0,
+			"combined chart did not round a 122% data maximum to the next clean 150% tick");
+		high_window.close();
 
 		auto *table = window.findChild<QTableWidget *>(QStringLiteral("preflight-bakeoff-table"));
 		require(table && table->rowCount() == 3 && table->columnCount() == 3,
@@ -825,8 +864,8 @@ int main(int argc, char **argv)
 		QApplication::processEvents();
 		save_png(window, QDir(output_dir).filePath(yami_screenshot));
 		auto *settings_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-settings-scroll"));
-		require(settings_scroll && apply_group, "settings scroll area or Apply preview is missing");
-		settings_scroll->ensureWidgetVisible(apply_group);
+		require(settings_scroll && apply_group && apply_group->isVisible(),
+			"settings scroll area or Apply preview is missing");
 		QApplication::processEvents();
 		save_png(window, QDir(output_dir).filePath(yami_apply_screenshot));
 
