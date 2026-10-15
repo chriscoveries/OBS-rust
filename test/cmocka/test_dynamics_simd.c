@@ -190,7 +190,7 @@ static void ratio_one_silence_matches_scalar(void **state)
 {
 #if DYN_SIMD_SSE2
 	UNUSED_PARAMETER(state);
-	const float env[9] = {0.0f, 1.0f, 0.0f, 0.25f, 0.0f, 0.0f, 0.5f, 0.0f, 0.0f};
+	float env[9] = {0.0f, 1.0f, 0.0f, 0.25f, 0.0f, 0.0f, 0.5f, 0.0f, 0.0f};
 	const float samples[9] = {1.0f, -0.5f, 0.25f, 0.1f, -1.0f, 0.8f, -0.9f, 0.3f, 0.7f};
 	const float gains[2] = {1.0f, 0.75f};
 	const float slopes[2] = {0.0f, -0.0f};
@@ -204,7 +204,7 @@ static void ratio_one_silence_matches_scalar(void **state)
 			const float db_gain = fminf(0.0f, slopes[variant] * (-12.0f - db));
 			expected[i] = samples[i] * (db_to_mul(db_gain) * gains[variant]);
 		}
-		dyn_compression_gain_apply((float *)env, channels, 1, 9, slopes[variant], -12.0f,
+		dyn_compression_gain_apply(env, channels, 1, 9, slopes[variant], -12.0f,
 					   gains[variant]);
 		for (size_t i = 0; i < 9; ++i) {
 			assert_true(isfinite(actual[i]));
