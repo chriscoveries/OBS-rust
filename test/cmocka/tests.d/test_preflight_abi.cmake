@@ -1,7 +1,23 @@
 if(OS_LINUX OR OS_MACOS)
   # Windows is excluded: linking a Rust static library there needs extra system
   # libraries that this test does not set up.
-  find_program(SOLDR_EXECUTABLE soldr REQUIRED)
+  find_program(SOLDR_EXECUTABLE soldr)
+
+  set(_preflight_cargo_command)
+  if(SOLDR_EXECUTABLE)
+    list(APPEND _preflight_cargo_command "${SOLDR_EXECUTABLE}" cargo)
+  elseif(TARGET Rust::Cargo)
+    # Reuse the cargo executable Corrosion found for libobs's Rust build.
+    get_target_property(_preflight_cargo_executable Rust::Cargo IMPORTED_LOCATION)
+    if(_preflight_cargo_executable AND NOT _preflight_cargo_executable MATCHES "-NOTFOUND$")
+      list(APPEND _preflight_cargo_command "${_preflight_cargo_executable}")
+    endif()
+  endif()
+
+  if(NOT _preflight_cargo_command)
+    message(STATUS "Skipping test_preflight_abi: soldr and Corrosion's Rust::Cargo executable were not found")
+    return()
+  endif()
 
   set(_preflight_manifest "${CMAKE_SOURCE_DIR}/rust/obs-preflight-ffi/Cargo.toml")
   set(_preflight_target_dir "${CMAKE_BINARY_DIR}/obs-preflight-cargo")
@@ -18,7 +34,7 @@ if(OS_LINUX OR OS_MACOS)
   add_custom_command(
     OUTPUT "${_preflight_archive}"
     COMMAND
-      "${CMAKE_COMMAND}" -E env "CARGO_TARGET_DIR=${_preflight_target_dir}" "${SOLDR_EXECUTABLE}" cargo build
+      "${CMAKE_COMMAND}" -E env "CARGO_TARGET_DIR=${_preflight_target_dir}" ${_preflight_cargo_command} build
       --manifest-path "${CMAKE_SOURCE_DIR}/Cargo.toml" --package obs-preflight-ffi --lib --release --locked
     DEPENDS
       "${_preflight_manifest}"
