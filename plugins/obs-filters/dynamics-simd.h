@@ -161,16 +161,18 @@ static inline void dyn_envelope_analyze(float *env_buf, float **bufs, size_t num
 
 #if DYN_SIMD_SSE2
 
-/* natural log of a positive __m128; callers mask non-positive lanes */
+/* Natural log of positive normal lanes. Callers clamp to >= 1e-30f. */
 static inline __m128 dyn_logf_ps(__m128 x)
 {
 	const __m128 one = _mm_set1_ps(1.0f);
 	__m128i ix = _mm_castps_si128(x);
 	__m128i ei = _mm_srli_epi32(ix, 23);
 	ix = _mm_and_si128(ix, _mm_set1_epi32(0x007fffff));
-	ix = _mm_or_si128(ix, _mm_castps_si128(one));
+	/* Reduce to [0.5, 1), then fold at sqrt(0.5). The polynomial
+	 * requires a small residual around one; [1, 2) never folds. */
+	ix = _mm_or_si128(ix, _mm_castps_si128(_mm_set1_ps(0.5f)));
 	x = _mm_castsi128_ps(ix);
-	__m128 e = _mm_cvtepi32_ps(_mm_sub_epi32(ei, _mm_set1_epi32(127)));
+	__m128 e = _mm_cvtepi32_ps(_mm_sub_epi32(ei, _mm_set1_epi32(126)));
 
 	const __m128 sqrthf = _mm_set1_ps(0.707106781186547524f);
 	__m128 m = _mm_cmplt_ps(x, sqrthf);
