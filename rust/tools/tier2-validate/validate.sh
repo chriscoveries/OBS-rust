@@ -70,6 +70,11 @@ fi
 
 cd "$(dirname "$0")/../../.."
 
+# Pin SDKROOT to the active full Xcode installation. CI sets DEVELOPER_DIR,
+# while a developer's native invocation uses xcode-select's selected Xcode.
+source rust/tools/tier2-validate/select-macos-sdk.sh
+select_tier2_macos_sdk
+
 # The macos-ci preset reads this env var for the Xcode compilation cache.
 export XCODE_CAS_PATH="${XCODE_CAS_PATH:-$PWD/build_rust_xcode_cas}"
 mkdir -p "$XCODE_CAS_PATH"
@@ -85,6 +90,7 @@ for mode in OFF ON; do
     -DENABLE_FRONTEND=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF \
     -DENABLE_WEBSOCKET=OFF \
     -DCMAKE_PREFIX_PATH="$cmocka_prefix" \
+    -DCMAKE_OSX_SYSROOT="$SDKROOT" \
     >"$build.configure.log" 2>&1 || { tail -40 "$build.configure.log"; exit 1; }
   cmake --build "$build" --config RelWithDebInfo \
     --target libobs cmocka-tests \

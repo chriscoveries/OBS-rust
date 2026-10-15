@@ -853,6 +853,16 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      # Match the Xcode 26.5 selection used by full-app and release builds.
+      # Environment-scoped DEVELOPER_DIR avoids changing the runner globally.
+      - name: Select Xcode for Rust Tier 2 🍏
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          developer=/Applications/Xcode_26.5.app/Contents/Developer
+          test -d "$developer" || { echo "::error::Missing $developer"; exit 1; }
+          echo "DEVELOPER_DIR=$developer" >> "$GITHUB_ENV"
+
       # The ENABLE_RUST_LIBOBS=ON build runs cargo through Corrosion; the
       # shims route it through soldr so its compiles hit zccache.
       - name: Set Up soldr 🦀
