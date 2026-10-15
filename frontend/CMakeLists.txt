@@ -58,6 +58,73 @@ if(ENABLE_UNIT_TESTS)
     set_property(TARGET test_preflight_loupe PROPERTY XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME NO)
   endif()
   add_test(NAME test_preflight_loupe COMMAND test_preflight_loupe)
+  if(TARGET obs-preflight-rust)
+    if(NOT TARGET OBS::properties-view)
+      add_subdirectory("${CMAKE_SOURCE_DIR}/shared/properties-view" "${CMAKE_BINARY_DIR}/shared/properties-view")
+    endif()
+    add_executable(
+      test_preflight_ui_render
+      tests/test_preflight_ui_render.cpp
+      OBSApp_Themes.cpp
+      preflight/obs-preflight-collector.c
+      preflight/preflight-apply-plan.cpp
+      preflight/preflight-bench-window.cpp
+      preflight/preflight-loupe-capture.cpp
+      preflight/preflight-loupe-core.cpp
+      preflight/preflight-cloudflare-speed-test.cpp
+      preflight/preflight-test-mode.cpp
+      utility/OBSProxyStyle.cpp
+      utility/OBSProxyStyle.hpp
+    )
+    set_target_properties(
+      test_preflight_ui_render
+      PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON
+    )
+    target_include_directories(
+      test_preflight_ui_render
+      PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/preflight"
+        "${CMAKE_CURRENT_BINARY_DIR}/test_preflight_ui_render_autogen/include_$<CONFIG>"
+    )
+    target_compile_definitions(
+      test_preflight_ui_render
+      PRIVATE
+        PREFLIGHT_UI_RENDER_TEST=1
+        PREFLIGHT_THEME_RENDER_TEST=1
+        PREFLIGHT_GOLDEN_DIR=\"${CMAKE_SOURCE_DIR}/rust/obs-preflight/tests/golden\"
+        PREFLIGHT_THEME_DIR=\"${CMAKE_SOURCE_DIR}/frontend/data/themes\"
+    )
+    target_link_libraries(
+      test_preflight_ui_render
+      PRIVATE
+        "${OBS_PREFLIGHT_ARCHIVE}"
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+        FFmpeg::avcodec
+        FFmpeg::avutil
+        FFmpeg::swscale
+        OBS::frontend-api
+        OBS::libobs
+        OBS::properties-view
+        CURL::libcurl
+    )
+    add_dependencies(test_preflight_ui_render obs-preflight-rust)
+    if(OS_MACOS)
+      get_filename_component(_preflight_ui_ffmpeg_lib_dir "${FFmpeg_avcodec_LIBRARY}" DIRECTORY)
+      get_filename_component(_preflight_ui_qt_lib_dir "${Qt6Core_DIR}/../.." ABSOLUTE)
+      target_link_options(
+        test_preflight_ui_render
+        PRIVATE
+          "LINKER:-rpath,${_preflight_ui_ffmpeg_lib_dir}"
+          "LINKER:-rpath,${_preflight_ui_qt_lib_dir}"
+          "LINKER:-rpath,${CMAKE_BINARY_DIR}/libobs/$<CONFIG>"
+          "LINKER:-rpath,${CMAKE_BINARY_DIR}/frontend/api/$<CONFIG>"
+      )
+      set_property(TARGET test_preflight_ui_render PROPERTY XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME NO)
+    endif()
+    add_test(NAME test_preflight_ui_render COMMAND test_preflight_ui_render)
+    set_tests_properties(test_preflight_ui_render PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_SCALE_FACTOR=2")
+  endif()
   add_executable(test_config_migration tests/test_config_migration.cpp)
   target_include_directories(test_config_migration PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   foreach(

@@ -877,6 +877,79 @@ static double getPaddingForDensityId(int id)
 	return paddingValue;
 }
 
+struct ThemeCompilation {
+	QString stylesheet;
+	QPalette palette;
+	bool usesFontScale = false;
+	bool usesDensity = false;
+};
+
+static optional<ThemeCompilation> CompileThemeFiles(const QStringList &filenames, const QPalette &defaultPalette,
+						    int fontScaleValue, int density)
+{
+	QStringList contents;
+	QHash<QString, OBSThemeVariable> vars;
+
+	OBSThemeVariable fontScale;
+	fontScale.name = "obsFontScale";
+	fontScale.type = OBSThemeVariable::Number;
+	fontScale.value = QVariant::fromValue(fontScaleValue);
+
+	OBSThemeVariable padding;
+	padding.name = "obsPadding";
+	padding.type = OBSThemeVariable::Number;
+	padding.value = QVariant::fromValue(getPaddingForDensityId(density));
+
+	vars[fontScale.name] = std::move(fontScale);
+	vars[padding.name] = std::move(padding);
+
+	for (const QString &filename : filenames) {
+		QFile file(filename);
+		if (!file.open(QIODeviceBase::ReadOnly)) {
+			return nullopt;
+		}
+		const QByteArray content = file.readAll();
+		for (OBSThemeVariable &var : ParseThemeVariables(content.constData())) {
+			vars[var.name] = std::move(var);
+		}
+		contents.emplaceBack(content.constData());
+	}
+
+	ThemeCompilation result;
+	for (const OBSThemeVariable &var : vars) {
+		switch (var.type) {
+		case OBSThemeVariable::Color:
+		case OBSThemeVariable::Size:
+		case OBSThemeVariable::Number:
+		case OBSThemeVariable::String:
+			continue;
+		case OBSThemeVariable::Alias:
+			if (var.value.toString() == "obsFontScale") {
+				result.usesFontScale = true;
+			}
+			if (var.value.toString() == "obsPadding") {
+				result.usesDensity = true;
+			}
+			break;
+		case OBSThemeVariable::Calc:
+		case OBSThemeVariable::Max:
+		case OBSThemeVariable::Min:
+			if (var.value.toStringList().contains("obsFontScale")) {
+				result.usesFontScale = true;
+			}
+			if (var.value.toStringList().contains("obsPadding")) {
+				result.usesDensity = true;
+			}
+			break;
+		}
+	}
+
+	result.stylesheet = PrepareQSS(vars, contents);
+	result.palette = PreparePalette(vars, defaultPalette);
+	return result;
+}
+
+#ifndef PREFLIGHT_THEME_RENDER_TEST
 OBSTheme *OBSApp::GetTheme(const QString &name)
 {
 	if (!themes.contains(name)) {
@@ -901,27 +974,9 @@ bool OBSApp::SetTheme(const QString &name)
 	setStyleSheet("");
 	currentTheme = theme;
 
-	QStringList contents;
-	QHash<QString, OBSThemeVariable> vars;
 	/* Build list of themes to load (in order) */
 	QStringList themeIds(theme->dependencies);
 	themeIds << theme->id;
-
-	/* Inject Appearance settings into theme vars */
-	OBSThemeVariable fontScale;
-	fontScale.name = "obsFontScale";
-	fontScale.type = OBSThemeVariable::Number;
-	fontScale.value = QVariant::fromValue(config_get_int(App()->GetUserConfig(), "Appearance", "FontScale"));
-
-	const int density = config_get_int(App()->GetUserConfig(), "Appearance", "Density");
-
-	OBSThemeVariable padding;
-	padding.name = "obsPadding";
-	padding.type = OBSThemeVariable::Number;
-	padding.value = QVariant::fromValue(getPaddingForDensityId(density));
-
-	vars[fontScale.name] = std::move(fontScale);
-	vars[padding.name] = std::move(padding);
 
 	/* Find and add high contrast adjustment layer if available */
 	if (HighContrastEnabled()) {
@@ -943,55 +998,18 @@ bool OBSApp::SetTheme(const QString &name)
 
 		QFile file(cur->location);
 		filenames << file.fileName();
-
-		if (!file.open(QIODeviceBase::ReadOnly)) {
-			return false;
-		}
-		const QByteArray content = file.readAll();
-
-		for (OBSThemeVariable &var : ParseThemeVariables(content.constData())) {
-			vars[var.name] = std::move(var);
-		}
-
-		contents.emplaceBack(content.constData());
 	}
 
-	/* Check if OBS appearance settings are used in the theme */
-	currentTheme->usesFontScale = false;
-	currentTheme->usesDensity = false;
-	for (const OBSThemeVariable &var : vars) {
-		switch (var.type) {
-		case OBSThemeVariable::Color:
-		case OBSThemeVariable::Size:
-		case OBSThemeVariable::Number:
-		case OBSThemeVariable::String:
-			continue;
-		case OBSThemeVariable::Alias:
-			if (var.value.toString() == "obsFontScale") {
-				currentTheme->usesFontScale = true;
-			}
-
-			if (var.value.toString() == "obsPadding") {
-				currentTheme->usesDensity = true;
-			}
-			break;
-		case OBSThemeVariable::Calc:
-		case OBSThemeVariable::Max:
-		case OBSThemeVariable::Min:
-			if (var.value.toStringList().contains("obsFontScale")) {
-				currentTheme->usesFontScale = true;
-			}
-			if (var.value.toStringList().contains("obsPadding")) {
-				currentTheme->usesDensity = true;
-			}
-			break;
-		}
+	const auto compilation = CompileThemeFiles(filenames, defaultPalette,
+						   config_get_int(App()->GetUserConfig(), "Appearance", "FontScale"),
+						   config_get_int(App()->GetUserConfig(), "Appearance", "Density"));
+	if (!compilation) {
+		return false;
 	}
-
-	const QString stylesheet = PrepareQSS(vars, contents);
-	const QPalette palette = PreparePalette(vars, defaultPalette);
-	setPalette(palette);
-	setStyleSheet(stylesheet);
+	currentTheme->usesFontScale = compilation->usesFontScale;
+	currentTheme->usesDensity = compilation->usesDensity;
+	setPalette(compilation->palette);
+	setStyleSheet(compilation->stylesheet);
 
 #ifdef _DEBUG
 	/* Write resulting QSS to file in config dir "themes" folder. */
@@ -1118,3 +1136,45 @@ bool OBSApp::InitTheme()
 
 	return true;
 }
+#else
+bool ApplyOBSThemeForRenderTest(QApplication &application, const QStringList &themeFiles,
+				const QPalette &defaultPalette, QString *error)
+{
+	if (themeFiles.isEmpty()) {
+		if (error) {
+			*error = QStringLiteral("No theme files were supplied.");
+		}
+		return false;
+	}
+
+	QStringList themeIds;
+	for (const QString &themeFile : themeFiles) {
+		const auto theme = ParseThemeMeta(themeFile);
+		if (!theme) {
+			if (error) {
+				*error = QStringLiteral("OBS rejected theme metadata in %1.").arg(themeFile);
+			}
+			return false;
+		}
+		if (themeIds.isEmpty() ? !theme->isBaseTheme : theme->extends != themeIds.back()) {
+			if (error) {
+				*error = QStringLiteral("Theme files are not an OBS base-to-variant chain: %1.")
+						 .arg(themeFile);
+			}
+			return false;
+		}
+		themeIds.push_back(theme->id);
+	}
+
+	const auto compilation = CompileThemeFiles(themeFiles, defaultPalette, 10, 1);
+	if (!compilation) {
+		if (error) {
+			*error = QStringLiteral("OBS could not compile the supplied theme files.");
+		}
+		return false;
+	}
+	application.setPalette(compilation->palette);
+	application.setStyleSheet(compilation->stylesheet);
+	return true;
+}
+#endif
