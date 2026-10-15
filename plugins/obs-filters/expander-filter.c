@@ -350,7 +350,8 @@ static inline void process_sample(size_t idx, float *samples, float *env_buf, fl
 			gain = slope * powf(diff + knee / 2, 2) / (2.0f * knee);
 	} else {
 		prev_gain = idx > 0 ? gain_db[idx - 1] : channel_gain;
-		gain = diff > 0.0f ? fmaxf(slope * diff, -60.0f) : 0.0f;
+		/* A unity ratio has zero gain even when silence makes diff infinite. */
+		gain = slope != 0.0f && diff > 0.0f ? fmaxf(slope * diff, -60.0f) : 0.0f;
 	}
 
 	/* --------------------------------- */
