@@ -1,19 +1,39 @@
 #pragma once
 
+#include "obs-preflight.h"
+#include "preflight-loupe-core.hpp"
+
 #include <QDialog>
+#include <QString>
 
 #include <memory>
+#include <vector>
 
 class QCloseEvent;
+
+struct PreflightBenchWindowRecordedBakeoffRow {
+	QString encoder;
+	QString resolution;
+	QString fps;
+	obs_preflight_window result{};
+};
+
+struct PreflightBenchWindowRecordedData {
+	std::vector<obs_preflight_window> windows;
+	std::vector<PreflightBenchWindowRecordedBakeoffRow> bakeoff_rows;
+	std::shared_ptr<const preflight::loupe::FramePair> loupe_pair;
+};
 
 class PreflightBenchWindow : public QDialog {
 	Q_OBJECT
 
 	struct Impl;
 	std::unique_ptr<Impl> impl;
+	PreflightBenchWindow(QWidget *parent, const PreflightBenchWindowRecordedData *recorded_data);
 
 public:
 	explicit PreflightBenchWindow(QWidget *parent = nullptr);
+	PreflightBenchWindow(const PreflightBenchWindowRecordedData &recorded_data, QWidget *parent = nullptr);
 	~PreflightBenchWindow() override;
 
 protected:
