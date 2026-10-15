@@ -725,6 +725,7 @@ struct PreflightBenchWindow::Impl {
 	QString apply_feedback;
 	std::optional<preflight::apply::Plan> apply_plan;
 	std::optional<preflight::apply::Plan> recorded_apply_preview;
+	bool enable_recorded_apply_controls_for_test = false;
 	preflight::apply::TargetIdentity initial_apply_target;
 	std::string configured_service_name;
 	uint32_t current_output_width = 0;
@@ -1012,7 +1013,8 @@ struct PreflightBenchWindow::Impl {
 			apply_table->setItem(table_row, 2, after);
 		}
 		ResizeApplyTableToContents();
-		apply_preview_ready = !recorded_apply_preview && plan.applicable();
+		apply_preview_ready = plan.applicable() &&
+				      (!recorded_apply_preview || enable_recorded_apply_controls_for_test);
 		apply_button->setEnabled(apply_preview_ready);
 		if (!apply_feedback.isEmpty()) {
 			apply_note->setText(apply_feedback);
@@ -2317,6 +2319,7 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 	if (recorded_data) {
 		impl->setup_error = tr("This preview uses recorded samples; live OBS outputs are unavailable.");
 		impl->recorded_apply_preview = recorded_data->apply_preview;
+		impl->enable_recorded_apply_controls_for_test = recorded_data->enable_recorded_apply_controls_for_test;
 	} else {
 		impl->BuildOutputs();
 	}

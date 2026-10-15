@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QPixmap>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QSplitter>
 #include <QTableWidget>
@@ -311,8 +312,7 @@ static void test_apply_contract_regressions()
 	};
 	auto write_bytes = [](const QString &path, const QByteArray &bytes) {
 		QFile file(path);
-		require(file.open(QIODevice::WriteOnly | QIODevice::Truncate),
-			"could not create temporary file bytes");
+		require(file.open(QIODevice::WriteOnly | QIODevice::Truncate), "could not create temporary file bytes");
 		require(file.write(bytes) == bytes.size(), "could not write temporary file bytes");
 	};
 	auto read_bytes = [](const QString &path) {
@@ -323,6 +323,9 @@ static void test_apply_contract_regressions()
 	const QJsonObject record_saved{{QStringLiteral("recording"), QStringLiteral("untouched")}};
 	write_json(stream_path, advanced_saved);
 	write_json(record_path, record_saved);
+	config_set_string(applied_config.get(), "Output", "Mode", "Advanced");
+	require(config_save(applied_config.get()) == CONFIG_SUCCESS,
+		"could not prepare the Advanced output-mode persistence check");
 	const auto displayed_advanced = BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited, target);
 	require(WriteAdvancedSettings(displayed_advanced, displayed_advanced, &error),
 		"the displayed Advanced Apply plan did not write to temporary streamEncoder.json");
@@ -332,6 +335,14 @@ static void test_apply_contract_regressions()
 					    {QStringLiteral("lookahead"), false}};
 	require(read_json(stream_path) == expected_advanced && read_json(record_path) == record_saved,
 		"Advanced Apply lost untouched settings or modified recordEncoder.json");
+	applied_config.reset();
+	reopened_basic = nullptr;
+	require(config_open(&reopened_basic, basic_path_utf8.constData(), CONFIG_OPEN_EXISTING) == CONFIG_SUCCESS &&
+			reopened_basic,
+		"could not reopen basic.ini for the Advanced output-mode check");
+	applied_config.reset(reopened_basic);
+	require(std::string(config_get_string(applied_config.get(), "Output", "Mode")) == "Advanced",
+		"Advanced mode did not persist in basic.ini");
 
 	TargetIdentity changed_profile = target;
 	changed_profile.profile_name = QStringLiteral("Other profile");
@@ -366,6 +377,101 @@ static void test_apply_contract_regressions()
 	require(!corrupt_preview_ok && read_bytes(corrupt_stream_path) == corrupt_stream_bytes &&
 			read_bytes(corrupt_backup_path) == backup_stream_bytes,
 		"preview repaired a corrupt streamEncoder.json from its backup or changed either file");
+
+	QTemporaryDir rollback_root;
+	require(rollback_root.isValid(), "could not create temporary rollback profile root");
+	const QString rollback_profile = QDir(rollback_root.path()).filePath(QStringLiteral("profile"));
+	require(QDir().mkpath(rollback_profile), "could not create temporary rollback profile");
+	const QString rollback_ini = QDir(rollback_profile).filePath(QStringLiteral("basic.ini"));
+	const QByteArray rollback_ini_utf8 = rollback_ini.toUtf8();
+	config_t *rollback_raw = nullptr;
+	require(config_open(&rollback_raw, rollback_ini_utf8.constData(), CONFIG_OPEN_ALWAYS) == CONFIG_SUCCESS &&
+			rollback_raw,
+		"could not open temporary rollback basic.ini");
+	std::unique_ptr<config_t, decltype(&config_close)> rollback_config(rollback_raw, config_close);
+	config_set_string(rollback_config.get(), "Output", "Mode", "Simple");
+	config_set_uint(rollback_config.get(), "SimpleOutput", "VBitrate", 2500);
+	config_set_bool(rollback_config.get(), "SimpleOutput", "UseAdvanced", false);
+	require(config_save(rollback_config.get()) == CONFIG_SUCCESS, "could not seed temporary rollback basic.ini");
+	const QJsonObject rollback_saved{{QStringLiteral("VBitrate"), 2500}, {QStringLiteral("UseAdvanced"), false}};
+	const QJsonObject rollback_initial{{QStringLiteral("bitrate"), 2500}};
+	const QJsonObject rollback_edited{{QStringLiteral("bitrate"), 2500},
+					  {QStringLiteral("preset"), QStringLiteral("fast")}};
+	const auto rollback_plan = BuildSimplePlan(rollback_saved, rollback_initial, rollback_edited,
+						   QStringLiteral("x264"), false, target);
+	require(rollback_plan.applicable() && rollback_plan.changes.size() == 1 &&
+			rollback_plan.changes.front().before.isUndefined(),
+		"rollback fixture did not plan a previously unset Simple key");
+	require(QDir(rollback_profile).removeRecursively(), "could not remove profile to force save failure");
+	error.clear();
+	require(!WriteSimpleConfig(rollback_config.get(), rollback_plan, rollback_plan, &error) &&
+			!config_has_user_value(rollback_config.get(), "SimpleOutput", "Preset") &&
+			error.contains(QStringLiteral("rollback"), Qt::CaseInsensitive),
+		"failed Simple save did not remove an originally unset key and report the failed rollback save");
+}
+
+static void test_apply_ui_contracts()
+{
+	using preflight::apply::BuildAdvancedPlan;
+	using preflight::apply::BuildSimplePlan;
+
+	QTemporaryDir temporary;
+	require(temporary.isValid(), "could not create temporary no-Apply profile");
+	const QString basic_path = QDir(temporary.path()).filePath(QStringLiteral("basic.ini"));
+	const QString stream_path = QDir(temporary.path()).filePath(QStringLiteral("streamEncoder.json"));
+	auto write_bytes = [](const QString &path, const QByteArray &bytes) {
+		QFile file(path);
+		require(file.open(QIODevice::WriteOnly | QIODevice::Truncate), "could not seed no-Apply config file");
+		require(file.write(bytes) == bytes.size(), "could not seed complete no-Apply config bytes");
+	};
+	auto read_bytes = [](const QString &path) {
+		QFile file(path);
+		require(file.open(QIODevice::ReadOnly), "could not read no-Apply config file");
+		return file.readAll();
+	};
+	const QByteArray basic_bytes = QByteArrayLiteral("[Output]\nMode=Advanced\n");
+	const QByteArray stream_bytes = QByteArrayLiteral("{\"bitrate\":6000,\"preset\":\"veryfast\"}\n");
+	write_bytes(basic_path, basic_bytes);
+	write_bytes(stream_path, stream_bytes);
+
+	const QJsonObject saved{{QStringLiteral("bitrate"), 6000},
+				{QStringLiteral("preset"), QStringLiteral("veryfast")}};
+	const QJsonObject initial = saved;
+	const QJsonObject edited{{QStringLiteral("bitrate"), 4500}, {QStringLiteral("preset"), QStringLiteral("fast")}};
+	const auto advanced = BuildAdvancedPlan(saved, initial, edited,
+						{QStringLiteral("Profile"), temporary.path(),
+						 QStringLiteral("obs_x264"), QStringLiteral("obs_x264")});
+	require(advanced.applicable(), "close-without-Apply fixture has no applicable Advanced diff");
+	PreflightBenchWindowRecordedData advanced_recorded;
+	advanced_recorded.apply_preview = advanced;
+	advanced_recorded.enable_recorded_apply_controls_for_test = true;
+	{
+		PreflightBenchWindow window(advanced_recorded);
+		auto *apply_button = window.findChild<QPushButton *>(QStringLiteral("preflight-apply-button"));
+		require(apply_button && apply_button->isEnabled(),
+			"recorded positive-control Apply button is not enabled for an applicable plan");
+		window.show();
+		QApplication::processEvents();
+		window.close();
+		QApplication::processEvents();
+	}
+	require(read_bytes(basic_path) == basic_bytes && read_bytes(stream_path) == stream_bytes,
+		"closing Preflight without Apply changed basic.ini or streamEncoder.json");
+
+	const QJsonObject simple_saved{{QStringLiteral("VBitrate"), 2500}, {QStringLiteral("UseAdvanced"), false}};
+	const QJsonObject simple_initial{{QStringLiteral("bitrate"), 2500}, {QStringLiteral("lookahead"), false}};
+	const QJsonObject unsupported_edit{{QStringLiteral("bitrate"), 2500}, {QStringLiteral("lookahead"), true}};
+	const auto unsupported_simple = BuildSimplePlan(
+		simple_saved, simple_initial, unsupported_edit, QStringLiteral("x264"), false,
+		{QStringLiteral("Profile"), temporary.path(), QStringLiteral("obs_x264"), QStringLiteral("x264")});
+	require(!unsupported_simple.applicable(), "unsupported Simple edit fixture unexpectedly became applicable");
+	PreflightBenchWindowRecordedData unsupported_recorded;
+	unsupported_recorded.apply_preview = unsupported_simple;
+	unsupported_recorded.enable_recorded_apply_controls_for_test = true;
+	PreflightBenchWindow unsupported_window(unsupported_recorded);
+	auto *apply_button = unsupported_window.findChild<QPushButton *>(QStringLiteral("preflight-apply-button"));
+	require(apply_button && !apply_button->isEnabled(),
+		"real Apply button is enabled for an unsupported Simple-mode edit");
 }
 
 int main(int argc, char **argv)
@@ -385,6 +491,7 @@ int main(int argc, char **argv)
 		const obs_preflight_window stale = stale_windows.back();
 		test_apply_plans();
 		test_apply_contract_regressions();
+		test_apply_ui_contracts();
 		require(congested_windows.size() > 1, "congested golden trace did not produce chart history");
 		require(clean.verdict == OBS_PREFLIGHT_PASS && congested.verdict == OBS_PREFLIGHT_MARGINAL &&
 				stale.verdict == OBS_PREFLIGHT_FAIL,

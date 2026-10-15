@@ -227,7 +227,8 @@ bool ReadAdvancedSettings(const QString &path, QJsonObject *settings, QString *e
 		return true;
 	}
 	const QByteArray path_utf8 = path.toUtf8();
-	obs_data_t *data = obs_data_create_from_json_file_safe(path_utf8.constData(), "bak");
+	// Preview must never let libobs repair the user's file by restoring its backup.
+	obs_data_t *data = obs_data_create_from_json_file(path_utf8.constData());
 	if (!data) {
 		return reject(error, QStringLiteral("OBS could not read the saved stream encoder settings."));
 	}
@@ -304,7 +305,12 @@ bool WriteSimpleConfig(config_t *config, const Plan &displayed, const Plan &curr
 		for (const ConfigChange &change : current.changes) {
 			set_config_value(config, "SimpleOutput", change.key, change.before);
 		}
-		config_save_safe(config, "tmp", nullptr);
+		if (config_save_safe(config, "tmp", nullptr) != CONFIG_SUCCESS) {
+			return reject(
+				error,
+				QStringLiteral(
+					"OBS could not save the Simple output settings or persist their rollback. Check basic.ini before applying again."));
+		}
 		return reject(
 			error,
 			QStringLiteral("OBS could not save the Simple output settings. No settings were applied."));

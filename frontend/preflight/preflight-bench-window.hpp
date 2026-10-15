@@ -25,6 +25,7 @@ struct PreflightBenchWindowRecordedData {
 	std::vector<PreflightBenchWindowRecordedBakeoffRow> bakeoff_rows;
 	std::shared_ptr<const preflight::loupe::FramePair> loupe_pair;
 	std::optional<preflight::apply::Plan> apply_preview;
+	bool enable_recorded_apply_controls_for_test = false;
 };
 
 class PreflightBenchWindow : public QDialog {
