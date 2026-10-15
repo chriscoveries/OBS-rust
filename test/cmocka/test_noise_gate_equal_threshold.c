@@ -95,10 +95,14 @@ static void equal_threshold_closes_after_silence(void)
 					samples[c][i] = 0.5f;
 			}
 			check(state.decay_rate == 0.0f, "equal_threshold_zero_decay: setup mismatch");
+			/* End the opening block before sending silence. The fixed detector
+			 * is allowed to close during silence; that is the regression. */
+			audio.frames = 128;
 			noise_gate_filter_audio(&state, &audio);
 			check(state.is_open, "equal_threshold_opens_on_signal: gate never opened");
 			for (size_t c = 0; c < state.channels; ++c)
 				memset(samples[c], 0, sizeof(samples[c]));
+			audio.frames = 1024;
 			for (int block = 0; block < 64; ++block)
 				noise_gate_filter_audio(&state, &audio);
 			check(!state.is_open, "equal_threshold_closes_after_silence: gate remains open");
