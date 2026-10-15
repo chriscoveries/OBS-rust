@@ -12,14 +12,7 @@
 #include <util/platform.h>
 #include <util/threading.h>
 
-#include "obs-preflight.h"
-
-/* P1 RED: exercise the collector contract before its implementation exists. */
-typedef struct obs_preflight_collector obs_preflight_collector_t;
-obs_preflight_collector_t *obs_preflight_collector_create(void);
-void obs_preflight_collector_destroy(obs_preflight_collector_t *collector);
-int32_t obs_preflight_collect_sample(obs_preflight_collector_t *collector, obs_preflight_engine_t *engine,
-				     obs_output_t *output, video_t *video);
+#include "obs-preflight-collector.h"
 
 #define FPS 5
 #define WINDOW_MS 500
