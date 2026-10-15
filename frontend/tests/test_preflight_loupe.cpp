@@ -64,6 +64,24 @@ static void four_x_crop_uses_nearest_neighbor_pixels()
 		"bottom-right source pixel should expand");
 }
 
+static void compact_source_frame_uses_full_resolution_selected_crop()
+{
+	PixelFrame frame = rgba_frame(1, 1, {9, 9, 9, 255}, 23);
+	frame.source_width = 4;
+	frame.source_height = 4;
+	frame.detail_region = PixelRect{1, 1, 2, 2};
+	frame.detail_stride = 8;
+	frame.detail_rgba = {
+		255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+	};
+	const auto region = make_crop_region(1, 1, 3, 3, 4, 4);
+	const auto crop = crop_at_4x(frame, *region);
+	require(crop.has_value(), "selected source detail should produce the full-resolution crop");
+	require(crop->width == 8 && crop->height == 8, "detail crop should retain its logical dimensions");
+	require(crop->rgba[0] == 255 && crop->rgba[1] == 0 && crop->rgba[2] == 0,
+		"detail pixels should be used instead of the compact preview pixel");
+}
+
 static void crop_rejects_incomplete_rgba_storage()
 {
 	const PixelFrame frame{2, 2, 8, 0, {0, 1, 2, 3}};
@@ -119,6 +137,8 @@ int main()
 		{"crop_selection_clamps_drag_to_frame_edges", crop_selection_clamps_drag_to_frame_edges},
 		{"crop_projection_preserves_normalized_area", crop_projection_preserves_normalized_area},
 		{"four_x_crop_uses_nearest_neighbor_pixels", four_x_crop_uses_nearest_neighbor_pixels},
+		{"compact_source_frame_uses_full_resolution_selected_crop",
+		 compact_source_frame_uses_full_resolution_selected_crop},
 		{"crop_rejects_incomplete_rgba_storage", crop_rejects_incomplete_rgba_storage},
 		{"decoder_returns_rgba_from_headless_rawvideo_packet",
 		 decoder_returns_rgba_from_headless_rawvideo_packet},

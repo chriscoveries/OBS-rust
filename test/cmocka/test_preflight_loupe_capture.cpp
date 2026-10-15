@@ -364,32 +364,38 @@ bool within_frame_intervals(uint64_t delta_ns, uint64_t intervals)
 bool pattern_crop_matches(const preflight::loupe::FramePair &pair)
 {
 	using namespace preflight::loupe;
-	if (!pair.source || !pair.encoded || pair.encoded->width != pair.source->width ||
-	    pair.encoded->height != pair.source->height) {
+	if (!pair.source || !pair.encoded) {
 		return false;
 	}
 
-	const auto source_region = make_crop_region(8, 8, 24, 24, pair.source->width, pair.source->height);
+	const uint32_t source_width = pair.source->source_width ? pair.source->source_width : pair.source->width;
+	const uint32_t source_height = pair.source->source_height ? pair.source->source_height : pair.source->height;
+	if (pair.encoded->width != source_width || pair.encoded->height != source_height) {
+		return false;
+	}
+	const auto source_region = make_crop_region(8, 8, 24, 24, source_width, source_height);
 	if (!source_region) {
 		return false;
 	}
-	const auto crop = project_crop(*source_region, pair.encoded->width, pair.encoded->height);
-	if (!crop) {
+	const auto source_crop = crop_at_4x(*pair.source, *source_region);
+	const auto encoded_crop = crop_at_4x(*pair.encoded, *source_region);
+	if (!source_crop || !encoded_crop || source_crop->width != encoded_crop->width ||
+	    source_crop->height != encoded_crop->height) {
 		return false;
 	}
 
 	double source_mean[3] = {};
 	double encoded_mean[3] = {};
 	uint64_t pixels = 0;
-	for (uint32_t y = crop->top; y < crop->top + crop->height; ++y) {
-		for (uint32_t x = crop->left; x < crop->left + crop->width; ++x) {
-			const size_t offset = static_cast<size_t>(y) * pair.encoded->stride + x * 4;
+	for (uint32_t y = 0; y < source_crop->height; ++y) {
+		for (uint32_t x = 0; x < source_crop->width; ++x) {
+			const size_t offset = static_cast<size_t>(y) * encoded_crop->stride + x * 4;
 			for (size_t channel = 0; channel < 3; ++channel) {
-				encoded_mean[channel] += pair.encoded->rgba[offset + channel];
+				encoded_mean[channel] += encoded_crop->rgba[offset + channel];
 			}
-			const size_t source_offset = static_cast<size_t>(y) * pair.source->stride + x * 4;
+			const size_t source_offset = static_cast<size_t>(y) * source_crop->stride + x * 4;
 			for (size_t channel = 0; channel < 3; ++channel) {
-				source_mean[channel] += pair.source->rgba[source_offset + channel];
+				source_mean[channel] += source_crop->rgba[source_offset + channel];
 			}
 			++pixels;
 		}
@@ -424,7 +430,7 @@ bool pattern_crop_matches(const preflight::loupe::FramePair &pair)
 	return matches;
 }
 
-bool capture_results_valid(PreflightLoupeCapture &capture, bool expect_packet_reorder)
+bool capture_results_valid(PreflightLoupeCapture &capture, bool expect_packet_reorder, bool check_pattern_crop)
 {
 	const auto stats = capture.Stats();
 	const bool high_pair_rate = stats.decoded_frames != 0 &&
@@ -450,7 +456,7 @@ bool capture_results_valid(PreflightLoupeCapture &capture, bool expect_packet_re
 		return false;
 	}
 	const auto pair = capture.LatestPair();
-	return pair && pattern_crop_matches(*pair);
+	return pair && (!check_pattern_crop || pattern_crop_matches(*pair));
 }
 
 void cleanup_generation(PreflightLoupeCapture &capture, obs_source_t **source_slot, obs_output_t *output,
@@ -476,8 +482,8 @@ void cleanup_generation(PreflightLoupeCapture &capture, obs_source_t **source_sl
 
 void configure_and_run(obs_source_t **source_slot, obs_output_t *output, const char *encoder_id, const char *name,
 		       uint32_t width, uint32_t height, uint32_t duration_ms, bool expect_packet_reorder,
-		       bool require_encoder, PreflightLoupeCapture &capture, obs_encoder_t **encoder_slot,
-		       obs_weak_encoder_t **weak_slot)
+		       bool require_encoder, bool check_pattern_crop, PreflightLoupeCapture &capture,
+		       obs_encoder_t **encoder_slot, obs_weak_encoder_t **weak_slot)
 {
 	obs_source_t *source = create_pattern_source(width, height);
 	assert_non_null(source);
@@ -503,6 +509,11 @@ void configure_and_run(obs_source_t **source_slot, obs_output_t *output, const c
 		cleanup_generation(capture, source_slot, output, encoder_slot, weak_slot);
 		fail_msg("production capture worker did not start");
 	}
+	if (width == REALISTIC_WIDTH) {
+		const auto pattern_crop = preflight::loupe::make_crop_region(8, 8, 24, 24, width, height);
+		assert_true(pattern_crop.has_value());
+		assert_true(capture.SetSourceCrop(*pattern_crop));
+	}
 	if (!obs_output_start(output)) {
 		fprintf(stderr, "preflight loupe test output failed to start: %s\n", obs_output_get_last_error(output));
 		cleanup_generation(capture, source_slot, output, encoder_slot, weak_slot);
@@ -510,7 +521,8 @@ void configure_and_run(obs_source_t **source_slot, obs_output_t *output, const c
 	}
 	emit_pattern_for(source, width, height, duration_ms);
 	const bool enough_frames = wait_for_decoded_frames(capture, MIN_DECODED_FRAMES, 7000);
-	const bool results_valid = enough_frames && capture_results_valid(capture, expect_packet_reorder);
+	const bool results_valid = enough_frames &&
+				   capture_results_valid(capture, expect_packet_reorder, check_pattern_crop);
 	if (!results_valid) {
 		const auto stats = capture.Stats();
 		fprintf(stderr,
@@ -557,7 +569,7 @@ void test_real_x264_packets_reach_the_loupe_worker(void **state)
 	obs_weak_encoder_t *first_weak = nullptr;
 
 	configure_and_run(&first_source, output, "obs_x264", "preflight x264 1080p", REALISTIC_WIDTH, REALISTIC_HEIGHT,
-			  OUTPUT_DURATION_MS, true, true, capture, &first_encoder, &first_weak);
+			  OUTPUT_DURATION_MS, true, true, true, capture, &first_encoder, &first_weak);
 
 	/* Stop capture while the output is still live, then stop and detach the old
 	 * encoder. This exercises callback removal, worker join, and final ref release. */
@@ -595,7 +607,7 @@ void test_real_x264_packets_reach_the_loupe_worker(void **state)
 	obs_encoder_t *second_encoder = nullptr;
 	obs_weak_encoder_t *second_weak = nullptr;
 	configure_and_run(&second_source, output, "obs_x264", "preflight x264 reconfigured", RECONFIGURED_WIDTH,
-			  RECONFIGURED_HEIGHT, RECONFIGURED_DURATION_MS, false, true, capture, &second_encoder,
+			  RECONFIGURED_HEIGHT, RECONFIGURED_DURATION_MS, false, true, false, capture, &second_encoder,
 			  &second_weak);
 	capture.Stop();
 	assert_false(capture.Stats().worker_running);
@@ -657,7 +669,7 @@ void test_registered_videotoolbox_h264_packets_reach_the_loupe_worker(void **sta
 	obs_encoder_t *encoder = nullptr;
 	obs_weak_encoder_t *weak = nullptr;
 	configure_and_run(&source, output, id.c_str(), "preflight VideoToolbox", RECONFIGURED_WIDTH,
-			  RECONFIGURED_HEIGHT, RECONFIGURED_DURATION_MS, false, false, capture, &encoder, &weak);
+			  RECONFIGURED_HEIGHT, RECONFIGURED_DURATION_MS, false, false, false, capture, &encoder, &weak);
 	if (encoder) {
 		capture.Stop();
 		assert_false(capture.Stats().worker_running);

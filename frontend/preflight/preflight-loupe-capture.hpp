@@ -9,6 +9,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -50,6 +51,7 @@ class PreflightLoupeCapture {
 	obs_output_t *output = nullptr;
 	uint32_t source_width = 0;
 	uint32_t source_height = 0;
+	std::optional<preflight::loupe::CropRegion> source_crop;
 	uint64_t pair_tolerance_ns = 0;
 	bool accepting = false;
 	bool stopping = false;
@@ -80,4 +82,5 @@ public:
 	std::shared_ptr<const preflight::loupe::FramePair> LatestPair() const;
 	PreflightLoupeCaptureStats Stats() const;
 	std::string Status() const;
+	bool SetSourceCrop(const preflight::loupe::CropRegion &region);
 };

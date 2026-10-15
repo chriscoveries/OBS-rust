@@ -160,6 +160,16 @@ class LoupeView final : public QWidget {
 	bool dragging = false;
 	bool moving_selection = false;
 
+	static uint32_t source_width(const preflight::loupe::PixelFrame &frame)
+	{
+		return frame.source_width ? frame.source_width : frame.width;
+	}
+
+	static uint32_t source_height(const preflight::loupe::PixelFrame &frame)
+	{
+		return frame.source_height ? frame.source_height : frame.height;
+	}
+
 	static QImage image_for(const preflight::loupe::PixelFrame &frame)
 	{
 		return QImage(frame.rgba.data(), static_cast<int>(frame.width), static_cast<int>(frame.height),
@@ -185,10 +195,13 @@ class LoupeView final : public QWidget {
 			return std::nullopt;
 		}
 		const auto &frame = *pair->source;
+		const uint32_t logical_width = source_width(frame);
+		const uint32_t logical_height = source_height(frame);
 		const qreal x = (point.x() - source_image_rect.left()) / source_image_rect.width();
 		const qreal y = (point.y() - source_image_rect.top()) / source_image_rect.height();
-		return QPoint(std::clamp(static_cast<int>(x * frame.width), 0, static_cast<int>(frame.width) - 1),
-			      std::clamp(static_cast<int>(y * frame.height), 0, static_cast<int>(frame.height) - 1));
+		return QPoint(std::clamp(static_cast<int>(x * logical_width), 0, static_cast<int>(logical_width) - 1),
+			      std::clamp(static_cast<int>(y * logical_height), 0,
+					 static_cast<int>(logical_height) - 1));
 	}
 
 	std::optional<preflight::loupe::CropRegion> bounded_drag_region(const QPoint &end) const
@@ -202,6 +215,8 @@ class LoupeView final : public QWidget {
 			return std::nullopt;
 		}
 		const auto &frame = *pair->source;
+		const uint32_t logical_width = source_width(frame);
+		const uint32_t logical_height = source_height(frame);
 		const int max_width = std::max(
 			1,
 			static_cast<int>((std::min(source_zoom_panel.width(), encoded_zoom_panel.width()) - 8) / 4.0));
@@ -226,7 +241,7 @@ class LoupeView final : public QWidget {
 				top = start->y() - max_height;
 			}
 		}
-		return preflight::loupe::make_crop_region(left, top, right, bottom, frame.width, frame.height);
+		return preflight::loupe::make_crop_region(left, top, right, bottom, logical_width, logical_height);
 	}
 
 	void draw_zoom(QPainter &painter, const QRectF &panel, const QString &label,
@@ -287,19 +302,22 @@ protected:
 		painter.drawImage(source_image_rect, image_for(source));
 
 		if (!selection) {
+			const uint32_t logical_width = source_width(source);
+			const uint32_t logical_height = source_height(source);
 			const uint32_t visible_crop_width = static_cast<uint32_t>(std::max<qreal>(
 				1, (std::min(source_zoom_panel.width(), encoded_zoom_panel.width()) - 8) / 4.0));
 			const uint32_t visible_crop_height = static_cast<uint32_t>(std::max<qreal>(
 				1, (std::min(source_zoom_panel.height(), encoded_zoom_panel.height()) - 28) / 4.0));
 			const uint32_t crop_width =
-				std::min({64U, visible_crop_width, std::max<uint32_t>(1, source.width / 8)});
+				std::min({64U, visible_crop_width, std::max<uint32_t>(1, logical_width / 8)});
 			const uint32_t crop_height =
-				std::min({36U, visible_crop_height, std::max<uint32_t>(1, source.height / 8)});
+				std::min({36U, visible_crop_height, std::max<uint32_t>(1, logical_height / 8)});
 			selection = preflight::loupe::make_crop_region(
-				static_cast<int32_t>((source.width - crop_width) / 2),
-				static_cast<int32_t>((source.height - crop_height) / 2),
-				static_cast<int32_t>((source.width + crop_width) / 2),
-				static_cast<int32_t>((source.height + crop_height) / 2), source.width, source.height);
+				static_cast<int32_t>((logical_width - crop_width) / 2),
+				static_cast<int32_t>((logical_height - crop_height) / 2),
+				static_cast<int32_t>((logical_width + crop_width) / 2),
+				static_cast<int32_t>((logical_height + crop_height) / 2), logical_width,
+				logical_height);
 		}
 		const auto active_region = dragging_region ? dragging_region : selection;
 		if (!active_region) {
@@ -330,8 +348,8 @@ protected:
 			moving_selection = false;
 			moving_crop.reset();
 			if (selection && pair && pair->source) {
-				const auto projected = preflight::loupe::project_crop(*selection, pair->source->width,
-										      pair->source->height);
+				const auto projected = preflight::loupe::project_crop(
+					*selection, source_width(*pair->source), source_height(*pair->source));
 				if (projected && point->x() >= static_cast<int>(projected->left) &&
 				    point->x() < static_cast<int>(projected->left + projected->width) &&
 				    point->y() >= static_cast<int>(projected->top) &&
@@ -340,9 +358,12 @@ protected:
 					moving_crop = projected;
 					moving_offset = QPoint(point->x() - static_cast<int>(projected->left),
 							       point->y() - static_cast<int>(projected->top));
-					dragging_region = preflight::loupe::CropRegion{
-						pair->source->width, pair->source->height, projected->left,
-						projected->top,      projected->width,     projected->height};
+					dragging_region = preflight::loupe::CropRegion{source_width(*pair->source),
+										       source_height(*pair->source),
+										       projected->left,
+										       projected->top,
+										       projected->width,
+										       projected->height};
 				}
 			}
 			if (!moving_selection) {
@@ -361,16 +382,17 @@ protected:
 			if (moving_selection && moving_crop && pair && pair->source) {
 				const auto point = source_point(event->position());
 				if (point) {
-					const int max_left = static_cast<int>(pair->source->width - moving_crop->width);
+					const int max_left =
+						static_cast<int>(source_width(*pair->source) - moving_crop->width);
 					const int max_top =
-						static_cast<int>(pair->source->height - moving_crop->height);
+						static_cast<int>(source_height(*pair->source) - moving_crop->height);
 					const uint32_t left = static_cast<uint32_t>(
 						std::clamp(point->x() - moving_offset.x(), 0, max_left));
 					const uint32_t top = static_cast<uint32_t>(
 						std::clamp(point->y() - moving_offset.y(), 0, max_top));
 					dragging_region = preflight::loupe::CropRegion{
-						pair->source->width, pair->source->height, left, top,
-						moving_crop->width,  moving_crop->height};
+						source_width(*pair->source), source_height(*pair->source), left, top,
+						moving_crop->width,          moving_crop->height};
 				}
 			} else {
 				dragging_region = bounded_drag_region(event->position().toPoint());
@@ -416,20 +438,25 @@ public:
 		if (!pair) {
 			selection.reset();
 		} else if (selection && pair->source &&
-			   (selection->source_width != pair->source->width ||
-			    selection->source_height != pair->source->height)) {
-			const auto remapped =
-				preflight::loupe::project_crop(*selection, pair->source->width, pair->source->height);
+			   (selection->source_width != source_width(*pair->source) ||
+			    selection->source_height != source_height(*pair->source))) {
+			const auto remapped = preflight::loupe::project_crop(*selection, source_width(*pair->source),
+									     source_height(*pair->source));
 			if (remapped) {
-				selection = preflight::loupe::CropRegion{pair->source->width, pair->source->height,
-									 remapped->left,      remapped->top,
-									 remapped->width,     remapped->height};
+				selection = preflight::loupe::CropRegion{source_width(*pair->source),
+									 source_height(*pair->source),
+									 remapped->left,
+									 remapped->top,
+									 remapped->width,
+									 remapped->height};
 			} else {
 				selection.reset();
 			}
 		}
 		update();
 	}
+
+	std::optional<preflight::loupe::CropRegion> SelectedCrop() const { return selection; }
 };
 
 struct ChartPane {
@@ -608,6 +635,9 @@ struct PreflightBenchWindow::Impl {
 	{
 		if (loupe_view) {
 			loupe_view->SetPair(loupe_capture.LatestPair());
+			if (const auto crop = loupe_view->SelectedCrop()) {
+				loupe_capture.SetSourceCrop(*crop);
+			}
 		}
 		if (loupe_status_label) {
 			loupe_status_label->setText(QString::fromStdString(loupe_capture.Status()));

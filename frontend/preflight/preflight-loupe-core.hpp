@@ -9,24 +9,31 @@
 
 namespace preflight::loupe {
 
-struct PixelFrame {
-	uint32_t width = 0;
-	uint32_t height = 0;
-	uint32_t stride = 0;
-	uint64_t capture_timestamp_ns = 0;
-	std::vector<uint8_t> rgba;
-};
-
-struct CropRegion {
-	uint32_t source_width = 0;
-	uint32_t source_height = 0;
+struct PixelRect {
 	uint32_t left = 0;
 	uint32_t top = 0;
 	uint32_t width = 0;
 	uint32_t height = 0;
 };
 
-struct PixelRect {
+struct PixelFrame {
+	uint32_t width = 0;
+	uint32_t height = 0;
+	uint32_t stride = 0;
+	uint64_t capture_timestamp_ns = 0;
+	std::vector<uint8_t> rgba;
+	/* Source frames may keep a small preview while retaining this logical size and
+	 * the selected full-resolution crop. Decoded frames leave these fields zero. */
+	uint32_t source_width = 0;
+	uint32_t source_height = 0;
+	PixelRect detail_region{};
+	uint32_t detail_stride = 0;
+	std::vector<uint8_t> detail_rgba;
+};
+
+struct CropRegion {
+	uint32_t source_width = 0;
+	uint32_t source_height = 0;
 	uint32_t left = 0;
 	uint32_t top = 0;
 	uint32_t width = 0;

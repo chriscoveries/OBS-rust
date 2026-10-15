@@ -100,8 +100,35 @@ std::optional<PixelFrame> crop_at_4x(const PixelFrame &frame, const CropRegion &
 	if (!rgba_storage_is_valid(frame)) {
 		return std::nullopt;
 	}
-	const auto crop = project_crop(region, frame.width, frame.height);
-	if (!crop || crop->width > UINT32_MAX / 16 || crop->height > UINT32_MAX / 4) {
+	std::optional<PixelRect> crop;
+	const uint32_t logical_width = frame.source_width ? frame.source_width : frame.width;
+	const uint32_t logical_height = frame.source_height ? frame.source_height : frame.height;
+	const bool detail_matches_source = frame.source_width != 0 && frame.source_height != 0 &&
+					   region.source_width == frame.source_width &&
+					   region.source_height == frame.source_height;
+	const bool detail_contains_region =
+		detail_matches_source && frame.detail_region.width != 0 && frame.detail_region.height != 0 &&
+		region.left >= frame.detail_region.left && region.top >= frame.detail_region.top &&
+		static_cast<uint64_t>(region.left) + region.width <=
+			static_cast<uint64_t>(frame.detail_region.left) + frame.detail_region.width &&
+		static_cast<uint64_t>(region.top) + region.height <=
+			static_cast<uint64_t>(frame.detail_region.top) + frame.detail_region.height;
+	if (detail_contains_region && frame.detail_region.width <= UINT32_MAX / 4 &&
+	    frame.detail_stride >= frame.detail_region.width * 4) {
+		const uint64_t required =
+			static_cast<uint64_t>(frame.detail_stride) * (frame.detail_region.height - 1) +
+			static_cast<uint64_t>(frame.detail_region.width) * 4;
+		if (required <= frame.detail_rgba.size() && required <= MAX_RGBA_FRAME_BYTES) {
+			crop = PixelRect{region.left - frame.detail_region.left, region.top - frame.detail_region.top,
+					 region.width, region.height};
+		}
+	}
+	const bool use_detail = crop.has_value();
+	if (!crop) {
+		crop = project_crop(region, frame.width, frame.height);
+	}
+	if (!crop || crop->width > UINT32_MAX / 16 || crop->height > UINT32_MAX / 4 || logical_width == 0 ||
+	    logical_height == 0) {
 		return std::nullopt;
 	}
 
@@ -122,9 +149,12 @@ std::optional<PixelFrame> crop_at_4x(const PixelFrame &frame, const CropRegion &
 
 	for (uint32_t y = 0; y < crop->height; ++y) {
 		for (uint32_t x = 0; x < crop->width; ++x) {
-			const size_t source_offset =
-				static_cast<size_t>(crop->top + y) * frame.stride + (crop->left + x) * 4;
-			const uint8_t *pixel = frame.rgba.data() + source_offset;
+			const uint32_t source_y = crop->top + y;
+			const uint32_t source_x = crop->left + x;
+			const uint32_t source_stride = use_detail ? frame.detail_stride : frame.stride;
+			const auto &source_rgba = use_detail ? frame.detail_rgba : frame.rgba;
+			const size_t source_offset = static_cast<size_t>(source_y) * source_stride + source_x * 4;
+			const uint8_t *pixel = source_rgba.data() + source_offset;
 			for (uint32_t zoom_y = 0; zoom_y < 4; ++zoom_y) {
 				for (uint32_t zoom_x = 0; zoom_x < 4; ++zoom_x) {
 					const size_t output_offset =
