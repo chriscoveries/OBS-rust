@@ -1,0 +1,12 @@
+# Exercises the actual header without a libobs process or hardware device.
+add_executable(test_dynamics_log_range test_dynamics_log_range.c)
+target_include_directories(test_dynamics_log_range PRIVATE "${CMAKE_SOURCE_DIR}/libobs")
+if(MSVC)
+  target_compile_options(test_dynamics_log_range PRIVATE /fp:strict)
+else()
+  target_compile_options(test_dynamics_log_range PRIVATE -fno-fast-math -ffp-contract=off)
+  target_link_libraries(test_dynamics_log_range PRIVATE m)
+endif()
+add_dependencies(cmocka-tests test_dynamics_log_range)
+add_test(NAME test_dynamics_log_range COMMAND test_dynamics_log_range)
+set_tests_properties(test_dynamics_log_range PROPERTIES SKIP_RETURN_CODE 77)
