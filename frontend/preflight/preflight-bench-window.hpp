@@ -1,12 +1,14 @@
 #pragma once
 
 #include "obs-preflight.h"
+#include "preflight-apply-plan.hpp"
 #include "preflight-loupe-core.hpp"
 
 #include <QDialog>
 #include <QString>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 class QCloseEvent;
@@ -22,6 +24,7 @@ struct PreflightBenchWindowRecordedData {
 	std::vector<obs_preflight_window> windows;
 	std::vector<PreflightBenchWindowRecordedBakeoffRow> bakeoff_rows;
 	std::shared_ptr<const preflight::loupe::FramePair> loupe_pair;
+	std::optional<preflight::apply::Plan> apply_preview;
 };
 
 class PreflightBenchWindow : public QDialog {

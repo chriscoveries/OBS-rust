@@ -228,8 +228,8 @@ static void test_apply_contract_regressions()
 	QTemporaryDir temporary(QDir::tempPath() + QStringLiteral("/preflight-apply-Ω-XXXXXX"));
 	require(temporary.isValid(), "could not create a Unicode temporary profile path");
 	const QString profile_path = temporary.path();
-	const TargetIdentity target{QStringLiteral("Préflight profile"), profile_path,
-				     QStringLiteral("obs_x264"), QStringLiteral("x264")};
+	const TargetIdentity target{QStringLiteral("Préflight profile"), profile_path, QStringLiteral("obs_x264"),
+				    QStringLiteral("x264")};
 
 	const QString basic_ini = QDir(profile_path).filePath(QStringLiteral("basic.ini"));
 	const QByteArray basic_path_utf8 = basic_ini.toUtf8();
@@ -249,23 +249,23 @@ static void test_apply_contract_regressions()
 				       {QStringLiteral("Preset"), QStringLiteral("veryfast")},
 				       {QStringLiteral("UseAdvanced"), false}};
 	const QJsonObject simple_initial{{QStringLiteral("bitrate"), 2500},
-					  {QStringLiteral("preset"), QStringLiteral("veryfast")}};
+					 {QStringLiteral("preset"), QStringLiteral("veryfast")}};
 	const QJsonObject simple_shown{{QStringLiteral("bitrate"), 4000},
-					{QStringLiteral("preset"), QStringLiteral("fast")}};
+				       {QStringLiteral("preset"), QStringLiteral("fast")}};
 	const QJsonObject simple_newer{{QStringLiteral("bitrate"), 5000},
-					{QStringLiteral("preset"), QStringLiteral("fast")}};
-	const auto displayed_simple = BuildSimplePlan(simple_saved, simple_initial, simple_shown,
-						       QStringLiteral("x264"), false, target);
-	const auto stale_simple = BuildSimplePlan(simple_saved, simple_initial, simple_newer,
-						   QStringLiteral("x264"), false, target);
+				       {QStringLiteral("preset"), QStringLiteral("fast")}};
+	const auto displayed_simple =
+		BuildSimplePlan(simple_saved, simple_initial, simple_shown, QStringLiteral("x264"), false, target);
+	const auto stale_simple =
+		BuildSimplePlan(simple_saved, simple_initial, simple_newer, QStringLiteral("x264"), false, target);
 	QString error;
 	require(!WriteSimpleConfig(config.get(), displayed_simple, stale_simple, &error),
 		"a stale Simple Apply plan was written before its updated diff was reviewed");
 	require(config_get_uint(config.get(), "SimpleOutput", "VBitrate") == 2500,
 		"refusing a stale Simple plan still changed basic.ini");
 
-	const auto current_simple = BuildSimplePlan(simple_saved, simple_initial, simple_shown,
-						     QStringLiteral("x264"), false, target);
+	const auto current_simple =
+		BuildSimplePlan(simple_saved, simple_initial, simple_shown, QStringLiteral("x264"), false, target);
 	require(WriteSimpleConfig(config.get(), displayed_simple, current_simple, &error),
 		"the displayed Simple Apply plan did not write to temporary basic.ini");
 	require(config_save(config.get()) == CONFIG_SUCCESS, "could not persist temporary basic.ini");
@@ -294,12 +294,13 @@ static void test_apply_contract_regressions()
 					   {QStringLiteral("profile"), QStringLiteral("high")},
 					   {QStringLiteral("lookahead"), false}};
 	const QJsonObject advanced_edited{{QStringLiteral("bitrate"), 4500},
-					   {QStringLiteral("preset"), QStringLiteral("fast")},
-					   {QStringLiteral("profile"), QStringLiteral("high")},
-					   {QStringLiteral("lookahead"), false}};
+					  {QStringLiteral("preset"), QStringLiteral("fast")},
+					  {QStringLiteral("profile"), QStringLiteral("high")},
+					  {QStringLiteral("lookahead"), false}};
 	auto write_json = [](const QString &path, const QJsonObject &object) {
 		QFile file(path);
-		require(file.open(QIODevice::WriteOnly | QIODevice::Truncate), "could not create temporary encoder JSON");
+		require(file.open(QIODevice::WriteOnly | QIODevice::Truncate),
+			"could not create temporary encoder JSON");
 		file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
 		file.close();
 	};
@@ -325,22 +326,23 @@ static void test_apply_contract_regressions()
 	changed_profile.profile_name = QStringLiteral("Other profile");
 	changed_profile.profile_path = QDir(profile_path).filePath(QStringLiteral("autre-配置"));
 	QDir().mkpath(changed_profile.profile_path);
-	const QString other_stream_path = QDir(changed_profile.profile_path).filePath(QStringLiteral("streamEncoder.json"));
+	const QString other_stream_path =
+		QDir(changed_profile.profile_path).filePath(QStringLiteral("streamEncoder.json"));
 	const QJsonObject other_profile_saved{{QStringLiteral("bitrate"), 9999}};
 	write_json(other_stream_path, other_profile_saved);
-	const auto profile_changed_plan = BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited,
-								   changed_profile);
+	const auto profile_changed_plan =
+		BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited, changed_profile);
 	require(!WriteAdvancedSettings(displayed_advanced, profile_changed_plan, &error) &&
-				read_json(other_stream_path) == other_profile_saved,
-			"Apply wrote settings after the active profile changed");
+			read_json(other_stream_path) == other_profile_saved,
+		"Apply wrote settings after the active profile changed");
 
 	TargetIdentity changed_encoder = target;
 	changed_encoder.encoder_id = QStringLiteral("obs_nvenc_h264_tex");
-	const auto encoder_changed_plan = BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited,
-								 changed_encoder);
+	const auto encoder_changed_plan =
+		BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited, changed_encoder);
 	require(!WriteAdvancedSettings(displayed_advanced, encoder_changed_plan, &error) &&
-				read_json(stream_path) == expected_advanced,
-			"Apply wrote settings after the configured encoder changed");
+			read_json(stream_path) == expected_advanced,
+		"Apply wrote settings after the configured encoder changed");
 }
 
 int main(int argc, char **argv)
@@ -375,6 +377,18 @@ int main(int argc, char **argv)
 			{QStringLiteral("Fallback encoder"), QStringLiteral("1280 × 720"), QStringLiteral("30"), stale},
 		};
 		recorded.loupe_pair = make_decoded_loupe_pair();
+		recorded.apply_preview = preflight::apply::BuildAdvancedPlan(
+			{{QStringLiteral("bitrate"), 6000},
+			 {QStringLiteral("preset"), QStringLiteral("veryfast")},
+			 {QStringLiteral("profile"), QStringLiteral("high")}},
+			{{QStringLiteral("bitrate"), 6000},
+			 {QStringLiteral("preset"), QStringLiteral("veryfast")},
+			 {QStringLiteral("profile"), QStringLiteral("high")}},
+			{{QStringLiteral("bitrate"), 4500},
+			 {QStringLiteral("preset"), QStringLiteral("fast")},
+			 {QStringLiteral("profile"), QStringLiteral("high")}},
+			{QStringLiteral("Demo profile"), QStringLiteral("recorded-profile"), QStringLiteral("obs_x264"),
+			 QStringLiteral("obs_x264")});
 
 		PreflightBenchWindow window(recorded);
 		window.resize(1440, 1600);
@@ -396,16 +410,30 @@ int main(int argc, char **argv)
 			"verdict or chart layout widgets are missing");
 		require(summary->geometry().bottom() < splitter->geometry().top(),
 			"verdict summary is not prominent above the charts");
-		require(settings_scroll->isHidden() && splitter->sizes().size() == 2 && splitter->sizes()[0] == 0 &&
+		require(!settings_scroll->isHidden() && splitter->sizes().size() == 2 && splitter->sizes()[0] > 0 &&
 				charts_scroll->width() > window.width() / 2,
-			"empty settings panel still consumes space in the recorded-data view");
+			"recorded Apply preview panel is missing or consumes too much chart space");
 
 		auto *render_chart = window.findChild<QWidget *>(QStringLiteral("preflight-chart-1"));
+		auto *cpu_chart = window.findChild<QWidget *>(QStringLiteral("preflight-chart-0"));
+		auto *bitrate_chart = window.findChild<QWidget *>(QStringLiteral("preflight-chart-5"));
 		auto *skip_chart = window.findChild<QWidget *>(QStringLiteral("preflight-chart-2"));
 		auto *congestion_chart = window.findChild<QWidget *>(QStringLiteral("preflight-chart-6"));
-		require(render_chart && skip_chart && congestion_chart, "warning-line charts are missing");
+		require(render_chart && cpu_chart && bitrate_chart && skip_chart && congestion_chart,
+			"warning-line charts are missing");
 		require(render_chart->property("preflightYAxisLabels").toStringList().size() == 4,
 			"render chart is missing numeric y-axis values");
+		const QStringList cpu_axis = cpu_chart->property("preflightYAxisLabels").toStringList();
+		require(cpu_axis.size() == 4 && cpu_axis.front() == QStringLiteral("75") &&
+				cpu_axis.back() == QStringLiteral("0") &&
+				std::all_of(cpu_axis.begin(), cpu_axis.end(),
+					    [](const QString &label) { return !label.contains('.'); }),
+			"percentage chart axis does not start at zero with rounded tick values");
+		const QStringList bitrate_axis = bitrate_chart->property("preflightYAxisLabels").toStringList();
+		require(bitrate_axis.size() == 4 &&
+				std::all_of(bitrate_axis.begin(), bitrate_axis.end(),
+					    [](const QString &label) { return !label.contains('.'); }),
+			"chart uses fractional tick values instead of a round bitrate scale");
 		require(render_chart->property("preflightWarningLines").toStringList() ==
 					QStringList(
 						{QStringLiteral("75% interval"), QStringLiteral("100% interval")}) &&
@@ -421,6 +449,10 @@ int main(int argc, char **argv)
 		require(table->wordWrap() &&
 				table->verticalHeader()->sectionResizeMode(0) == QHeaderView::ResizeToContents,
 			"bake-off reasons do not wrap into compact content-sized rows");
+		const int bakeoff_content_height = table->horizontalHeader()->sizeHint().height() +
+						   table->verticalHeader()->length() + table->frameWidth() * 2;
+		require(table->height() <= bakeoff_content_height + 4,
+			"bake-off table has empty space below its visible rows");
 		for (int row = 0; row < table->rowCount(); ++row) {
 			require(table->item(row, 5) && table->item(row, 6) && !table->item(row, 6)->text().isEmpty(),
 				"bake-off row is missing its verdict or plain-language reason");
@@ -432,6 +464,17 @@ int main(int argc, char **argv)
 
 		QWidget *loupe_view = window.findChild<QWidget *>(QStringLiteral("preflight-loupe-view"));
 		require(loupe_view, "loupe widget is missing");
+		auto *apply_group = window.findChild<QWidget *>(QStringLiteral("preflight-apply-preview"));
+		auto *apply_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-apply-diff"));
+		require(apply_group && apply_table && apply_table->rowCount() == 2 &&
+				apply_table->item(0, 0)->text() == QStringLiteral("streamEncoder.json/bitrate") &&
+				apply_table->item(1, 2)->text() == QStringLiteral("fast"),
+			"recorded Apply preview does not show the exact proposed config diff");
+		const int apply_content_height = apply_table->horizontalHeader()->sizeHint().height() +
+						 apply_table->verticalHeader()->length() +
+						 apply_table->frameWidth() * 2;
+		require(apply_table->height() <= apply_content_height + 4,
+			"Apply preview has empty space below its visible diff rows");
 		QApplication::processEvents();
 
 		const QString output_dir = qEnvironmentVariable("PREFLIGHT_UI_OUTPUT_DIR").isEmpty()
@@ -439,6 +482,7 @@ int main(int argc, char **argv)
 						   : qEnvironmentVariable("PREFLIGHT_UI_OUTPUT_DIR");
 		require(QDir().mkpath(output_dir), "could not create PNG output directory");
 		save_png(window, QDir(output_dir).filePath(QStringLiteral("preflight-bench.png")));
+		save_png(*apply_group, QDir(output_dir).filePath(QStringLiteral("preflight-apply-preview.png")));
 		table->setParent(nullptr);
 		table->setFixedSize(1440, 320);
 		table->show(); // Detached only for a complete offscreen table capture.
