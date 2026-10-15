@@ -20,6 +20,12 @@
 
 #include "mp4-mux.h"
 
+/* mp4-mux.c names its start chapter through the module's locale. */
+const char *obs_module_text(const char *val)
+{
+	return val;
+}
+
 /* A representative 24-byte dvvC configuration record (the size VideoToolbox
  * emits for profile 8.4). The muxer treats it as opaque; the exact values are
  * irrelevant to the box framing under test. */
