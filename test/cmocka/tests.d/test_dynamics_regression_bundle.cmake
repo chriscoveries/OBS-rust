@@ -1,0 +1,12 @@
+# Combined arithmetic regressions, with SSE2 skips explicitly reported.
+add_executable(test_dynamics_regression_bundle test_dynamics_regression_bundle.c)
+target_include_directories(test_dynamics_regression_bundle PRIVATE "${CMAKE_SOURCE_DIR}/libobs")
+if(MSVC)
+  target_compile_options(test_dynamics_regression_bundle PRIVATE /fp:strict)
+else()
+  target_compile_options(test_dynamics_regression_bundle PRIVATE -fno-fast-math -ffp-contract=off)
+  target_link_libraries(test_dynamics_regression_bundle PRIVATE m)
+endif()
+add_dependencies(cmocka-tests test_dynamics_regression_bundle)
+add_test(NAME test_dynamics_regression_bundle COMMAND test_dynamics_regression_bundle)
+set_tests_properties(test_dynamics_regression_bundle PROPERTIES SKIP_RETURN_CODE 77)
