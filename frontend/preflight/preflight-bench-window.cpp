@@ -205,7 +205,7 @@ public:
 	explicit CombinedMetricChart(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName(QStringLiteral("preflight-combined-chart"));
-		setMinimumHeight(140);
+		setMinimumHeight(260);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 		setMouseTracking(true);
 		setProperty("preflightStartsAtZero", true);
@@ -240,6 +240,8 @@ protected:
 		painter.fillRect(rect(), palette().color(QPalette::Base));
 		const QRectF plot = QRectF(rect()).adjusted(54, 24, -10, -16);
 		plot_rect = plot;
+		setProperty("preflightPlotWidth", qRound(plot.width()));
+		setProperty("preflightPlotHeight", qRound(plot.height()));
 		QStringList series_names;
 		QStringList series_colors;
 		QStringList latest_values;
@@ -575,6 +577,8 @@ protected:
 		const auto &encoded = *stream_pair->encoded;
 		const QRectF preview_bounds = preview_panel.adjusted(2, 22, -2, -2);
 		preview_image_rect = fitted_image_rect(preview_bounds, encoded);
+		setProperty("preflightPreviewImageWidth", qRound(preview_image_rect.width()));
+		setProperty("preflightPreviewImageHeight", qRound(preview_image_rect.height()));
 		painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
 		painter.drawImage(preview_image_rect, image_for(encoded));
 
@@ -2878,9 +2882,10 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		impact_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
 		impact_layout->addWidget(impact_table);
 		right_layout->addWidget(impact_group);
-		right_layout->setStretch(0, 4);
-		right_layout->setStretch(1, 3);
-		right_layout->setStretch(2, 2);
+		// Keep Impact at its content height; use the remaining pixels for the preview and chart.
+		right_layout->setStretch(0, 5);
+		right_layout->setStretch(1, 6);
+		right_layout->setStretch(2, 0);
 
 		auto *stream_group = new QGroupBox(QObject::tr("Stream encoder"), settings);
 		stream_group->setObjectName(QStringLiteral("preflight-stream-settings"));
@@ -3970,7 +3975,7 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 {
 	setObjectName(QStringLiteral("preflight-bench-window"));
 	setWindowTitle(tr("Preflight"));
-	resize(1040, 720);
+	resize(1040, 960);
 	impl->sample_timer = new QTimer(this);
 	impl->sample_timer->setInterval(static_cast<int>(SAMPLE_WINDOW_MS));
 	connect(impl->sample_timer, &QTimer::timeout, this, &PreflightBenchWindow::Sample);

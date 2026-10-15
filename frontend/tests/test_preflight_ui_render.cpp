@@ -687,7 +687,7 @@ int main(int argc, char **argv)
 							     {{QStringLiteral("OutputCX"), 1280}});
 
 		PreflightBenchWindow window(recorded);
-		window.resize(1040, 720);
+		window.resize(1040, 960);
 		window.show(); // Qt's offscreen platform keeps this out of the display.
 		QApplication::processEvents();
 
@@ -747,11 +747,11 @@ int main(int argc, char **argv)
 						  impact_list->frameWidth() * 2;
 		require(impact_list->verticalScrollBar()->maximum() == 0 &&
 				impact_list->height() >= impact_content_height - 2,
-			"both impact rows are not fully visible at 1040×720");
+			"both impact rows are not fully visible at 1040×960");
 		auto *impact_group = window.findChild<QWidget *>(QStringLiteral("preflight-impact-group"));
 		require(impact_group && impact_group->isVisible() &&
 				impact_group->geometry().bottom() <= right_side->height(),
-			"impact table group is clipped below the 1040×720 right column");
+			"impact table group is clipped below the 1040×960 right column");
 
 		auto *metric_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-metric-table"));
 		require(metric_table && metric_table->rowCount() == 4 && metric_table->columnCount() == 2 &&
@@ -777,7 +777,7 @@ int main(int argc, char **argv)
 				reason_label->text().contains(QStringLiteral("1%")),
 			"legend limits and verdict threshold do not agree or their sources are missing from tooltips");
 		auto *combined_chart = window.findChild<QWidget *>(QStringLiteral("preflight-combined-chart"));
-		require(combined_chart && combined_chart->isVisible() && combined_chart->minimumHeight() >= 120 &&
+		require(combined_chart && combined_chart->isVisible() && combined_chart->minimumHeight() >= 260 &&
 				combined_chart->property("preflightStartsAtZero").toBool(),
 			"combined normalized chart is missing or too small");
 		combined_chart->repaint();
@@ -785,6 +785,21 @@ int main(int argc, char **argv)
 		require(loupe_widget && loupe_widget->property("preflightMainPreviewShare").toDouble() >= 0.59 &&
 				combined_chart->height() > metric_table->height(),
 			"main preview or chart did not receive the space freed by the compact legend");
+		loupe_widget->repaint();
+		const int render_scale = qRound(loupe_widget->devicePixelRatioF());
+		const int preview_width_px =
+			loupe_widget->property("preflightPreviewImageWidth").toInt() * render_scale;
+		const int preview_height_px =
+			loupe_widget->property("preflightPreviewImageHeight").toInt() * render_scale;
+		const int plot_width_px = combined_chart->property("preflightPlotWidth").toInt() * render_scale;
+		const int plot_height_px = combined_chart->property("preflightPlotHeight").toInt() * render_scale;
+		std::cout << "2x PNG geometry: stream " << preview_width_px << "×" << preview_height_px
+			  << " px; chart plot " << plot_width_px << "×" << plot_height_px << " px\n";
+		// The 2d25ba671 Yami render measured about 250×190 px for the stream pattern.
+		// Its chart minimum (220 logical px minus 44 px of plot margins) is 352 px at 2x.
+		require(render_scale == 2 && preview_width_px >= 360 && preview_height_px >= 270 &&
+				plot_width_px >= 1280 && plot_height_px >= 440,
+			"the 1040×960 render must provide a larger stream image and chart plot area");
 		QStringList axis = combined_chart->property("preflightYAxisLabels").toStringList();
 		require(axis.size() == 5 && axis.front() == QStringLiteral("120") &&
 				axis.back() == QStringLiteral("0") &&
@@ -879,6 +894,12 @@ int main(int argc, char **argv)
 		auto *bakeoff_group = window.findChild<QWidget *>(QStringLiteral("preflight-bakeoff-group"));
 		require(bakeoff_group && bakeoff_group->height() - table->geometry().bottom() <= 24,
 			"inline bake-off leaves empty space below its table");
+		auto *settings_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-settings-scroll"));
+		require(settings_scroll, "settings viewport is missing");
+		const QRect bakeoff_in_viewport(bakeoff_group->mapTo(settings_scroll->viewport(), QPoint(0, 0)),
+						bakeoff_group->size());
+		require(settings_scroll->viewport()->rect().contains(bakeoff_in_viewport),
+			"the complete bake-off results are not visible at the default window size");
 		for (int row = 0; row < table->rowCount(); ++row) {
 			const QString expected_reason =
 				row == 0 ? QStringLiteral("All OBS limits met")
@@ -940,7 +961,6 @@ int main(int argc, char **argv)
 		QApplication::processEvents();
 		require(combined_chart->property("preflightHoverText").toString().isEmpty(),
 			"chart hover panel remains visible after the pointer leaves");
-		auto *settings_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-settings-scroll"));
 		auto *apply_button = window.findChild<QPushButton *>(QStringLiteral("preflight-apply-button"));
 		auto *apply_note = window.findChild<QLabel *>(QStringLiteral("preflight-apply-note"));
 		require(settings_scroll && apply_group && apply_group->isVisible() && apply_button && apply_note,
@@ -976,7 +996,7 @@ int main(int argc, char **argv)
 		failed.windows = stale_windows;
 		failed.gpu_samples.resize(stale_windows.size(), preflight::gpu::Sample{54.0, 41.0, 28.0, 16.0});
 		PreflightBenchWindow fail_window(failed);
-		fail_window.resize(1040, 720);
+		fail_window.resize(1040, 960);
 		fail_window.show();
 		QApplication::processEvents();
 		auto *fail_verdict = fail_window.findChild<QLabel *>(QStringLiteral("preflight-verdict"));
