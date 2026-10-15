@@ -3,6 +3,7 @@
 #include <setjmp.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <errno.h>
 #include <string.h>
 #include <time.h>
 #include <cmocka.h>
@@ -160,16 +161,38 @@ static FILE *open_fixture(const char *path)
 {
 	FILE *file = fopen(path, "rb");
 	assert_non_null(file);
-	uint8_t header[44];
+	uint8_t header[12];
 	assert_int_equal(fread(header, 1, sizeof(header), file), sizeof(header));
 	assert_memory_equal(header, "RIFF", 4);
 	assert_memory_equal(header + 8, "WAVE", 4);
-	assert_memory_equal(header + 12, "fmt ", 4);
-	assert_int_equal(header[22], 1);
-	assert_int_equal(header[23], 0);
-	assert_int_equal(header[34], 16);
-	assert_int_equal(header[35], 0);
-	assert_memory_equal(header + 36, "data", 4);
+	bool have_format = false;
+	while (true) {
+		uint8_t chunk[8];
+		assert_int_equal(fread(chunk, 1, sizeof(chunk), file), sizeof(chunk));
+		uint32_t size = (uint32_t)chunk[4] | ((uint32_t)chunk[5] << 8) | ((uint32_t)chunk[6] << 16) |
+				((uint32_t)chunk[7] << 24);
+		if (memcmp(chunk, "data", 4) == 0) {
+			assert_true(have_format);
+			break;
+		}
+		if (memcmp(chunk, "fmt ", 4) == 0) {
+			uint8_t format[16];
+			assert_true(size >= sizeof(format));
+			assert_int_equal(fread(format, 1, sizeof(format), file), sizeof(format));
+			assert_int_equal(format[0] | (format[1] << 8), 1);
+			assert_int_equal(format[2] | (format[3] << 8), 1);
+			assert_int_equal((uint32_t)format[4] | ((uint32_t)format[5] << 8) |
+						 ((uint32_t)format[6] << 16) | ((uint32_t)format[7] << 24),
+					 TEST_SAMPLE_RATE);
+			assert_int_equal(format[14] | (format[15] << 8), 16);
+			assert_true(fseek(file, (long)(size - sizeof(format)), SEEK_CUR) == 0);
+			have_format = true;
+		} else {
+			assert_true(fseek(file, (long)size, SEEK_CUR) == 0);
+		}
+		if (size & 1)
+			assert_true(fseek(file, 1, SEEK_CUR) == 0);
+	}
 	return file;
 }
 
@@ -199,6 +222,8 @@ static size_t feed_fixture(struct mac_captions_core *core, const char *path)
 
 static void deliver_caption_to_output(void *param, const uint8_t *data)
 {
+	if (!obs_output_active(param))
+		return;
 	struct obs_source_cea_708 captions = {.data = data, .packets = 1};
 	obs_output_caption(param, &captions);
 }
@@ -243,6 +268,7 @@ static void test_file_audio_tap_enable_disable_rollup_and_output(void **state)
 	pthread_mutex_init(&output.track.caption_mutex, NULL);
 	deque_init(&output.track.caption_data);
 	output.output.caption_tracks[0] = &output.track;
+	os_atomic_set_bool(&output.output.active, true);
 	unsigned ticks = 0;
 	while (mac_captions_core_drain_one(core, deliver_caption_to_output, &output.output)) {
 		assert_int_equal(output.track.caption_data.size, (size_t)(++ticks) * 3);
@@ -282,6 +308,7 @@ static void test_file_audio_tap_enable_disable_rollup_and_output(void **state)
 	assert_false(mac_captions_core_drain_one(core, deliver_caption_to_output, &output.output));
 	assert_int_equal(fake.starts, 1);
 
+	os_atomic_set_bool(&output.output.active, false);
 	deque_free(&output.track.caption_data);
 	pthread_mutex_destroy(&output.track.caption_mutex);
 	mac_captions_core_destroy(core);
@@ -293,15 +320,121 @@ struct transcript_capture {
 	size_t length;
 };
 
-static void capture_word(void *param, const char *text, double start_sec, double end_sec)
+static uint64_t monotonic_ns(void)
 {
-	(void)start_sec;
-	(void)end_sec;
-	struct transcript_capture *capture = param;
-	if (capture->length && capture->length + 1 < sizeof(capture->text))
-		capture->text[capture->length++] = ' ';
+	struct timespec now;
+	assert_int_equal(clock_gettime(CLOCK_MONOTONIC, &now), 0);
+	return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+static void sleep_until_ns(uint64_t deadline)
+{
+	while (true) {
+		uint64_t now = monotonic_ns();
+		if (now >= deadline)
+			return;
+		uint64_t remaining = deadline - now;
+		struct timespec duration = {
+			.tv_sec = (time_t)(remaining / 1000000000ULL),
+			.tv_nsec = (long)(remaining % 1000000000ULL),
+		};
+		nanosleep(&duration, NULL);
+	}
+}
+
+static void drain_output_at_video_rate(struct mac_captions_core *core, struct fake_output *output,
+				       uint64_t *next_tick_ns)
+{
+	uint64_t now = monotonic_ns();
+	while (now >= *next_tick_ns) {
+		mac_captions_core_drain_one(core, deliver_caption_to_output, &output->output);
+		*next_tick_ns += 16666667ULL;
+		now = monotonic_ns();
+	}
+}
+
+static size_t feed_speech_fixture_through_filter(struct mac_captions_core *core, const char *path,
+						 struct fake_output *output)
+{
+	FILE *file = open_fixture(path);
+	int16_t pcm[TEST_FRAMES];
+	float samples[TEST_FRAMES];
+	size_t frames_total = 0;
+	uint64_t next_audio_ns = monotonic_ns();
+	uint64_t next_video_tick_ns = next_audio_ns;
+	while (true) {
+		size_t frames = fread(pcm, sizeof(*pcm), TEST_FRAMES, file);
+		if (!frames)
+			break;
+		for (size_t i = 0; i < frames; ++i)
+			samples[i] = (float)pcm[i] / 32768.0f;
+		struct obs_audio_data audio = {0};
+		audio.frames = (uint32_t)frames;
+		audio.timestamp = (uint64_t)frames_total * 1000000000ULL / TEST_SAMPLE_RATE;
+		audio.data[0] = (uint8_t *)samples;
+		assert_ptr_equal(mac_captions_core_filter_audio(core, &audio), &audio);
+		frames_total += frames;
+		next_audio_ns += (uint64_t)frames * 1000000000ULL / TEST_SAMPLE_RATE;
+		drain_output_at_video_rate(core, output, &next_video_tick_ns);
+		sleep_until_ns(next_audio_ns);
+	}
+	assert_false(ferror(file));
+	fclose(file);
+	return frames_total;
+}
+
+static void feed_silence_through_filter(struct mac_captions_core *core, struct fake_output *output,
+					uint64_t first_frame, size_t total_frames)
+{
+	float silence[TEST_FRAMES] = {0};
+	uint64_t next_audio_ns = monotonic_ns();
+	uint64_t next_video_tick_ns = next_audio_ns;
+	for (size_t offset = 0; offset < total_frames; offset += TEST_FRAMES) {
+		size_t frames = total_frames - offset;
+		if (frames > TEST_FRAMES)
+			frames = TEST_FRAMES;
+		struct obs_audio_data audio = {0};
+		audio.frames = (uint32_t)frames;
+		audio.timestamp = (first_frame + offset) * 1000000000ULL / TEST_SAMPLE_RATE;
+		audio.data[0] = (uint8_t *)silence;
+		assert_ptr_equal(mac_captions_core_filter_audio(core, &audio), &audio);
+		next_audio_ns += (uint64_t)frames * 1000000000ULL / TEST_SAMPLE_RATE;
+		drain_output_at_video_rate(core, output, &next_video_tick_ns);
+		sleep_until_ns(next_audio_ns);
+	}
+}
+
+static void append_decoded_text(struct transcript_capture *capture, const char *text)
+{
 	for (const char *p = text; *p && capture->length + 1 < sizeof(capture->text); ++p)
 		capture->text[capture->length++] = *p;
+}
+
+static void collect_decoded_608(struct fake_output *output, struct transcript_capture *capture, size_t *packets)
+{
+	uint8_t triplet[3];
+	while (output->track.caption_data.size >= sizeof(triplet)) {
+		deque_pop_front(&output->track.caption_data, triplet, sizeof(triplet));
+		++*packets;
+		if (triplet[0] != 0xFC)
+			continue;
+
+		uint16_t pair = (uint16_t)((triplet[1] << 8) | triplet[2]);
+		int channel = 0;
+		if (eia608_is_control(pair)) {
+			if (eia608_parse_control(pair, &channel) == eia608_control_carriage_return && capture->length &&
+			    capture->text[capture->length - 1] != ' ')
+				append_decoded_text(capture, " ");
+			continue;
+		}
+		char first[8] = {0};
+		char second[8] = {0};
+		int count = eia608_to_utf8(pair, &channel, first, second);
+		if (count > 0)
+			append_decoded_text(capture, first);
+		if (count > 1)
+			append_decoded_text(capture, second);
+	}
 	capture->text[capture->length] = '\0';
 }
 
@@ -330,17 +463,57 @@ static void test_real_speech_file_transcript(void **state)
 	(void)state;
 	int32_t status = mac_captions_speech_asset_status();
 	if (status != MAC_CAPTIONS_ASSETS_INSTALLED) {
-		print_message("SKIP real speech: en_US SpeechTranscriber asset is not installed (status=%d)\n", status);
+		print_message(
+			"SKIP real speech through filter: en_US SpeechTranscriber asset is not installed (status=%d)\n",
+			status);
 		skip();
 	}
 
-	struct transcript_capture capture = {0};
-	assert_int_equal(mac_captions_speech_transcribe_file(MAC_CAPTIONS_SPEECH_FIXTURE, capture_word, &capture), 0);
+	struct fake_output output = {0};
+	assert_int_equal(pthread_mutex_init(&output.track.caption_mutex, NULL), 0);
+	deque_init(&output.track.caption_data);
+	output.output.caption_tracks[0] = &output.track;
+	os_atomic_set_bool(&output.output.active, true);
+	struct mac_captions_core *core =
+		mac_captions_core_create(&mac_captions_speech_transcriber_ops, NULL, NULL, TEST_SAMPLE_RATE, 1, true);
+	assert_non_null(core);
+
+	uint64_t start_deadline = monotonic_ns() + 15000000000ULL;
+	while (!mac_captions_core_is_running(core) && monotonic_ns() < start_deadline) {
+		struct timespec interval = {.tv_sec = 0, .tv_nsec = 10000000L};
+		nanosleep(&interval, NULL);
+	}
+	assert_true(mac_captions_core_is_running(core));
+	size_t frames = feed_speech_fixture_through_filter(core, MAC_CAPTIONS_SPEECH_FIXTURE, &output);
+	assert_int_equal(frames, (size_t)30 * TEST_SAMPLE_RATE);
+	/* Trailing file-fed silence lets the recognizer finalize the last utterance
+	 * without disabling the filter before its final words are delivered. */
+	feed_silence_through_filter(core, &output, frames, 3 * TEST_SAMPLE_RATE);
+
+	/* Keep the real-time filter enabled while SpeechTranscriber finalizes its
+	 * last results; video ticks continue delivering the queued 608 roll-up. */
+	uint64_t next_video_tick_ns = monotonic_ns();
+	uint64_t finish_deadline = next_video_tick_ns + 5000000000ULL;
+	while (monotonic_ns() < finish_deadline) {
+		drain_output_at_video_rate(core, &output, &next_video_tick_ns);
+		uint64_t wake = monotonic_ns() + 5000000ULL;
+		if (wake > finish_deadline)
+			wake = finish_deadline;
+		sleep_until_ns(wake);
+	}
+	mac_captions_core_set_enabled(core, false);
+	assert_false(mac_captions_core_is_running(core));
+	assert_false(mac_captions_core_drain_one(core, deliver_caption_to_output, &output.output));
+
 	FILE *reference_file = fopen(MAC_CAPTIONS_REFERENCE_FIXTURE, "r");
 	assert_non_null(reference_file);
 	char reference[4096] = {0};
 	assert_non_null(fgets(reference, sizeof(reference), reference_file));
 	fclose(reference_file);
+	struct transcript_capture capture = {0};
+	size_t packets = 0;
+	collect_decoded_608(&output, &capture, &packets);
+	assert_true(packets > 0);
 
 	char hypothesis_words[128][64] = {{0}};
 	char reference_words[128][64] = {{0}};
@@ -366,10 +539,17 @@ static void test_real_speech_file_transcript(void **state)
 		}
 	}
 	double wer = (double)distance[hypothesis_count][reference_count] / (double)reference_count;
-	print_message("real speech transcript: %zu words; reference: %zu words; WER %.1f%%\n", hypothesis_count,
-		      reference_count, wer * 100.0);
-	print_message("hypothesis: %s\n", capture.text);
+	print_message("real filter speech: %zu frames (%.1f s); 608 packets: %zu; transcript: %zu words; "
+		      "reference: %zu words; WER %.1f%%\n",
+		      frames, (double)frames / TEST_SAMPLE_RATE, packets, hypothesis_count, reference_count,
+		      wer * 100.0);
+	print_message("608 decoded output: %s\n", capture.text);
 	assert_true(wer <= 0.50);
+
+	os_atomic_set_bool(&output.output.active, false);
+	deque_free(&output.track.caption_data);
+	pthread_mutex_destroy(&output.track.caption_mutex);
+	mac_captions_core_destroy(core);
 }
 
 int main(void)

@@ -1,5 +1,6 @@
 if(OS_MACOS)
   set(MAC_CAPTIONS_SPEECH_SHIM "${CMAKE_CURRENT_BINARY_DIR}/libmac-captions-speech-test.dylib")
+  set(MAC_CAPTIONS_ASSET_INSTALLER "${CMAKE_CURRENT_BINARY_DIR}/install-speech-assets")
   find_program(SWIFTC_EXECUTABLE swiftc REQUIRED)
   add_custom_command(
     OUTPUT "${MAC_CAPTIONS_SPEECH_SHIM}"
@@ -12,6 +13,19 @@ if(OS_MACOS)
     VERBATIM
   )
   add_custom_target(mac-captions-speech-test-shim DEPENDS "${MAC_CAPTIONS_SPEECH_SHIM}")
+  # This standalone tool installs assets only when explicitly invoked with its
+  # opt-in flag. The filter runtime never calls the asset installation API.
+  add_custom_command(
+    OUTPUT "${MAC_CAPTIONS_ASSET_INSTALLER}"
+    COMMAND
+      "${SWIFTC_EXECUTABLE}" -parse-as-library -swift-version 6
+      -D MAC_CAPTIONS_ASSET_INSTALLER
+      "${CMAKE_SOURCE_DIR}/plugins/mac-captions/speech-transcriber.swift"
+      -o "${MAC_CAPTIONS_ASSET_INSTALLER}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/plugins/mac-captions/speech-transcriber.swift"
+    VERBATIM
+  )
+  add_custom_target(mac-captions-install-speech-assets DEPENDS "${MAC_CAPTIONS_ASSET_INSTALLER}")
 
   add_executable(
     test_mac_captions
