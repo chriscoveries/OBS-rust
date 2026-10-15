@@ -5,7 +5,17 @@
 
 #![allow(unsafe_code)]
 
-use core::ffi::{CStr, c_char};
+use core::ffi::{CStr, c_char, c_int};
+
+// Declared here rather than through `libc::snprintf`: the `libc` crate
+// declares it as a DLL import, but on MSVC `snprintf` is an inline function
+// that libobs's own objects (platform.obj) already define, so linking libobs
+// failed with LNK4217 (a warning treated as error). A plain declaration
+// links to that definition, or to `legacy_stdio_definitions`, which `libc`
+// links on MSVC; elsewhere it is the C library's `snprintf`.
+unsafe extern "C" {
+    fn snprintf(s: *mut c_char, n: usize, format: *const c_char, ...) -> c_int;
+}
 
 /// A `printf` conversion of one `double`, as libobs spells it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +51,7 @@ pub fn snprintf_double(format: DoubleFormat, value: f64) -> Vec<u8> {
     // at most that many, NUL included. The format is a NUL-terminated
     // literal with exactly one `double` conversion, matched by `value`.
     let ret = unsafe {
-        libc::snprintf(
+        snprintf(
             buf.as_mut_ptr().cast::<c_char>(),
             buf.len(),
             format.c_format().as_ptr(),
