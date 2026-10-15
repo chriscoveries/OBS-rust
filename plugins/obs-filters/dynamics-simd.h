@@ -252,7 +252,9 @@ static inline void dyn_compression_gain_apply(float *env_buf, float **samples, s
 		env_db = _mm_or_ps(_mm_and_ps(nonpos, _mm_set1_ps(-INFINITY)), _mm_andnot_ps(nonpos, env_db));
 		/* gain_db = min(0, slope*(thr - env_db)) ; -inf env_db -> +inf -> 0 */
 		__m128 gain_db = _mm_mul_ps(slope_v, _mm_sub_ps(thr_v, env_db));
-		gain_db = _mm_min_ps(zero, gain_db);
+		/* MINPS selects operand two for NaN. Like scalar fminf(0, NaN),
+		 * prefer zero for ratio-1 silence (0 * infinity). */
+		gain_db = _mm_min_ps(gain_db, zero);
 		__m128 gain = _mm_mul_ps(dyn_pow10f_ps(_mm_mul_ps(gain_db, _mm_set1_ps(0.05f))), out_gain_v);
 		for (size_t c = 0; c < num_channels; ++c) {
 			if (!samples[c])

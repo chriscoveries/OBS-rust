@@ -178,6 +178,45 @@ static void gain_silence_is_unity(void **state)
 #endif
 }
 
+/*
+ * Ratio 1:1 gives slope = 0. With a silent input, mul_to_db(0) = -inf
+ * and 0 * (+inf) = NaN. The scalar fminf(0, NaN) chooses zero, giving
+ * unity gain. SSE MINPS selects operand two for NaN, so the operand
+ * ordering in the vector path is part of the correctness contract.
+ *
+ * Use nine samples: two SIMD vectors plus the scalar tail.
+ */
+static void ratio_one_silence_matches_scalar(void **state)
+{
+#if DYN_SIMD_SSE2
+	UNUSED_PARAMETER(state);
+	float env[9] = {0.0f, 1.0f, 0.0f, 0.25f, 0.0f, 0.0f, 0.5f, 0.0f, 0.0f};
+	const float samples[9] = {1.0f, -0.5f, 0.25f, 0.1f, -1.0f, 0.8f, -0.9f, 0.3f, 0.7f};
+	const float gains[2] = {1.0f, 0.75f};
+	const float slopes[2] = {0.0f, -0.0f};
+	for (size_t variant = 0; variant < 2; ++variant) {
+		float actual[9];
+		float expected[9];
+		float *channels[1] = {actual};
+		memcpy(actual, samples, sizeof actual);
+		for (size_t i = 0; i < 9; ++i) {
+			const float db = mul_to_db(env[i]);
+			const float db_gain = fminf(0.0f, slopes[variant] * (-12.0f - db));
+			expected[i] = samples[i] * (db_to_mul(db_gain) * gains[variant]);
+		}
+		dyn_compression_gain_apply(env, channels, 1, 9, slopes[variant], -12.0f,
+					   gains[variant]);
+		for (size_t i = 0; i < 9; ++i) {
+			assert_true(isfinite(actual[i]));
+			assert_float_equal(actual[i], expected[i], 1e-6f);
+		}
+	}
+#else
+	(void)state;
+	skip();
+#endif
+}
+
 static void max_abs_and_apply_gain_match(void **state)
 {
 	UNUSED_PARAMETER(state);
@@ -297,6 +336,7 @@ int main(void)
 
 		cmocka_unit_test(envelope_matches_scalar),      cmocka_unit_test(envelope_tail_matches),
 		cmocka_unit_test(gain_matches_scalar),          cmocka_unit_test(gain_silence_is_unity),
+		cmocka_unit_test(ratio_one_silence_matches_scalar),
 		cmocka_unit_test(max_abs_and_apply_gain_match), cmocka_unit_test(expander_matches_scalar),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
