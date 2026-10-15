@@ -1,12 +1,12 @@
 use obs_preflight::{
-    AnalysisError, BakeoffPlanner, Candidate, DEFAULT_WINDOW_DURATION_MS,
+    AnalysisError, BakeoffPlanner, Candidate, CandidateMode, DEFAULT_WINDOW_DURATION_MS,
     ENCODER_SKIP_UI_WARNING_PERCENT, FAIL_CONGESTION_FRACTION, FAIL_ENCODER_SKIP_PERCENT,
     FAIL_OUTPUT_DROP_PERCENT, FAIL_RENDER_FRAME_TIME_RATIO, FAIL_RENDER_LAG_PERCENT,
     MARGINAL_CONGESTION_FRACTION, MARGINAL_ENCODER_SKIP_PERCENT, MARGINAL_OUTPUT_DROP_PERCENT,
     MARGINAL_RENDER_FRAME_TIME_RATIO, MARGINAL_RENDER_LAG_PERCENT,
     MIN_ENCODER_SKIPS_FOR_UI_WARNING, PlannerError, SERVER_BITRATE_TIE_KBPS,
     SERVER_CAPACITY_PERCENT, SERVER_MINIMUM_TARGET_PERCENT, ServerTest, StatSample, Verdict,
-    choose_server, judge_window, roll_up_window, roll_up_windows,
+    choose_server, expand_candidate_matrix, judge_window, roll_up_window, roll_up_windows,
 };
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -800,6 +800,61 @@ fn candidate(encoder: &str, width: u32) -> Candidate {
         fps_num: 60,
         fps_den: 1,
     }
+}
+
+#[test]
+fn candidate_matrix_visits_every_encoder_at_each_mode_in_stable_order() {
+    let encoders = vec!["obs_x264".to_string(), "obs_nvenc_h264".to_string()];
+    let modes = vec![
+        CandidateMode {
+            width: 1920,
+            height: 1080,
+            fps_num: 60,
+            fps_den: 1,
+        },
+        CandidateMode {
+            width: 1280,
+            height: 720,
+            fps_num: 30,
+            fps_den: 1,
+        },
+    ];
+
+    let candidates = expand_candidate_matrix(&encoders, &modes);
+
+    assert_eq!(
+        candidates,
+        vec![
+            Candidate {
+                encoder: "obs_x264".into(),
+                width: 1920,
+                height: 1080,
+                fps_num: 60,
+                fps_den: 1,
+            },
+            Candidate {
+                encoder: "obs_x264".into(),
+                width: 1280,
+                height: 720,
+                fps_num: 30,
+                fps_den: 1,
+            },
+            Candidate {
+                encoder: "obs_nvenc_h264".into(),
+                width: 1920,
+                height: 1080,
+                fps_num: 60,
+                fps_den: 1,
+            },
+            Candidate {
+                encoder: "obs_nvenc_h264".into(),
+                width: 1280,
+                height: 720,
+                fps_num: 30,
+                fps_den: 1,
+            },
+        ]
+    );
 }
 
 #[test]

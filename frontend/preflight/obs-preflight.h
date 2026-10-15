@@ -9,12 +9,14 @@ extern "C" {
 #endif
 
 typedef struct obs_preflight_engine obs_preflight_engine_t;
+typedef struct obs_preflight_bakeoff obs_preflight_bakeoff_t;
 
 enum obs_preflight_status {
 	OBS_PREFLIGHT_OK = 0,
 	OBS_PREFLIGHT_INVALID_ARGUMENT = 1,
 	OBS_PREFLIGHT_ANALYSIS_ERROR = 2,
 	OBS_PREFLIGHT_OUT_OF_RANGE = 3,
+	OBS_PREFLIGHT_COMPLETE = 4,
 };
 
 enum obs_preflight_verdict {
@@ -24,6 +26,7 @@ enum obs_preflight_verdict {
 };
 
 #define OBS_PREFLIGHT_REASON_CAPACITY 256
+#define OBS_PREFLIGHT_ENCODER_ID_CAPACITY 128
 
 struct obs_preflight_sample {
 	uint64_t timestamp_ms;
@@ -64,6 +67,24 @@ struct obs_preflight_window {
 	char reason[OBS_PREFLIGHT_REASON_CAPACITY];
 };
 
+struct obs_preflight_mode {
+	uint32_t width;
+	uint32_t height;
+	uint32_t fps_num;
+	uint32_t fps_den;
+};
+
+struct obs_preflight_candidate_plan {
+	size_t order;
+	char encoder[OBS_PREFLIGHT_ENCODER_ID_CAPACITY];
+	uint32_t width;
+	uint32_t height;
+	uint32_t fps_num;
+	uint32_t fps_den;
+	uint64_t duration_ms;
+	int32_t stop_if_fail;
+};
+
 /* Creates an engine with the default five-second analysis window. */
 obs_preflight_engine_t *obs_preflight_engine_create(void);
 
@@ -83,6 +104,17 @@ int32_t obs_preflight_engine_get_window_count(const obs_preflight_engine_t *engi
 /* Copies a completed rollup and verdict into caller-owned storage. */
 int32_t obs_preflight_engine_get_window(const obs_preflight_engine_t *engine, size_t index,
 					struct obs_preflight_window *window_out);
+
+/* Creates an encoder-major plan for every encoder ID and video mode. */
+obs_preflight_bakeoff_t *obs_preflight_bakeoff_create(const char *const *encoder_ids, size_t encoder_count,
+						      const struct obs_preflight_mode *modes, size_t mode_count,
+						      uint64_t duration_ms);
+void obs_preflight_bakeoff_destroy(obs_preflight_bakeoff_t *planner);
+/* Writes the next candidate, or returns OBS_PREFLIGHT_COMPLETE after the last. */
+int32_t obs_preflight_bakeoff_next(obs_preflight_bakeoff_t *planner,
+				   struct obs_preflight_candidate_plan *candidate_out);
+/* Records a pass/marginal/fail verdict and advances on the next call. */
+int32_t obs_preflight_bakeoff_complete(obs_preflight_bakeoff_t *planner, int32_t verdict);
 
 #ifdef __cplusplus
 }

@@ -21,6 +21,7 @@ protected:
 
 private slots:
 	void ToggleBench();
+	void ToggleBakeoff();
 	void Sample();
 	void ApplyEncoderSettings();
 };
