@@ -9,7 +9,7 @@ else()
   target_enable_feature(obs "User Interface")
 endif()
 
-find_package(FFmpeg 8.0 REQUIRED COMPONENTS avcodec avutil avformat)
+find_package(FFmpeg 8.0 REQUIRED COMPONENTS avcodec avutil avformat swscale)
 find_package(CURL REQUIRED)
 
 if(NOT TARGET OBS::json11)
@@ -43,6 +43,14 @@ if(ENABLE_UNIT_TESTS)
   add_executable(test_preflight_test_mode tests/test_preflight_test_mode.cpp preflight/preflight-test-mode.cpp)
   target_include_directories(test_preflight_test_mode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
   add_test(NAME test_preflight_test_mode COMMAND test_preflight_test_mode)
+  add_executable(test_preflight_loupe tests/test_preflight_loupe.cpp preflight/preflight-loupe-core.cpp)
+  target_link_libraries(test_preflight_loupe PRIVATE FFmpeg::avcodec FFmpeg::avutil FFmpeg::swscale)
+  if(OS_MACOS)
+    get_filename_component(_preflight_loupe_ffmpeg_lib_dir "${FFmpeg_avcodec_LIBRARY}" DIRECTORY)
+    target_link_options(test_preflight_loupe PRIVATE "LINKER:-rpath,${_preflight_loupe_ffmpeg_lib_dir}")
+    set_property(TARGET test_preflight_loupe PROPERTY XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME NO)
+  endif()
+  add_test(NAME test_preflight_loupe COMMAND test_preflight_loupe)
   add_executable(test_config_migration tests/test_config_migration.cpp)
   target_include_directories(test_config_migration PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   foreach(
@@ -64,6 +72,7 @@ target_link_libraries(
     FFmpeg::avcodec
     FFmpeg::avutil
     FFmpeg::avformat
+    FFmpeg::swscale
     OBS::libobs
     OBS::frontend-api
     OBS::json11
