@@ -69,6 +69,7 @@ if(ENABLE_UNIT_TESTS)
       preflight/preflight-bench-window.cpp
       preflight/preflight-loupe-capture.cpp
       preflight/preflight-loupe-core.cpp
+      preflight/preflight-cloudflare-speed-test.cpp
       preflight/preflight-test-mode.cpp
     )
     set_target_properties(
