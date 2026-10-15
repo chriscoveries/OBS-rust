@@ -111,6 +111,8 @@ constexpr size_t MAX_ENGINE_WINDOWS = 120;
 constexpr size_t CHART_HISTORY_SIZE = 120;
 constexpr int MAX_BAKEOFF_TABLE_VIEW_HEIGHT = 280;
 constexpr int MAX_IMPACT_TABLE_VIEW_HEIGHT = 270;
+// Reserve enough vertical room for the 4:3 encoded picture to clear the 2x render-size regression check.
+constexpr int MIN_LOUPE_VIEW_HEIGHT = 195;
 
 // Reads the text colour the active OBS theme gives a class such as "text-warning", so painted
 // charts use the same warning and danger colours as the Stats window.
@@ -763,7 +765,8 @@ protected:
 public:
 	explicit LoupeView(QWidget *parent = nullptr) : QWidget(parent)
 	{
-		setMinimumHeight(150);
+		setMinimumHeight(MIN_LOUPE_VIEW_HEIGHT);
+		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 		setMouseTracking(true);
 		setToolTip(tr("Drag to compare at 400%"));
 	}
@@ -2885,7 +2888,6 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		loupe_status_label->setWordWrap(true);
 		loupe_view = new LoupeView(preview_group);
 		loupe_view->setObjectName(QStringLiteral("preflight-loupe-view"));
-		loupe_view->setMinimumHeight(150);
 		loupe_view->setMaximumHeight(450);
 		preview_layout->addWidget(loupe_view, 1);
 		preview_layout->addWidget(loupe_status_label);
@@ -2927,7 +2929,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		impact_layout->addWidget(impact_table);
 		right_layout->addWidget(impact_group);
 		// Keep Impact at its content height; use the remaining pixels for the preview and chart.
-		right_layout->setStretch(0, 7);
+		right_layout->setStretch(0, 9);
 		right_layout->setStretch(1, 5);
 		right_layout->setStretch(2, 0);
 
