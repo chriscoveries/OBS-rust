@@ -327,9 +327,9 @@ static OSStatus session_set_bitrate(VTCompressionSessionRef session, const char 
 	if (limit_bitrate && can_limit_bitrate) {
 		double cpb_size = max_bitrate * 125 * max_bitrate_window;
 
-		CFNumberRef cf_cpb_size = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &cpb_size);
+		CFNumberRef cf_cpb_size = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &cpb_size);
 		CFNumberRef cf_cpb_window_size =
-			CFNumberCreate(kCFAllocatorDefault, kCFNumberFloatType, &max_bitrate_window);
+			CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &max_bitrate_window);
 
 		CFTypeRef values[2] = {cf_cpb_size, cf_cpb_window_size};
 
