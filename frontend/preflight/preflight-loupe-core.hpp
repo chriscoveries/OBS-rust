@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -32,8 +33,8 @@ struct PixelRect {
 	uint32_t height = 0;
 };
 
-std::optional<CropRegion> make_crop_region(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
-					   uint32_t source_width, uint32_t source_height);
+std::optional<CropRegion> make_crop_region(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t source_width,
+					   uint32_t source_height);
 std::optional<PixelRect> project_crop(const CropRegion &region, uint32_t frame_width, uint32_t frame_height);
 std::optional<PixelFrame> crop_at_4x(const PixelFrame &frame, const CropRegion &region);
 

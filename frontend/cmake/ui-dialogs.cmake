@@ -52,6 +52,10 @@ if(TARGET obs-preflight-rust)
       preflight/obs-preflight-collector.c
       preflight/preflight-bench-window.cpp
       preflight/preflight-bench-window.hpp
+      preflight/preflight-loupe-capture.cpp
+      preflight/preflight-loupe-capture.hpp
+      preflight/preflight-loupe-core.cpp
+      preflight/preflight-loupe-core.hpp
       preflight/preflight-test-mode.cpp
       preflight/preflight-test-mode.hpp
   )

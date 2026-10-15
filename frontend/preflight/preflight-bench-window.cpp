@@ -2,6 +2,7 @@
 
 #include "obs-preflight-collector.h"
 #include "obs-preflight.h"
+#include "preflight-loupe-capture.hpp"
 #include "preflight-test-mode.hpp"
 
 #include <properties-view.hpp>
@@ -20,6 +21,8 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QImage>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPolygonF>
 #include <QPushButton>
@@ -143,6 +146,292 @@ protected:
 	}
 };
 
+class LoupeView final : public QWidget {
+	std::shared_ptr<const preflight::loupe::FramePair> pair;
+	std::optional<preflight::loupe::CropRegion> selection;
+	std::optional<preflight::loupe::CropRegion> dragging_region;
+	QRectF source_image_rect;
+	QRectF source_panel;
+	QRectF source_zoom_panel;
+	QRectF encoded_zoom_panel;
+	QPoint drag_start;
+	QPoint moving_offset;
+	std::optional<preflight::loupe::PixelRect> moving_crop;
+	bool dragging = false;
+	bool moving_selection = false;
+
+	static QImage image_for(const preflight::loupe::PixelFrame &frame)
+	{
+		return QImage(frame.rgba.data(), static_cast<int>(frame.width), static_cast<int>(frame.height),
+			      static_cast<int>(frame.stride), QImage::Format_RGBA8888);
+	}
+
+	static QRectF fitted_image_rect(const QRectF &bounds, const preflight::loupe::PixelFrame &frame)
+	{
+		if (frame.width == 0 || frame.height == 0 || bounds.width() <= 0 || bounds.height() <= 0) {
+			return {};
+		}
+		const qreal scale = std::min(bounds.width() / frame.width, bounds.height() / frame.height);
+		const QSizeF size(frame.width * scale, frame.height * scale);
+		return QRectF(QPointF(bounds.center().x() - size.width() / 2.0,
+				      bounds.center().y() - size.height() / 2.0),
+			      size);
+	}
+
+	std::optional<QPoint> source_point(const QPointF &point) const
+	{
+		if (!pair || !pair->source || !source_image_rect.contains(point) || source_image_rect.width() <= 0 ||
+		    source_image_rect.height() <= 0) {
+			return std::nullopt;
+		}
+		const auto &frame = *pair->source;
+		const qreal x = (point.x() - source_image_rect.left()) / source_image_rect.width();
+		const qreal y = (point.y() - source_image_rect.top()) / source_image_rect.height();
+		return QPoint(std::clamp(static_cast<int>(x * frame.width), 0, static_cast<int>(frame.width) - 1),
+			      std::clamp(static_cast<int>(y * frame.height), 0, static_cast<int>(frame.height) - 1));
+	}
+
+	std::optional<preflight::loupe::CropRegion> bounded_drag_region(const QPoint &end) const
+	{
+		if (!pair || !pair->source) {
+			return std::nullopt;
+		}
+		const auto start = source_point(drag_start);
+		const auto finish = source_point(end);
+		if (!start || !finish) {
+			return std::nullopt;
+		}
+		const auto &frame = *pair->source;
+		const int max_width = std::max(
+			1,
+			static_cast<int>((std::min(source_zoom_panel.width(), encoded_zoom_panel.width()) - 8) / 4.0));
+		const int max_height = std::max(
+			1, static_cast<int>((std::min(source_zoom_panel.height(), encoded_zoom_panel.height()) - 28) /
+					    4.0));
+		int left = std::min(start->x(), finish->x());
+		int top = std::min(start->y(), finish->y());
+		int right = std::max(start->x(), finish->x());
+		int bottom = std::max(start->y(), finish->y());
+		if (right - left > max_width) {
+			if (finish->x() >= start->x()) {
+				right = start->x() + max_width;
+			} else {
+				left = start->x() - max_width;
+			}
+		}
+		if (bottom - top > max_height) {
+			if (finish->y() >= start->y()) {
+				bottom = start->y() + max_height;
+			} else {
+				top = start->y() - max_height;
+			}
+		}
+		return preflight::loupe::make_crop_region(left, top, right, bottom, frame.width, frame.height);
+	}
+
+	void draw_zoom(QPainter &painter, const QRectF &panel, const QString &label,
+		       const preflight::loupe::PixelFrame &frame, const preflight::loupe::CropRegion &region) const
+	{
+		painter.setPen(palette().color(QPalette::Text));
+		painter.drawText(panel.adjusted(4, 2, -4, -4), Qt::AlignTop | Qt::AlignHCenter, label);
+		QRectF viewport = panel.adjusted(4, 24, -4, -4);
+		painter.setPen(palette().color(QPalette::Mid));
+		painter.drawRect(viewport);
+		const auto zoomed = preflight::loupe::crop_at_4x(frame, region);
+		if (!zoomed) {
+			painter.setPen(palette().color(QPalette::Text));
+			painter.drawText(viewport, Qt::AlignCenter, tr("Select a smaller area"));
+			return;
+		}
+		const QRectF source_rect(0, 0, zoomed->width, zoomed->height);
+		const QSizeF zoom_size(zoomed->width, zoomed->height);
+		const QRectF target(QPointF(viewport.center().x() - zoom_size.width() / 2.0,
+					    viewport.center().y() - zoom_size.height() / 2.0),
+				    zoom_size);
+		painter.save();
+		painter.setClipRect(viewport);
+		painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+		painter.drawImage(target, image_for(*zoomed), source_rect);
+		painter.restore();
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override
+	{
+		QPainter painter(this);
+		painter.fillRect(rect(), palette().color(QPalette::Base));
+		const QRectF bounds = QRectF(rect()).adjusted(6, 5, -6, -6);
+		const qreal gap = 8;
+		const qreal preview_width = std::min<qreal>(190, std::max<qreal>(140, bounds.width() * 0.24));
+		const qreal zoom_width = (bounds.width() - preview_width - gap * 2) / 2;
+		source_panel = QRectF(bounds.left(), bounds.top(), preview_width, bounds.height());
+		source_zoom_panel = QRectF(source_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
+		encoded_zoom_panel = QRectF(source_zoom_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
+		for (const QRectF &panel : {source_panel, source_zoom_panel, encoded_zoom_panel}) {
+			painter.setPen(palette().color(QPalette::Mid));
+			painter.drawRect(panel);
+		}
+		painter.setPen(palette().color(QPalette::Text));
+		painter.drawText(source_panel.adjusted(4, 2, -4, -4), Qt::AlignTop | Qt::AlignHCenter,
+				 tr("Source · drag to move"));
+		if (!pair || !pair->source || !pair->encoded) {
+			painter.drawText(bounds, Qt::AlignCenter, tr("Waiting for matching source and encoded frames"));
+			return;
+		}
+
+		const auto &source = *pair->source;
+		const auto &encoded = *pair->encoded;
+		const QRectF preview_bounds = source_panel.adjusted(5, 24, -5, -5);
+		source_image_rect = fitted_image_rect(preview_bounds, source);
+		painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+		painter.drawImage(source_image_rect, image_for(source));
+
+		if (!selection) {
+			const uint32_t visible_crop_width = static_cast<uint32_t>(std::max<qreal>(
+				1, (std::min(source_zoom_panel.width(), encoded_zoom_panel.width()) - 8) / 4.0));
+			const uint32_t visible_crop_height = static_cast<uint32_t>(std::max<qreal>(
+				1, (std::min(source_zoom_panel.height(), encoded_zoom_panel.height()) - 28) / 4.0));
+			const uint32_t crop_width =
+				std::min({64U, visible_crop_width, std::max<uint32_t>(1, source.width / 8)});
+			const uint32_t crop_height =
+				std::min({36U, visible_crop_height, std::max<uint32_t>(1, source.height / 8)});
+			selection = preflight::loupe::make_crop_region(
+				static_cast<int32_t>((source.width - crop_width) / 2),
+				static_cast<int32_t>((source.height - crop_height) / 2),
+				static_cast<int32_t>((source.width + crop_width) / 2),
+				static_cast<int32_t>((source.height + crop_height) / 2), source.width, source.height);
+		}
+		const auto active_region = dragging_region ? dragging_region : selection;
+		if (!active_region) {
+			return;
+		}
+		const auto source_crop = preflight::loupe::project_crop(*active_region, source.width, source.height);
+		if (source_crop) {
+			const QRectF selection_rect(
+				source_image_rect.left() + source_image_rect.width() * source_crop->left / source.width,
+				source_image_rect.top() + source_image_rect.height() * source_crop->top / source.height,
+				source_image_rect.width() * source_crop->width / source.width,
+				source_image_rect.height() * source_crop->height / source.height);
+			painter.setPen(QPen(QColor("#facc15"), 2));
+			painter.drawRect(selection_rect);
+		}
+		painter.drawText(source_panel.adjusted(4, source_panel.height() - 22, -4, -2), Qt::AlignCenter,
+				 tr("Drag a small area"));
+		draw_zoom(painter, source_zoom_panel, tr("Source · 400%"), source, *active_region);
+		draw_zoom(painter, encoded_zoom_panel, tr("Encoded · 400%"), encoded, *active_region);
+	}
+
+	void mousePressEvent(QMouseEvent *event) override
+	{
+		const auto point = source_point(event->position());
+		if (event->button() == Qt::LeftButton && point) {
+			dragging = true;
+			drag_start = event->position().toPoint();
+			moving_selection = false;
+			moving_crop.reset();
+			if (selection && pair && pair->source) {
+				const auto projected = preflight::loupe::project_crop(*selection, pair->source->width,
+										      pair->source->height);
+				if (projected && point->x() >= static_cast<int>(projected->left) &&
+				    point->x() < static_cast<int>(projected->left + projected->width) &&
+				    point->y() >= static_cast<int>(projected->top) &&
+				    point->y() < static_cast<int>(projected->top + projected->height)) {
+					moving_selection = true;
+					moving_crop = projected;
+					moving_offset = QPoint(point->x() - static_cast<int>(projected->left),
+							       point->y() - static_cast<int>(projected->top));
+					dragging_region = preflight::loupe::CropRegion{
+						pair->source->width, pair->source->height, projected->left,
+						projected->top,      projected->width,     projected->height};
+				}
+			}
+			if (!moving_selection) {
+				dragging_region = bounded_drag_region(drag_start);
+			}
+			update();
+			event->accept();
+			return;
+		}
+		QWidget::mousePressEvent(event);
+	}
+
+	void mouseMoveEvent(QMouseEvent *event) override
+	{
+		if (dragging) {
+			if (moving_selection && moving_crop && pair && pair->source) {
+				const auto point = source_point(event->position());
+				if (point) {
+					const int max_left = static_cast<int>(pair->source->width - moving_crop->width);
+					const int max_top =
+						static_cast<int>(pair->source->height - moving_crop->height);
+					const uint32_t left = static_cast<uint32_t>(
+						std::clamp(point->x() - moving_offset.x(), 0, max_left));
+					const uint32_t top = static_cast<uint32_t>(
+						std::clamp(point->y() - moving_offset.y(), 0, max_top));
+					dragging_region = preflight::loupe::CropRegion{
+						pair->source->width, pair->source->height, left, top,
+						moving_crop->width,  moving_crop->height};
+				}
+			} else {
+				dragging_region = bounded_drag_region(event->position().toPoint());
+			}
+			update();
+			event->accept();
+			return;
+		}
+		QWidget::mouseMoveEvent(event);
+	}
+
+	void mouseReleaseEvent(QMouseEvent *event) override
+	{
+		if (dragging && event->button() == Qt::LeftButton) {
+			if (dragging_region) {
+				selection = dragging_region;
+			}
+			dragging_region.reset();
+			moving_crop.reset();
+			dragging = false;
+			moving_selection = false;
+			update();
+			event->accept();
+			return;
+		}
+		QWidget::mouseReleaseEvent(event);
+	}
+
+public:
+	explicit LoupeView(QWidget *parent = nullptr) : QWidget(parent)
+	{
+		setMinimumHeight(205);
+		setMouseTracking(true);
+		setToolTip(tr("Drag on the source image to compare the same region at four-times magnification."));
+	}
+
+	void SetPair(std::shared_ptr<const preflight::loupe::FramePair> new_pair)
+	{
+		if (pair == new_pair) {
+			return;
+		}
+		pair = std::move(new_pair);
+		if (!pair) {
+			selection.reset();
+		} else if (selection && pair->source &&
+			   (selection->source_width != pair->source->width ||
+			    selection->source_height != pair->source->height)) {
+			const auto remapped =
+				preflight::loupe::project_crop(*selection, pair->source->width, pair->source->height);
+			if (remapped) {
+				selection = preflight::loupe::CropRegion{pair->source->width, pair->source->height,
+									 remapped->left,      remapped->top,
+									 remapped->width,     remapped->height};
+			} else {
+				selection.reset();
+			}
+		}
+		update();
+	}
+};
+
 struct ChartPane {
 	MetricChart *chart = nullptr;
 	QLabel *latest = nullptr;
@@ -209,6 +498,7 @@ struct PreflightBenchWindow::Impl {
 	QPushButton *run_button = nullptr;
 	QPushButton *bakeoff_button = nullptr;
 	QLabel *destination_label = nullptr;
+	QLabel *loupe_status_label = nullptr;
 	QLabel *state_label = nullptr;
 	QLabel *verdict_label = nullptr;
 	QLabel *reason_label = nullptr;
@@ -216,6 +506,7 @@ struct PreflightBenchWindow::Impl {
 	QLabel *bakeoff_status_label = nullptr;
 	QTableWidget *bakeoff_table = nullptr;
 	QTimer *sample_timer = nullptr;
+	QTimer *loupe_timer = nullptr;
 	QTimer *settings_timer = nullptr;
 	OBSPropertiesView *encoder_properties = nullptr;
 	OBSServiceAutoRelease test_service;
@@ -228,6 +519,8 @@ struct PreflightBenchWindow::Impl {
 	OBSEncoderAutoRelease bakeoff_encoder;
 	obs_data_t *bakeoff_audio_settings = nullptr;
 	obs_preflight_collector_t *collector = nullptr;
+	LoupeView *loupe_view = nullptr;
+	PreflightLoupeCapture loupe_capture;
 	obs_preflight_engine_t *engine = nullptr;
 	obs_preflight_engine_t *bakeoff_engine = nullptr;
 	obs_preflight_bakeoff_t *bakeoff_planner = nullptr;
@@ -267,6 +560,7 @@ struct PreflightBenchWindow::Impl {
 
 	~Impl()
 	{
+		StopLoupe();
 		if (sample_timer) {
 			sample_timer->stop();
 		}
@@ -292,6 +586,7 @@ struct PreflightBenchWindow::Impl {
 
 	void StopOutputs(const QString &status, const QString &completion_status = QString())
 	{
+		StopLoupe();
 		bench_running = false;
 		restart_stream_when_stopped = false;
 		restart_was_active = false;
@@ -307,6 +602,38 @@ struct PreflightBenchWindow::Impl {
 		run_button->setText(QObject::tr("Stopping…"));
 		SetStatus(status);
 		sample_timer->start(100);
+	}
+
+	void UpdateLoupe()
+	{
+		if (loupe_view) {
+			loupe_view->SetPair(loupe_capture.LatestPair());
+		}
+		if (loupe_status_label) {
+			loupe_status_label->setText(QString::fromStdString(loupe_capture.Status()));
+		}
+	}
+
+	void StartLoupe(obs_encoder_t *encoder)
+	{
+		if (!stream_output || !encoder) {
+			return;
+		}
+		if (loupe_capture.Start(stream_output, encoder)) {
+			loupe_timer->start(100);
+		} else if (loupe_timer) {
+			loupe_timer->stop();
+		}
+		UpdateLoupe();
+	}
+
+	void StopLoupe()
+	{
+		if (loupe_timer) {
+			loupe_timer->stop();
+		}
+		loupe_capture.Stop();
+		UpdateLoupe();
 	}
 
 	void FinishStopping()
@@ -732,7 +1059,8 @@ struct PreflightBenchWindow::Impl {
 		auto *charts_scroll = new QScrollArea(splitter);
 		charts_scroll->setWidgetResizable(true);
 		auto *chart_container = new QWidget(charts_scroll);
-		auto *chart_layout = new QGridLayout(chart_container);
+		auto *chart_column = new QVBoxLayout(chart_container);
+		auto *chart_layout = new QGridLayout;
 		chart_layout->setSpacing(8);
 		AddChart(chart_layout, 0, 0, 0, QObject::tr("CPU"), {QObject::tr("CPU")}, {QColor("#60a5fa")});
 		AddChart(chart_layout, 0, 1, 1, QObject::tr("Render time vs frame interval"),
@@ -748,6 +1076,16 @@ struct PreflightBenchWindow::Impl {
 		AddChart(chart_layout, 3, 0, 6, QObject::tr("Congestion"), {QObject::tr("%")}, {QColor("#38bdf8")});
 		AddChart(chart_layout, 3, 1, 7, QObject::tr("Connect time"), {QObject::tr("ms")}, {QColor("#facc15")});
 		chart_layout->setRowStretch(4, 1);
+		chart_column->addLayout(chart_layout, 1);
+
+		auto *loupe_group = new QGroupBox(QObject::tr("400% source vs encoded-frame loupe"), chart_container);
+		auto *loupe_layout = new QVBoxLayout(loupe_group);
+		loupe_status_label = new QLabel(QObject::tr("Loupe is waiting for the live bench."), loupe_group);
+		loupe_status_label->setWordWrap(true);
+		loupe_view = new LoupeView(loupe_group);
+		loupe_layout->addWidget(loupe_status_label);
+		loupe_layout->addWidget(loupe_view, 1);
+		chart_column->addWidget(loupe_group, 0);
 		charts_scroll->setWidget(chart_container);
 		splitter->addWidget(charts_scroll);
 		splitter->setStretchFactor(0, 0);
@@ -946,6 +1284,7 @@ struct PreflightBenchWindow::Impl {
 							 : final_reason);
 		bakeoff_table->scrollToItem(bakeoff_table->item(static_cast<int>(active_bakeoff_row), 0));
 		bakeoff_waiting_for_stop = true;
+		StopLoupe();
 		if (stream_output && obs_output_active(stream_output)) {
 			obs_output_stop(stream_output);
 			sample_timer->start(100);
@@ -959,6 +1298,7 @@ struct PreflightBenchWindow::Impl {
 
 	void FinishBakeoff(bool cancelled)
 	{
+		StopLoupe();
 		if (stream_output && !obs_output_active(stream_output)) {
 			obs_output_set_video_encoder(stream_output, stream_video_encoder);
 		}
@@ -1088,6 +1428,7 @@ struct PreflightBenchWindow::Impl {
 		}
 
 		obs_output_set_video_encoder(stream_output, bakeoff_encoder);
+		StartLoupe(bakeoff_encoder);
 		if (!obs_output_start(stream_output)) {
 			CompleteBakeoffCandidate(
 				OBS_PREFLIGHT_FAIL,
@@ -1117,6 +1458,7 @@ struct PreflightBenchWindow::Impl {
 			bakeoff_candidate_active = false;
 		}
 		bakeoff_waiting_for_stop = true;
+		StopLoupe();
 		if (stream_output && obs_output_active(stream_output)) {
 			obs_output_stop(stream_output);
 			sample_timer->start(100);
@@ -1181,6 +1523,7 @@ struct PreflightBenchWindow::Impl {
 			return;
 		}
 		if (stream_output && obs_output_active(stream_output)) {
+			StopLoupe();
 			restart_stream_when_stopped = true;
 			restart_was_active = true;
 			obs_output_stop(stream_output);
@@ -1191,7 +1534,9 @@ struct PreflightBenchWindow::Impl {
 		if (restart_stream_when_stopped && restart_was_active && stream_output) {
 			restart_stream_when_stopped = false;
 			restart_was_active = false;
+			StartLoupe(stream_video_encoder);
 			if (!obs_output_start(stream_output)) {
+				StopLoupe();
 				SetStatus(output_error(stream_output, QObject::tr("Stream test could not restart.")));
 			} else {
 				SetStatus(QObject::tr("Stream test restarted; local recording was not interrupted."));
@@ -1207,6 +1552,9 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent) : QDialog(parent), i
 	impl->sample_timer = new QTimer(this);
 	impl->sample_timer->setInterval(static_cast<int>(SAMPLE_WINDOW_MS));
 	connect(impl->sample_timer, &QTimer::timeout, this, &PreflightBenchWindow::Sample);
+	impl->loupe_timer = new QTimer(this);
+	impl->loupe_timer->setInterval(100);
+	connect(impl->loupe_timer, &QTimer::timeout, this, [this]() { impl->UpdateLoupe(); });
 	impl->settings_timer = new QTimer(this);
 	impl->settings_timer->setSingleShot(true);
 	connect(impl->settings_timer, &QTimer::timeout, this, &PreflightBenchWindow::ApplyEncoderSettings);
@@ -1261,6 +1609,7 @@ void PreflightBenchWindow::ToggleBench()
 		impl->SetStatus(output_error(impl->recording_output, tr("Local recording could not start.")));
 		return;
 	}
+	impl->StartLoupe(impl->stream_video_encoder);
 	if (!obs_output_start(impl->stream_output)) {
 		const QString error = output_error(impl->stream_output, tr("Non-public stream test could not start."));
 		impl->StopOutputs(tr("Stopping the local recording after the stream test failed."), error);
