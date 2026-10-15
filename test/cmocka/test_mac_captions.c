@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <string.h>
 #include <time.h>
 #include <cmocka.h>
@@ -9,7 +10,8 @@
 #include <obs-internal.h>
 #include <caption/eia608.h>
 
-#include "test_mac_captions_api.h"
+#include "../../plugins/mac-captions/captions-filter.h"
+#include "../../plugins/mac-captions/speech-transcriber.h"
 
 #define TEST_SAMPLE_RATE 48000
 #define TEST_FRAMES 480
@@ -33,6 +35,7 @@ struct fake_transcriber {
 	bool fixture_ok;
 	bool sample_rate_ok;
 	bool running;
+	unsigned emitted_words;
 };
 
 struct fake_output {
@@ -45,8 +48,8 @@ static void *fake_create(void *factory_data)
 	return factory_data;
 }
 
-static bool fake_start(void *session, uint32_t sample_rate,
-		       void (*word)(void *, const char *, double, double), void *param)
+static bool fake_start(void *session, uint32_t sample_rate, void (*word)(void *, const char *, double, double),
+		       void *param)
 {
 	struct fake_transcriber *fake = session;
 	fake->sample_rate_ok = sample_rate == TEST_SAMPLE_RATE;
@@ -54,27 +57,30 @@ static bool fake_start(void *session, uint32_t sample_rate,
 	if (!fixture)
 		return false;
 	while (fake->word_count < sizeof(fake->words) / sizeof(fake->words[0]) &&
-	       fscanf(fixture, "%lf %31s", &fake->words[fake->word_count].at_sec,
-		      fake->words[fake->word_count].text) == 2)
+	       fscanf(fixture, "%lf %31s", &fake->words[fake->word_count].at_sec, fake->words[fake->word_count].text) ==
+		       2)
 		++fake->word_count;
 	fake->fixture_ok = !ferror(fixture) && fake->word_count == 3;
 	fclose(fixture);
+	bool ok = fake->sample_rate_ok && fake->fixture_ok;
 	pthread_mutex_lock(&fake->mutex);
-	fake->word = word;
-	fake->word_param = param;
-	fake->running = true;
-	++fake->starts;
+	if (ok) {
+		fake->word = word;
+		fake->word_param = param;
+		fake->running = true;
+		++fake->starts;
+	}
 	pthread_cond_broadcast(&fake->cond);
 	pthread_mutex_unlock(&fake->mutex);
-	return fake->sample_rate_ok && fake->fixture_ok;
+	return ok;
 }
 
 static bool fake_push(void *session, const float *mono, uint32_t frames, uint64_t timestamp_ns)
 {
 	struct fake_transcriber *fake = session;
-	assert_non_null(mono);
-	assert_true(frames > 0);
 	pthread_mutex_lock(&fake->mutex);
+	if (!mono || !frames)
+		fake->fixture_ok = false;
 	fake->frames_seen += frames;
 	double end = (double)timestamp_ns / 1e9 + (double)frames / TEST_SAMPLE_RATE;
 	struct fake_word_event due[8];
@@ -87,8 +93,13 @@ static bool fake_push(void *session, const float *mono, uint32_t frames, uint64_
 	pthread_cond_broadcast(&fake->cond);
 	pthread_mutex_unlock(&fake->mutex);
 
-	for (size_t i = 0; word && i < due_count; ++i)
+	for (size_t i = 0; word && i < due_count; ++i) {
 		word(param, due[i].text, due[i].at_sec, due[i].at_sec + 0.12);
+		pthread_mutex_lock(&fake->mutex);
+		++fake->emitted_words;
+		pthread_cond_broadcast(&fake->cond);
+		pthread_mutex_unlock(&fake->mutex);
+	}
 	return true;
 }
 
@@ -210,7 +221,7 @@ static void test_file_audio_tap_enable_disable_rollup_and_output(void **state)
 	(void)state;
 	struct fake_transcriber fake;
 	init_fake(&fake);
-	struct mac_captions_core *core = mac_captions_core_create(&fake_ops, &fake, TEST_SAMPLE_RATE, 1, false);
+	struct mac_captions_core *core = mac_captions_core_create(&fake_ops, &fake, NULL, TEST_SAMPLE_RATE, 1, false);
 	assert_non_null(core);
 
 	assert_true(feed_fixture(core, MAC_CAPTIONS_AUDIO_FIXTURE) >= TEST_SAMPLE_RATE);
@@ -223,7 +234,10 @@ static void test_file_audio_tap_enable_disable_rollup_and_output(void **state)
 	assert_true(fake.fixture_ok);
 	assert_true(feed_fixture(core, MAC_CAPTIONS_AUDIO_FIXTURE) >= TEST_SAMPLE_RATE);
 	wait_for_frames(&fake, TEST_SAMPLE_RATE);
+	assert_true(fake.fixture_ok);
+	assert_true(fake.running);
 	assert_true(mac_captions_core_is_running(core));
+	wait_for_counter(&fake, &fake.emitted_words, 3);
 
 	struct fake_output output = {0};
 	pthread_mutex_init(&output.track.caption_mutex, NULL);
@@ -241,9 +255,29 @@ static void test_file_audio_tap_enable_disable_rollup_and_output(void **state)
 	assert_int_equal(triplet[0], 0xFC);
 	uint16_t pair = (uint16_t)((triplet[1] << 8) | triplet[2]);
 	assert_int_equal(pair, eia608_control_command(eia608_control_erase_display_memory, 0));
+	char hello[] = "hello";
+	char from[] = "from";
+	char fixture[] = "fixture";
+	uint16_t hello_pair = eia608_from_utf8_2(&hello[0], &hello[1]);
+	uint16_t from_pair = eia608_from_utf8_2(&from[0], &from[1]);
+	uint16_t fixture_pair = eia608_from_utf8_2(&fixture[0], &fixture[1]);
+	bool saw_hello = false;
+	bool saw_from = false;
+	bool saw_fixture = false;
+	while (output.track.caption_data.size >= sizeof(triplet)) {
+		deque_pop_front(&output.track.caption_data, triplet, sizeof(triplet));
+		pair = (uint16_t)((triplet[1] << 8) | triplet[2]);
+		saw_hello |= pair == hello_pair;
+		saw_from |= pair == from_pair;
+		saw_fixture |= pair == fixture_pair;
+	}
+	assert_true(saw_hello);
+	assert_true(saw_from);
+	assert_true(saw_fixture);
 
 	mac_captions_core_set_enabled(core, false);
 	wait_for_counter(&fake, &fake.stops, 1);
+	assert_false(fake.running);
 	assert_false(mac_captions_core_is_running(core));
 	assert_false(mac_captions_core_drain_one(core, deliver_caption_to_output, &output.output));
 	assert_int_equal(fake.starts, 1);
@@ -254,10 +288,95 @@ static void test_file_audio_tap_enable_disable_rollup_and_output(void **state)
 	destroy_fake(&fake);
 }
 
+struct transcript_capture {
+	char text[2048];
+	size_t length;
+};
+
+static void capture_word(void *param, const char *text, double start_sec, double end_sec)
+{
+	(void)start_sec;
+	(void)end_sec;
+	struct transcript_capture *capture = param;
+	if (capture->length && capture->length + 1 < sizeof(capture->text))
+		capture->text[capture->length++] = ' ';
+	for (const char *p = text; *p && capture->length + 1 < sizeof(capture->text); ++p)
+		capture->text[capture->length++] = *p;
+	capture->text[capture->length] = '\0';
+}
+
+static size_t normalized_words(const char *text, char words[][64], size_t capacity)
+{
+	size_t count = 0;
+	while (*text && count < capacity) {
+		while (*text && !isalnum((unsigned char)*text))
+			++text;
+		size_t length = 0;
+		while (*text && isalnum((unsigned char)*text)) {
+			if (length + 1 < sizeof(words[count]))
+				words[count][length++] = (char)tolower((unsigned char)*text);
+			++text;
+		}
+		if (length) {
+			words[count][length] = '\0';
+			++count;
+		}
+	}
+	return count;
+}
+
+static void test_real_speech_file_transcript(void **state)
+{
+	(void)state;
+	int32_t status = mac_captions_speech_asset_status();
+	if (status != MAC_CAPTIONS_ASSETS_INSTALLED) {
+		print_message("SKIP real speech: en_US SpeechTranscriber asset is not installed (status=%d)\n", status);
+		skip();
+	}
+
+	struct transcript_capture capture = {0};
+	assert_int_equal(mac_captions_speech_transcribe_file(MAC_CAPTIONS_SPEECH_FIXTURE, capture_word, &capture), 0);
+	FILE *reference_file = fopen(MAC_CAPTIONS_REFERENCE_FIXTURE, "r");
+	assert_non_null(reference_file);
+	char reference[4096] = {0};
+	assert_non_null(fgets(reference, sizeof(reference), reference_file));
+	fclose(reference_file);
+
+	char hypothesis_words[128][64] = {{0}};
+	char reference_words[128][64] = {{0}};
+	size_t hypothesis_count = normalized_words(capture.text, hypothesis_words, 128);
+	size_t reference_count = normalized_words(reference, reference_words, 128);
+	assert_true(reference_count > 0);
+	assert_true(hypothesis_count > 0);
+
+	unsigned distance[129][129] = {{0}};
+	for (size_t i = 0; i <= hypothesis_count; ++i)
+		distance[i][0] = (unsigned)i;
+	for (size_t j = 0; j <= reference_count; ++j)
+		distance[0][j] = (unsigned)j;
+	for (size_t i = 1; i <= hypothesis_count; ++i) {
+		for (size_t j = 1; j <= reference_count; ++j) {
+			unsigned substitution =
+				distance[i - 1][j - 1] + (strcmp(hypothesis_words[i - 1], reference_words[j - 1]) != 0);
+			unsigned deletion = distance[i - 1][j] + 1;
+			unsigned insertion = distance[i][j - 1] + 1;
+			distance[i][j] = substitution < deletion ? substitution : deletion;
+			if (insertion < distance[i][j])
+				distance[i][j] = insertion;
+		}
+	}
+	double wer = (double)distance[hypothesis_count][reference_count] / (double)reference_count;
+	print_message("real speech transcript: %zu words; reference: %zu words; WER %.1f%%\n", hypothesis_count,
+		      reference_count, wer * 100.0);
+	print_message("hypothesis: %s\n", capture.text);
+	assert_true(wer <= 0.50);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_file_audio_tap_enable_disable_rollup_and_output),
+		cmocka_unit_test(test_real_speech_file_transcript),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
