@@ -14,6 +14,35 @@ struct TestCase {
 
 int main()
 {
+	struct ModeCase {
+		const char *name;
+		std::string service;
+		preflight::UplinkTestMode expected;
+	};
+
+	const std::vector<ModeCase> modes = {
+		{"twitch bandwidth mode", "Twitch", preflight::UplinkTestMode::TwitchBandwidth},
+		{"ivs bandwidth mode", "Amazon IVS", preflight::UplinkTestMode::AmazonIvsBandwidth},
+		{"restream ingest mode", "Restream.io", preflight::UplinkTestMode::RestreamBandwidth},
+		{"youtube rtmp throwaway mode", "YouTube - RTMP", preflight::UplinkTestMode::YouTubeThrowawayStream},
+		{"youtube rtmps throwaway mode", "YouTube - RTMPS", preflight::UplinkTestMode::YouTubeThrowawayStream},
+		{"youtube hls throwaway mode", "YouTube - HLS", preflight::UplinkTestMode::YouTubeThrowawayStream},
+		{"kick uses cloudflare only", "Kick", preflight::UplinkTestMode::CloudflareSpeedOnly},
+		{"rumble uses cloudflare only", "Rumble", preflight::UplinkTestMode::CloudflareSpeedOnly},
+		{"custom uses cloudflare only", "Custom RTMP", preflight::UplinkTestMode::CloudflareSpeedOnly},
+	};
+
+	int failures = 0;
+	for (const auto &test : modes) {
+		const auto actual = preflight::uplink_test_mode_for_service(test.service);
+		if (actual != test.expected) {
+			std::cerr << "FAIL " << test.name << '\n';
+			++failures;
+		} else {
+			std::cout << "PASS " << test.name << '\n';
+		}
+	}
+
 	const std::vector<TestCase> cases = {
 		{"twitch bandwidth test", "Twitch", "live_example", "live_example?bandwidthtest"},
 		{"preserve existing query", "Amazon IVS", "key?region=west", "key?region=west&bandwidthtest"},
@@ -24,7 +53,6 @@ int main()
 		{"reject empty key", "Twitch", "", std::nullopt},
 	};
 
-	int failures = 0;
 	for (const auto &test : cases) {
 		const auto actual = preflight::make_non_public_test_key(test.service, test.key);
 		if (actual != test.expected) {
