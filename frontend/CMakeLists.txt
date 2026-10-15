@@ -43,6 +43,8 @@ if(ENABLE_UNIT_TESTS)
   add_executable(test_preflight_test_mode tests/test_preflight_test_mode.cpp preflight/preflight-test-mode.cpp)
   target_include_directories(test_preflight_test_mode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
   add_test(NAME test_preflight_test_mode COMMAND test_preflight_test_mode)
+  add_executable(test_preflight_loupe tests/test_preflight_loupe.cpp tests/preflight-loupe-red-stub.cpp)
+  add_test(NAME test_preflight_loupe COMMAND test_preflight_loupe)
   add_executable(test_config_migration tests/test_config_migration.cpp)
   target_include_directories(test_config_migration PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   foreach(
