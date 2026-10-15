@@ -139,11 +139,5 @@ const REVERSE_ROW_MAP: [u16; 16] = [2, 3, 4, 5, 10, 11, 12, 13, 14, 15, 0, 6, 7,
 pub fn row_column_preamble(row: usize, col: usize, underline: bool) -> u16 {
     let row = REVERSE_ROW_MAP[row & 0x0f];
     let indent = (((col / 4) & 7) as u16) << 1;
-    parity(
-        0x1050
-            | ((row << 7) & 0x0700)
-            | ((row << 5) & 0x0020)
-            | indent
-            | u16::from(underline),
-    )
+    parity(0x1050 | ((row << 7) & 0x0700) | ((row << 5) & 0x0020) | indent | u16::from(underline))
 }
