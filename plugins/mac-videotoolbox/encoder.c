@@ -382,8 +382,10 @@ static OSStatus session_set_colorspace(VTCompressionSessionRef session, enum vid
 		values[4] = contentLightLevel;
 	}
 
-	CFDictionaryRef session_properties = CFDictionaryCreate(
-		kCFAllocatorDefault, keys, values, 5, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	const CFIndex property_count = (cs == VIDEO_CS_2100_PQ || cs == VIDEO_CS_2100_HLG) ? 5 : 3;
+	CFDictionaryRef session_properties =
+		CFDictionaryCreate(kCFAllocatorDefault, keys, values, property_count, &kCFTypeDictionaryKeyCallBacks,
+				   &kCFTypeDictionaryValueCallBacks);
 
 	code = VTSessionSetProperties(session, session_properties);
 
@@ -957,7 +959,6 @@ static bool convert_sample_to_annexb(struct vt_encoder *enc, struct darray *pack
 
 	if (keyframe && !handle_keyframe(enc, format_desc, param_count, packet, extra_data))
 		return false;
-
 	CMBlockBufferRef block = CMSampleBufferGetDataBuffer(buffer);
 	convert_block_nals_to_annexb(enc, packet, block, nal_length_bytes);
 
