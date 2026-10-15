@@ -65,6 +65,7 @@ if(ENABLE_UNIT_TESTS)
     add_executable(
       test_preflight_ui_render
       tests/test_preflight_ui_render.cpp
+      OBSApp_Themes.cpp
       preflight/obs-preflight-collector.c
       preflight/preflight-apply-plan.cpp
       preflight/preflight-bench-window.cpp
@@ -72,6 +73,8 @@ if(ENABLE_UNIT_TESTS)
       preflight/preflight-loupe-core.cpp
       preflight/preflight-cloudflare-speed-test.cpp
       preflight/preflight-test-mode.cpp
+      utility/OBSProxyStyle.cpp
+      utility/OBSProxyStyle.hpp
     )
     set_target_properties(
       test_preflight_ui_render
@@ -85,7 +88,11 @@ if(ENABLE_UNIT_TESTS)
     )
     target_compile_definitions(
       test_preflight_ui_render
-      PRIVATE PREFLIGHT_UI_RENDER_TEST=1 PREFLIGHT_GOLDEN_DIR=\"${CMAKE_SOURCE_DIR}/rust/obs-preflight/tests/golden\"
+      PRIVATE
+        PREFLIGHT_UI_RENDER_TEST=1
+        PREFLIGHT_THEME_RENDER_TEST=1
+        PREFLIGHT_GOLDEN_DIR=\"${CMAKE_SOURCE_DIR}/rust/obs-preflight/tests/golden\"
+        PREFLIGHT_THEME_DIR=\"${CMAKE_SOURCE_DIR}/frontend/data/themes\"
     )
     target_link_libraries(
       test_preflight_ui_render
