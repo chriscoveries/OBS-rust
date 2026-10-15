@@ -42,12 +42,14 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScreen>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStandardPaths>
@@ -183,8 +185,10 @@ class CombinedMetricChart final : public QWidget {
 	std::vector<CombinedChartSeries> series;
 	std::vector<ChartHoverSample> hover_samples;
 	QRectF plot_rect;
-	int emphasized_row = -1;
 	int hovered_index = -1;
+	int hovered_series_row = -1;
+	qreal hovered_fraction = 0.0;
+	double plot_maximum = 120.0;
 
 	static double nice_step(double raw_step)
 	{
@@ -205,10 +209,11 @@ public:
 	explicit CombinedMetricChart(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName(QStringLiteral("preflight-combined-chart"));
-		setMinimumHeight(260);
+		setMinimumHeight(230);
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 		setMouseTracking(true);
 		setProperty("preflightStartsAtZero", true);
+		setProperty("preflightHoverOverlay", false);
 	}
 
 	void SetSeries(std::vector<CombinedChartSeries> values)
@@ -217,18 +222,20 @@ public:
 		update();
 	}
 
-	void SetEmphasizedRow(int row)
-	{
-		emphasized_row = row;
-		setProperty("preflightEmphasizedRow", row);
-		update();
-	}
-
 	void SetHoverSamples(std::vector<ChartHoverSample> values)
 	{
+		const bool was_hovered = hovered_index >= 0;
 		hover_samples = std::move(values);
-		hovered_index = -1;
-		setProperty("preflightHoverText", QString());
+		if (was_hovered && !hover_samples.empty()) {
+			hovered_index = std::clamp(qRound(hovered_fraction * (hover_samples.size() - 1)), 0,
+					   static_cast<int>(hover_samples.size()) - 1);
+		} else {
+			hovered_index = -1;
+			hovered_series_row = -1;
+		}
+		setProperty("preflightHoverIndex", hovered_index);
+		setProperty("preflightHoveredSeriesRow", hovered_series_row);
+		setProperty("preflightHoverText", hover_text());
 		update();
 	}
 
@@ -238,8 +245,17 @@ protected:
 		QPainter painter(this);
 		painter.setRenderHint(QPainter::Antialiasing);
 		painter.fillRect(rect(), palette().color(QPalette::Base));
-		const QRectF plot = QRectF(rect()).adjusted(54, 24, -10, -16);
+		constexpr qreal HOVER_READOUT_HEIGHT = 74.0;
+		const bool show_hover_readout = hovered_index >= 0 &&
+						hovered_index < static_cast<int>(hover_samples.size());
+		const QRectF plot = QRectF(rect()).adjusted(54, 24 + (show_hover_readout ? HOVER_READOUT_HEIGHT : 0.0), -10,
+					    -16);
 		plot_rect = plot;
+		setProperty("preflightHoverBandHeight", show_hover_readout ? HOVER_READOUT_HEIGHT : 0.0);
+		setProperty("preflightHoverDetailCount",
+			     show_hover_readout ? static_cast<int>(hover_samples[static_cast<size_t>(hovered_index)].lines.size())
+					: 0);
+		setProperty("preflightPlotTop", plot.top());
 		setProperty("preflightPlotWidth", qRound(plot.width()));
 		setProperty("preflightPlotHeight", qRound(plot.height()));
 		QStringList series_names;
@@ -266,6 +282,7 @@ protected:
 		// Preserve the specified 120% floor; above it, round the data maximum to a clean tick.
 		const double axis_step = data_maximum <= 120.0 ? 30.0 : nice_step(data_maximum / 4.0);
 		const double maximum = data_maximum <= 120.0 ? 120.0 : std::ceil(data_maximum / axis_step) * axis_step;
+		plot_maximum = maximum;
 		QStringList y_axis_labels;
 		painter.setPen(palette().color(QPalette::Mid));
 		for (double value = maximum; value >= -0.001; value -= axis_step) {
@@ -300,7 +317,6 @@ protected:
 		setProperty("preflightLimitLine", true);
 		setProperty("preflightLimitLabel", QStringLiteral("Limit"));
 		setProperty("preflightLimitLineY", limit_y);
-		setProperty("preflightEmphasizedRow", emphasized_row);
 
 		for (const auto &line : series) {
 			if (line.points.size() < 2) {
@@ -325,14 +341,15 @@ protected:
 				}
 			}
 			QColor stroke = line.color;
-			const bool emphasized = emphasized_row < 0 || line.table_row == emphasized_row;
+			const int active_emphasis = hovered_series_row;
+			const bool emphasized = active_emphasis < 0 || line.table_row == active_emphasis;
 			if (!emphasized) {
 				stroke.setAlpha(72);
 			}
-			painter.setPen(QPen(stroke, emphasized_row == line.table_row ? 3.4 : 1.8));
+			painter.setPen(QPen(stroke, active_emphasis == line.table_row ? 3.4 : 1.8));
 			painter.drawPath(path);
 		}
-		if (hovered_index >= 0 && static_cast<size_t>(hovered_index) < hover_samples.size()) {
+		if (show_hover_readout) {
 			const auto &sample = hover_samples[static_cast<size_t>(hovered_index)];
 			const qreal x = plot.left() + plot.width() * hovered_index /
 							      std::max(1, static_cast<int>(hover_samples.size()) - 1);
@@ -350,36 +367,27 @@ protected:
 				painter.setBrush(line.color);
 				painter.drawEllipse(QPointF(x, y), 4.0, 4.0);
 			}
-
-			QStringList tooltip_lines{sample.time};
-			for (const auto &line : sample.lines) {
-				tooltip_lines.push_back(line.text);
-			}
-			const QString tooltip_text = tooltip_lines.join(QLatin1Char('\n'));
-			setProperty("preflightHoverText", tooltip_text);
-			QFont tooltip_font = font();
-			tooltip_font.setPointSizeF(std::max(8.0, tooltip_font.pointSizeF() - 3.0));
-			const QFontMetrics metrics(tooltip_font);
-			painter.setFont(tooltip_font);
-			int text_width = 0;
-			for (const QString &line : tooltip_lines) {
-				text_width = std::max(text_width, metrics.horizontalAdvance(line));
-			}
-			const int line_height = metrics.height() + 2;
-			const QRectF panel(std::max(plot.left() + 8, plot.right() - text_width - 30), 3,
-					   text_width + 20, line_height * tooltip_lines.size() + 12);
-			painter.setPen(palette().color(QPalette::Mid));
-			painter.setBrush(palette().color(QPalette::Base));
-			painter.drawRoundedRect(panel, 3, 3);
+			QFont readout_font = font();
+			readout_font.setPointSizeF(std::max(7.5, readout_font.pointSizeF() - 2.0));
+			const QFontMetrics metrics(readout_font);
+			painter.setFont(readout_font);
 			painter.setPen(palette().color(QPalette::Text));
-			painter.drawText(QPointF(panel.left() + 10, panel.top() + 6 + metrics.ascent()), sample.time);
-			qreal text_y = panel.top() + 6 + line_height + metrics.ascent();
-			for (const auto &line : sample.lines) {
-				painter.setPen(line.swatch);
-				painter.drawText(QPointF(panel.left() + 10, text_y), QStringLiteral("■"));
-				painter.setPen(line.text_color);
-				painter.drawText(QPointF(panel.left() + 25, text_y), line.text);
-				text_y += line_height;
+			painter.drawText(QRectF(7, 1, width() - 14, metrics.height() + 2), Qt::AlignLeft | Qt::AlignVCenter,
+					 sample.time);
+			const qreal left_column = 8;
+			const qreal right_column = width() / 2.0 + 4;
+			const qreal row_top = metrics.height() + 5;
+			const qreal row_step = (HOVER_READOUT_HEIGHT - row_top - 1) / 4.0;
+			for (size_t index = 0; index < sample.lines.size(); ++index) {
+				const qreal column = (index % 2) == 0 ? left_column : right_column;
+				const qreal y = row_top + row_step * static_cast<qreal>(index / 2);
+				const QRectF line_bounds(column, y, width() / 2.0 - 14, row_step);
+				painter.setPen(sample.lines[index].swatch);
+				painter.drawText(line_bounds, Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("■"));
+				painter.setPen(sample.lines[index].text_color);
+				const qreal swatch_width = metrics.horizontalAdvance(QStringLiteral("■ "));
+				painter.drawText(line_bounds.adjusted(swatch_width, 0, 0, 0),
+						 Qt::AlignLeft | Qt::AlignVCenter, sample.lines[index].text);
 			}
 		}
 		if (!has_points) {
@@ -391,26 +399,55 @@ protected:
 	void mouseMoveEvent(QMouseEvent *event) override
 	{
 		if (hover_samples.empty() || !plot_rect.contains(event->position())) {
-			hovered_index = -1;
-			setProperty("preflightHoverIndex", -1);
-			setProperty("preflightHoverText", QString());
-			update();
 			return;
 		}
 		const qreal fraction = (event->position().x() - plot_rect.left()) / plot_rect.width();
+		hovered_fraction = std::clamp(fraction, 0.0, 1.0);
 		hovered_index = std::clamp(qRound(fraction * (hover_samples.size() - 1)), 0,
 					   static_cast<int>(hover_samples.size()) - 1);
+		qreal nearest_distance = 10.0;
+		hovered_series_row = -1;
+		for (const auto &line : series) {
+			if (static_cast<size_t>(hovered_index) >= line.points.size() ||
+			    !line.points[static_cast<size_t>(hovered_index)]) {
+				continue;
+			}
+			const qreal sample_y = plot_rect.bottom() -
+					       plot_rect.height() * (*line.points[static_cast<size_t>(hovered_index)] / plot_maximum);
+			const qreal distance = std::abs(event->position().y() - sample_y);
+			if (distance < nearest_distance) {
+				nearest_distance = distance;
+				hovered_series_row = line.table_row;
+			}
+		}
 		setProperty("preflightHoverIndex", hovered_index);
+		setProperty("preflightHoveredSeriesRow", hovered_series_row);
+		setProperty("preflightHoverText", hover_text());
 		update();
 	}
 
 	void leaveEvent(QEvent *event) override
 	{
 		hovered_index = -1;
+		hovered_series_row = -1;
 		setProperty("preflightHoverIndex", -1);
+		setProperty("preflightHoveredSeriesRow", -1);
 		setProperty("preflightHoverText", QString());
 		update();
 		QWidget::leaveEvent(event);
+	}
+
+private:
+	QString hover_text() const
+	{
+		if (hovered_index < 0 || static_cast<size_t>(hovered_index) >= hover_samples.size()) {
+			return {};
+		}
+		QStringList lines{hover_samples[static_cast<size_t>(hovered_index)].time};
+		for (const auto &line : hover_samples[static_cast<size_t>(hovered_index)].lines) {
+			lines.push_back(line.text);
+		}
+		return lines.join(QLatin1Char('\n'));
 	}
 };
 
@@ -552,14 +589,16 @@ protected:
 		painter.fillRect(rect(), palette().color(QPalette::Base));
 		const QRectF bounds = QRectF(rect()).adjusted(2, 2, -2, -2);
 		const qreal gap = 5;
-		const qreal preview_width = std::max<qreal>(260, bounds.width() * 0.60);
-		const qreal zoom_width = (bounds.width() - preview_width - gap * 3) / 3;
+		const qreal preview_width = bounds.width() * 0.60;
+		const qreal zoom_width = bounds.width() - preview_width - gap;
+		const qreal zoom_height = (bounds.height() - gap * 2) / 3;
 		setProperty("preflightMainPreviewShare", preview_width / bounds.width());
 		preview_panel = QRectF(bounds.left(), bounds.top(), preview_width, bounds.height());
-		source_zoom_panel = QRectF(preview_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
-		encoded_zoom_panel = QRectF(source_zoom_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
-		recording_zoom_panel =
-			QRectF(encoded_zoom_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
+		source_zoom_panel = QRectF(preview_panel.right() + gap, bounds.top(), zoom_width, zoom_height);
+		encoded_zoom_panel = QRectF(preview_panel.right() + gap, source_zoom_panel.bottom() + gap, zoom_width,
+					    zoom_height);
+		recording_zoom_panel = QRectF(preview_panel.right() + gap, encoded_zoom_panel.bottom() + gap, zoom_width,
+					      zoom_height);
 		for (const QRectF &panel :
 		     {preview_panel, source_zoom_panel, encoded_zoom_panel, recording_zoom_panel}) {
 			painter.setPen(palette().color(QPalette::Mid));
@@ -929,7 +968,6 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	obs_preflight_candidate_plan active_candidate{};
 	std::array<MetricRowWidgets, 8> metric_rows;
 	QLabel *throughput_summary_label = nullptr;
-	int emphasized_chart_row = -1;
 	QElapsedTimer bakeoff_elapsed;
 	QString supported_test_mode;
 	QString recording_path;
@@ -2817,14 +2855,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			metric_table->setCellWidget(static_cast<int>(row / 2), static_cast<int>(row % 2), cell);
 			metric_rows[row] = {swatch, value, suffix};
 		}
-		connect(metric_table, &QTableWidget::cellClicked, dialog, [this](int row, int column) {
-			const int metric_index = row * 2 + column;
-			if (metric_index < 0 || metric_index >= 7 || !combined_chart) {
-				return;
-			}
-			emphasized_chart_row = emphasized_chart_row == metric_index ? -1 : metric_index;
-			combined_chart->SetEmphasizedRow(emphasized_chart_row);
-		});
+		metric_table->setVisible(false);
 		ResizeMetricTableToContents();
 		auto *metrics_group = new QGroupBox(QObject::tr("Live stats"), right_side);
 		metrics_group->setObjectName(QStringLiteral("preflight-metrics"));
@@ -2838,6 +2869,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		throughput_summary_label = new QLabel(QObject::tr("Waiting"), metrics_group);
 		throughput_summary_label->setObjectName(QStringLiteral("preflight-throughput-summary"));
 		setClasses(throughput_summary_label, "text-muted");
+		throughput_summary_label->setVisible(false);
 		metrics_layout->addWidget(throughput_summary_label, 0);
 		right_layout->addWidget(metrics_group);
 
@@ -2849,14 +2881,16 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		loupe_status_label->setWordWrap(true);
 		loupe_view = new LoupeView(preview_group);
 		loupe_view->setObjectName(QStringLiteral("preflight-loupe-view"));
-		loupe_view->setMinimumHeight(125);
-		loupe_view->setMaximumHeight(400);
+		loupe_view->setMinimumHeight(175);
+		loupe_view->setMaximumHeight(450);
 		preview_layout->addWidget(loupe_view, 1);
 		preview_layout->addWidget(loupe_status_label);
 		right_layout->insertWidget(0, preview_group, 2);
 		auto *impact_group = new QGroupBox(QObject::tr("Impact"), right_side);
 		impact_group->setObjectName(QStringLiteral("preflight-impact-group"));
 		auto *impact_layout = new QVBoxLayout(impact_group);
+		impact_layout->setContentsMargins(2, 1, 2, 2);
+		impact_layout->setSpacing(0);
 		impact_table = new QTableWidget(0, 5, impact_group);
 		impact_table->setObjectName(QStringLiteral("preflight-impact-list"));
 		impact_table->setHorizontalHeaderLabels({QObject::tr("Change"), QObject::tr("Before"),
@@ -2866,6 +2900,12 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		impact_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		impact_table->setWordWrap(true);
 		impact_table->setTextElideMode(Qt::ElideNone);
+		QFont impact_font = impact_table->font();
+		impact_font.setPointSizeF(8.0);
+		impact_table->setFont(impact_font);
+		QFont impact_header_font = impact_font;
+		impact_header_font.setPointSizeF(7.5);
+		impact_table->horizontalHeader()->setFont(impact_header_font);
 		auto *impact_header = impact_table->horizontalHeader();
 		impact_header->setStretchLastSection(false);
 		impact_header->setSectionResizeMode(0, QHeaderView::Fixed);
@@ -2883,8 +2923,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		impact_layout->addWidget(impact_table);
 		right_layout->addWidget(impact_group);
 		// Keep Impact at its content height; use the remaining pixels for the preview and chart.
-		right_layout->setStretch(0, 5);
-		right_layout->setStretch(1, 6);
+		right_layout->setStretch(0, 7);
+		right_layout->setStretch(1, 5);
 		right_layout->setStretch(2, 0);
 
 		auto *stream_group = new QGroupBox(QObject::tr("Stream encoder"), settings);
@@ -3352,18 +3392,21 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					 : 0.0) /
 				1000.0;
 			sample.time = QStringLiteral("t −%1 s").arg(relative_seconds, 0, 'f', 1);
-			QString cpu_gpu = QStringLiteral("CPU %1 %").arg(sample_point.cpu_percent, 0, 'f', 1);
+			sample.lines.push_back({QStringLiteral("CPU %1 %").arg(sample_point.cpu_percent, 0, 'f', 1),
+						series_colors[0], dialog->palette().color(QPalette::Text)});
 			if (sample_point.gpu_percent) {
-				cpu_gpu += QStringLiteral(" · GPU %1 %").arg(*sample_point.gpu_percent, 0, 'f', 1);
+				sample.lines.push_back({QStringLiteral("GPU %1 %").arg(*sample_point.gpu_percent, 0, 'f', 1),
+							series_colors[1], dialog->palette().color(QPalette::Text)});
 			} else {
-				cpu_gpu += QObject::tr(" · GPU unavailable");
+				sample.lines.push_back({QObject::tr("GPU unavailable"), series_colors[1],
+								 dialog->palette().color(QPalette::Text)});
 			}
-			sample.lines.push_back({cpu_gpu, series_colors[0], dialog->palette().color(QPalette::Text)});
-			add_line(sample, QObject::tr("Render"),
-				 QStringLiteral("%1 ms (%2 % of %3 ms)")
-					 .arg(sample_point.average_frame_time_ms, 0, 'f', 2)
-					 .arg(sample_render_ratio * 100.0, 0, 'f', 0)
-					 .arg(sample_interval, 0, 'f', 2),
+		add_line(sample, QObject::tr("Render"),
+			 QStringLiteral("%1 ms · %2 % of interval (warn %3 · danger %4 ms)")
+				 .arg(sample_point.average_frame_time_ms, 0, 'f', 2)
+				 .arg(sample_render_ratio * 100.0, 0, 'f', 0)
+				 .arg(sample_interval * OBS_RENDER_WARNING_FRACTION, 0, 'f', 2)
+				 .arg(sample_interval * OBS_RENDER_DANGER_FRACTION, 0, 'f', 2),
 				 QString(), 2,
 				 sample_band(sample_render_ratio, OBS_RENDER_WARNING_FRACTION,
 					     OBS_RENDER_DANGER_FRACTION));
@@ -3401,6 +3444,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				 6,
 				 sample_band(sample_point.congestion_percent, OBS_CONGESTION_WARNING_PERCENT,
 					     OBS_CONGESTION_DANGER_PERCENT));
+			const bool no_encoder_frames = sample_point.encoder_frames == 0;
+		const QColor encoder_status_color =
+			no_encoder_frames ? status_color("text-danger") : dialog->palette().color(QPalette::Mid);
+		sample.lines.push_back({QStringLiteral("Encoder %1%2 frames")
+							.arg(no_encoder_frames ? QStringLiteral("✕ ") : QString())
+							.arg(sample_point.encoder_frames),
+						encoder_status_color, no_encoder_frames ? encoder_status_color
+										     : dialog->palette().color(QPalette::Text)});
 			sample.lines.push_back({QStringLiteral("Bitrate %1 kb/s · connect %2 ms")
 							.arg(sample_point.bitrate_kbps, 0, 'f', 0)
 							.arg(sample_point.connect_time_ms, 0, 'f', 0),
@@ -3975,7 +4026,9 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 {
 	setObjectName(QStringLiteral("preflight-bench-window"));
 	setWindowTitle(tr("Preflight"));
-	resize(1040, 960);
+	const QSize preferred_size(1040, 720);
+	const QScreen *screen = QGuiApplication::primaryScreen();
+	resize(screen ? preferred_size.boundedTo(screen->availableGeometry().size()) : preferred_size);
 	impl->sample_timer = new QTimer(this);
 	impl->sample_timer->setInterval(static_cast<int>(SAMPLE_WINDOW_MS));
 	connect(impl->sample_timer, &QTimer::timeout, this, &PreflightBenchWindow::Sample);

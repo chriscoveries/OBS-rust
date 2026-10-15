@@ -2,6 +2,8 @@
 #include "../preflight/preflight-apply-plan.hpp"
 
 #include <QApplication>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QAbstractScrollArea>
 #include <QCheckBox>
 #include <QDir>
@@ -687,9 +689,15 @@ int main(int argc, char **argv)
 							     {{QStringLiteral("OutputCX"), 1280}});
 
 		PreflightBenchWindow window(recorded);
-		window.resize(1040, 960);
+		const QSize default_size = window.size();
+		const QScreen *primary_screen = QGuiApplication::primaryScreen();
+		require(primary_screen && default_size == QSize(1040, 720).boundedTo(
+											    primary_screen->availableGeometry().size()),
+			"default window size is not clamped to the available screen geometry");
+		window.resize(1040, 720);
 		window.show(); // Qt's offscreen platform keeps this out of the display.
 		QApplication::processEvents();
+		require(window.size() == QSize(1040, 720), "1040×720 render fixture was resized unexpectedly");
 
 		QLabel *verdict_label = window.findChild<QLabel *>(QStringLiteral("preflight-verdict"));
 		QLabel *reason_label = window.findChild<QLabel *>(QStringLiteral("preflight-reason"));
@@ -739,7 +747,7 @@ int main(int argc, char **argv)
 				impact_list->item(0, 4)->text() == QStringLiteral("Complete") &&
 				impact_list->item(1, 2)->text() == QStringLiteral("Settling") &&
 				impact_list->item(1, 4)->text() == QStringLiteral("Settling") &&
-				impact_list->rowHeight(0) >= 36 && impact_list->rowHeight(1) >= 30,
+				impact_list->rowHeight(0) >= 28 && impact_list->rowHeight(1) >= 22,
 			"impact rows are missing their before/after values, deltas or settling state");
 		QApplication::processEvents();
 		const int impact_content_height = impact_list->horizontalHeader()->sizeHint().height() +
@@ -747,17 +755,18 @@ int main(int argc, char **argv)
 						  impact_list->frameWidth() * 2;
 		require(impact_list->verticalScrollBar()->maximum() == 0 &&
 				impact_list->height() >= impact_content_height - 2,
-			"both impact rows are not fully visible at 1040×960");
+			"both impact rows are not fully visible at 1040×720");
 		auto *impact_group = window.findChild<QWidget *>(QStringLiteral("preflight-impact-group"));
 		require(impact_group && impact_group->isVisible() &&
 				impact_group->geometry().bottom() <= right_side->height(),
-			"impact table group is clipped below the 1040×960 right column");
+			"impact table group is clipped below the 1040×720 right column");
 
 		auto *metric_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-metric-table"));
-		require(metric_table && metric_table->rowCount() == 4 && metric_table->columnCount() == 2 &&
+		require(metric_table && !metric_table->isVisible() && metric_table->rowCount() == 4 &&
+				metric_table->columnCount() == 2 &&
 				metric_table->horizontalHeader()->isHidden() &&
 				metric_table->horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOff,
-			"Live stats are not presented as a compact two-column legend");
+			"chart legend is visible before the user hovers over a sample");
 		for (int index = 0; index < 8; ++index) {
 			require(window.findChild<QLabel *>(QStringLiteral("preflight-metric-value-%1").arg(index)) &&
 					window.findChild<QLabel *>(
@@ -777,14 +786,14 @@ int main(int argc, char **argv)
 				reason_label->text().contains(QStringLiteral("1%")),
 			"legend limits and verdict threshold do not agree or their sources are missing from tooltips");
 		auto *combined_chart = window.findChild<QWidget *>(QStringLiteral("preflight-combined-chart"));
-		require(combined_chart && combined_chart->isVisible() && combined_chart->minimumHeight() >= 260 &&
+		require(combined_chart && combined_chart->isVisible() && combined_chart->minimumHeight() >= 220 &&
 				combined_chart->property("preflightStartsAtZero").toBool(),
 			"combined normalized chart is missing or too small");
 		combined_chart->repaint();
 		auto *loupe_widget = window.findChild<QWidget *>(QStringLiteral("preflight-loupe-view"));
 		require(loupe_widget && loupe_widget->property("preflightMainPreviewShare").toDouble() >= 0.59 &&
-				combined_chart->height() > metric_table->height(),
-			"main preview or chart did not receive the space freed by the compact legend");
+				combined_chart->height() > 200,
+			"main preview or chart did not receive the space freed by the hidden legend");
 		loupe_widget->repaint();
 		const int render_scale = qRound(loupe_widget->devicePixelRatioF());
 		const int preview_width_px =
@@ -795,11 +804,11 @@ int main(int argc, char **argv)
 		const int plot_height_px = combined_chart->property("preflightPlotHeight").toInt() * render_scale;
 		std::cout << "2x PNG geometry: stream " << preview_width_px << "×" << preview_height_px
 			  << " px; chart plot " << plot_width_px << "×" << plot_height_px << " px\n";
-		// The 2d25ba671 Yami render measured about 250×190 px for the stream pattern.
-		// Its chart minimum (220 logical px minus 44 px of plot margins) is 352 px at 2x.
-		require(render_scale == 2 && preview_width_px >= 360 && preview_height_px >= 270 &&
-				plot_width_px >= 1280 && plot_height_px >= 440,
-			"the 1040×960 render must provide a larger stream image and chart plot area");
+		// The 2d25ba671 render measured about 250×190 px for the stream pattern and had
+		// a 352 px plot at 2x. Keep both priorities larger at the laptop-sized 1040×720 default.
+		require(render_scale == 2 && preview_width_px >= 440 && preview_height_px >= 330 &&
+				plot_width_px >= 1280 && plot_height_px >= 360,
+			"the 1040×720 render must provide a larger stream image and chart plot area");
 		QStringList axis = combined_chart->property("preflightYAxisLabels").toStringList();
 		require(axis.size() == 5 && axis.front() == QStringLiteral("120") &&
 				axis.back() == QStringLiteral("0") &&
@@ -831,29 +840,40 @@ int main(int argc, char **argv)
 		auto *gpu_value = window.findChild<QLabel *>(QStringLiteral("preflight-metric-value-1"));
 		require(gpu_value && gpu_value->text() == QStringLiteral("GPU 54.0 %"),
 			"GPU row did not show the recorded utilization sample");
-		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0),
-					  Q_ARG(int, 1));
-		QApplication::processEvents();
-		require(combined_chart->property("preflightEmphasizedRow").toInt() == 1,
-			"clicking the GPU legend row did not emphasize its series");
-		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0),
-					  Q_ARG(int, 1));
-		QApplication::processEvents();
-		require(combined_chart->property("preflightEmphasizedRow").toInt() == -1,
-			"clicking the emphasized row again did not restore all series");
-		const QPoint hover_position(combined_chart->width() / 2 + 22, combined_chart->height() / 2);
+		const qreal base_plot_top = combined_chart->property("preflightPlotTop").toDouble();
+		const qreal base_plot_height = combined_chart->property("preflightPlotHeight").toDouble();
+		const int hover_y = qRound(base_plot_top + base_plot_height * (1.0 - 70.0 / 120.0));
+		const QPoint hover_position(combined_chart->width() / 2 + 22, hover_y);
 		QMouseEvent hover_event(QEvent::MouseMove, QPointF(hover_position), QPointF(hover_position),
 					Qt::NoButton, Qt::NoButton, Qt::NoModifier);
 		QApplication::sendEvent(combined_chart, &hover_event);
 		QApplication::processEvents();
 		const QString expected_hover =
-			QStringLiteral("t −2.0 s\nCPU 70.0 % · GPU 54.0 %\nRender 7.00 ms (42 % of 16.67 ms)\n"
+			QStringLiteral("t −2.0 s\nCPU 70.0 %\nGPU 54.0 %\n"
+				       "Render 7.00 ms · 42 % of interval (warn 12.50 · danger 16.67 ms)\n"
 				       "Missed 0.00 % · Skipped 0.00 % (warn 1% · danger 5%)\n"
 				       "Dropped ▲ 3.33 % (warn 1% · danger 5%)\n"
 				       "Congestion ▲ 35.0 % (warn 33.33% · danger 66.67%)\n"
+				       "Encoder 60 frames\n"
 				       "Bitrate 1600 kb/s · connect 50 ms");
 		require(combined_chart->property("preflightHoverText").toString() == expected_hover,
 			"chart hover content is not a deterministic sample at the nearest time point");
+		require(combined_chart->property("preflightHoveredSeriesRow").toInt() == 0,
+			"hovering the CPU series did not emphasize that line");
+		combined_chart->repaint();
+		require(combined_chart->property("preflightHoverDetailCount").toInt() == 8 &&
+				!combined_chart->property("preflightHoverOverlay").toBool() &&
+				combined_chart->property("preflightHoverBandHeight").toDouble() == 74.0 &&
+				combined_chart->property("preflightPlotTop").toDouble() >=
+					combined_chart->property("preflightHoverBandHeight").toDouble() + 24.0,
+			"hover detail does not fit in its reserved band above the plot");
+		const QPoint readout_band_position(12, 10);
+		QMouseEvent move_to_readout(QEvent::MouseMove, QPointF(readout_band_position),
+					    QPointF(readout_band_position), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+		QApplication::sendEvent(combined_chart, &move_to_readout);
+		QApplication::processEvents();
+		require(combined_chart->property("preflightHoverText").toString() == expected_hover,
+			"moving from the plot into the readout band cleared the hovered sample");
 
 		obs_preflight_window over_limit{};
 		over_limit.end_ms = 1000;
@@ -896,10 +916,14 @@ int main(int argc, char **argv)
 			"inline bake-off leaves empty space below its table");
 		auto *settings_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-settings-scroll"));
 		require(settings_scroll, "settings viewport is missing");
+		settings_scroll->verticalScrollBar()->setValue(bakeoff_group->y());
+		QApplication::processEvents();
 		const QRect bakeoff_in_viewport(bakeoff_group->mapTo(settings_scroll->viewport(), QPoint(0, 0)),
 						bakeoff_group->size());
 		require(settings_scroll->viewport()->rect().contains(bakeoff_in_viewport),
-			"the complete bake-off results are not visible at the default window size");
+			"the bake-off table cannot be scrolled fully into view at the 1040×720 default");
+		settings_scroll->verticalScrollBar()->setValue(0);
+		QApplication::processEvents();
 		for (int row = 0; row < table->rowCount(); ++row) {
 			const QString expected_reason =
 				row == 0 ? QStringLiteral("All OBS limits met")
@@ -938,20 +962,14 @@ int main(int argc, char **argv)
 						   ? QCoreApplication::applicationDirPath()
 						   : qEnvironmentVariable("PREFLIGHT_UI_OUTPUT_DIR");
 		require(QDir().mkpath(output_dir), "could not create PNG output directory");
-		const QString yami_screenshot = QStringLiteral("preflight-yami-emphasized-2x.png");
-		const QString yami_apply_screenshot = QStringLiteral("preflight-yami-apply-state-2x.png");
-		const QString yami_hover_screenshot = QStringLiteral("preflight-yami-hover-2x.png");
-		const QString system_screenshot = QStringLiteral("preflight-system-one-screen-2x.png");
-		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0),
-					  Q_ARG(int, 0));
-		QApplication::processEvents();
+		const QString yami_default_screenshot = QStringLiteral("preflight-yami-1040x720-2x.png");
+		const QString yami_apply_screenshot = QStringLiteral("preflight-yami-apply-1040x720-2x.png");
+		const QString yami_hover_screenshot = QStringLiteral("preflight-yami-hover-1040x720-2x.png");
+		const QString system_screenshot = QStringLiteral("preflight-system-1040x720-2x.png");
 		QEvent leave_chart(QEvent::Leave);
 		QApplication::sendEvent(combined_chart, &leave_chart);
 		QApplication::processEvents();
-		save_png(window, QDir(output_dir).filePath(yami_screenshot));
-		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0),
-					  Q_ARG(int, 0));
-		QApplication::processEvents();
+		save_png(window, QDir(output_dir).filePath(yami_default_screenshot));
 		QMouseEvent hover_render_event(QEvent::MouseMove, QPointF(hover_position), QPointF(hover_position),
 					       Qt::NoButton, Qt::NoButton, Qt::NoModifier);
 		QApplication::sendEvent(combined_chart, &hover_render_event);
@@ -960,13 +978,13 @@ int main(int argc, char **argv)
 		QApplication::sendEvent(combined_chart, &leave_chart);
 		QApplication::processEvents();
 		require(combined_chart->property("preflightHoverText").toString().isEmpty(),
-			"chart hover panel remains visible after the pointer leaves");
+			"chart hover readout remains visible after the pointer leaves");
+		require(combined_chart->property("preflightHoveredSeriesRow").toInt() == -1,
+			"series emphasis remains after the pointer leaves the chart");
 		auto *apply_button = window.findChild<QPushButton *>(QStringLiteral("preflight-apply-button"));
 		auto *apply_note = window.findChild<QLabel *>(QStringLiteral("preflight-apply-note"));
 		require(settings_scroll && apply_group && apply_group->isVisible() && apply_button && apply_note,
 			"settings scroll area or Apply preview is missing");
-		window.resize(1500, 1280);
-		QApplication::processEvents();
 		settings_scroll->verticalScrollBar()->setValue(settings_scroll->verticalScrollBar()->maximum());
 		QApplication::processEvents();
 		const QPoint apply_button_position = apply_button->mapTo(settings_scroll->viewport(), QPoint(0, 0));
@@ -996,7 +1014,7 @@ int main(int argc, char **argv)
 		failed.windows = stale_windows;
 		failed.gpu_samples.resize(stale_windows.size(), preflight::gpu::Sample{54.0, 41.0, 28.0, 16.0});
 		PreflightBenchWindow fail_window(failed);
-		fail_window.resize(1040, 960);
+		fail_window.resize(1040, 720);
 		fail_window.show();
 		QApplication::processEvents();
 		auto *fail_verdict = fail_window.findChild<QLabel *>(QStringLiteral("preflight-verdict"));
@@ -1007,14 +1025,14 @@ int main(int argc, char **argv)
 		auto *encoder_frames = fail_window.findChild<QLabel *>(QStringLiteral("preflight-metric-value-7"));
 		require(encoder_frames && encoder_frames->text() == QStringLiteral("Encoder ✕ 0 frames"),
 			"Fail reason is missing the zero-frame encoder status row");
-		const QString fail_screenshot = QStringLiteral("preflight-yami-fail-state-2x.png");
+		const QString fail_screenshot = QStringLiteral("preflight-yami-fail-1040x720-2x.png");
 		save_png(fail_window, QDir(output_dir).filePath(fail_screenshot));
-		const QString emphasized_path = QDir(output_dir).filePath(yami_screenshot);
+		const QString default_path = QDir(output_dir).filePath(yami_default_screenshot);
 		const QString apply_path = QDir(output_dir).filePath(yami_apply_screenshot);
 		const QString fail_path = QDir(output_dir).filePath(fail_screenshot);
 		const QString hover_path = QDir(output_dir).filePath(yami_hover_screenshot);
-		require(!same_image(emphasized_path, apply_path) && !same_image(emphasized_path, fail_path) &&
-				!same_image(apply_path, fail_path) && !same_image(hover_path, emphasized_path) &&
+		require(!same_image(default_path, apply_path) && !same_image(default_path, fail_path) &&
+				!same_image(apply_path, fail_path) && !same_image(hover_path, default_path) &&
 				!same_image(hover_path, apply_path) && !same_image(hover_path, fail_path),
 			"the emphasized, post-Apply, Fail and hover renders must all be distinct images");
 
