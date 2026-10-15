@@ -1,0 +1,7 @@
+add_executable(test_hdr_recording_properties test_hdr_recording_properties.c)
+target_link_libraries(test_hdr_recording_properties PRIVATE OBS::libobs)
+if(NOT MSVC)
+  target_link_libraries(test_hdr_recording_properties PRIVATE m)
+endif()
+add_dependencies(cmocka-tests test_hdr_recording_properties)
+add_test(NAME test_hdr_recording_properties COMMAND test_hdr_recording_properties)

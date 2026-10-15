@@ -28,7 +28,7 @@ int main(void)
 	CHECK(!hdr_recording_profile_init(&p, true, 0, 0, 203, 1000, NAN));
 	CHECK(!hdr_recording_profile_init(&p, true, 0, 5, 203, 1000, 80));
 	CHECK(!hdr_recording_profile_init(&p, true, 0, 0, 400, 400, 80));
-	CHECK(!hdr_recording_profile_init(&p, true, 0, 0, 203, 2000.1, 80));
+	CHECK(!hdr_recording_profile_init(&p, true, 0, 0, 203, 1000.1, 80));
 	CHECK(!hdr_recording_profile_init(&p, true, 0, 0, 79, 1000, 80));
 	CHECK(!hdr_recording_profile_init(&p, true, 0, 0, 203, 1000, 49));
 	CHECK(!hdr_recording_profile_init(NULL, true, 0, 0, 203, 1000, 80));
@@ -42,7 +42,8 @@ int main(void)
 	unsigned long samples = 0;
 	const double knees[] = {50, 80, 95};
 	for (int mode = 0; mode <= 1; ++mode) {
-		for (int peak = 400; peak <= 2000; peak += 100) {
+		for (int peak_step = 0; peak_step <= 16; ++peak_step) {
+			const double peak = 400.0 + 37.5 * peak_step;
 			for (int k = 0; k < 3; ++k) {
 				CHECK(hdr_recording_profile_init(&p, true, mode, 0, 203, peak, knees[k]));
 				double previous = -1.0;
