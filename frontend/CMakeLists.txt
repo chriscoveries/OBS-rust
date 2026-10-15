@@ -51,6 +51,55 @@ if(ENABLE_UNIT_TESTS)
     set_property(TARGET test_preflight_loupe PROPERTY XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME NO)
   endif()
   add_test(NAME test_preflight_loupe COMMAND test_preflight_loupe)
+  if(TARGET obs-preflight-rust)
+    if(NOT TARGET OBS::properties-view)
+      add_subdirectory("${CMAKE_SOURCE_DIR}/shared/properties-view" "${CMAKE_BINARY_DIR}/shared/properties-view")
+    endif()
+    add_executable(
+      test_preflight_ui_render
+      tests/test_preflight_ui_render.cpp
+      preflight/obs-preflight-collector.c
+      preflight/preflight-bench-window.cpp
+      preflight/preflight-loupe-capture.cpp
+      preflight/preflight-loupe-core.cpp
+      preflight/preflight-test-mode.cpp
+    )
+    set_target_properties(
+      test_preflight_ui_render
+      PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON
+    )
+    target_include_directories(
+      test_preflight_ui_render
+      PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/preflight"
+        "${CMAKE_CURRENT_BINARY_DIR}/test_preflight_ui_render_autogen/include_$<CONFIG>"
+    )
+    target_compile_definitions(
+      test_preflight_ui_render
+      PRIVATE PREFLIGHT_GOLDEN_DIR=\"${CMAKE_SOURCE_DIR}/rust/obs-preflight/tests/golden\"
+    )
+    target_link_libraries(
+      test_preflight_ui_render
+      PRIVATE
+        "${OBS_PREFLIGHT_ARCHIVE}"
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+        FFmpeg::avcodec
+        FFmpeg::avutil
+        FFmpeg::swscale
+        OBS::frontend-api
+        OBS::libobs
+        OBS::properties-view
+    )
+    add_dependencies(test_preflight_ui_render obs-preflight-rust)
+    if(OS_MACOS)
+      get_filename_component(_preflight_ui_ffmpeg_lib_dir "${FFmpeg_avcodec_LIBRARY}" DIRECTORY)
+      target_link_options(test_preflight_ui_render PRIVATE "LINKER:-rpath,${_preflight_ui_ffmpeg_lib_dir}")
+      set_property(TARGET test_preflight_ui_render PROPERTY XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME NO)
+    endif()
+    add_test(NAME test_preflight_ui_render COMMAND test_preflight_ui_render)
+    set_tests_properties(test_preflight_ui_render PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_SCALE_FACTOR=2")
+  endif()
   add_executable(test_config_migration tests/test_config_migration.cpp)
   target_include_directories(test_config_migration PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   foreach(
