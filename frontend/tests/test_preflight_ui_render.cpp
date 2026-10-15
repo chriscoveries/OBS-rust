@@ -2,6 +2,7 @@
 #include "../preflight/preflight-apply-plan.hpp"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -11,6 +12,8 @@
 #include <QLabel>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QTemporaryDir>
@@ -169,6 +172,8 @@ static void test_apply_plans()
 {
 	using preflight::apply::BuildAdvancedPlan;
 	using preflight::apply::BuildSimplePlan;
+	using preflight::apply::AppendAdvancedEncoderChanges;
+	using preflight::apply::AppendConfigSectionChanges;
 	using preflight::apply::OutputMode;
 
 	const QJsonObject saved_encoder{{QStringLiteral("bitrate"), 6000},
@@ -234,8 +239,9 @@ static void test_apply_contract_regressions()
 	QTemporaryDir temporary(QDir::tempPath() + QStringLiteral("/preflight-apply-Ω-XXXXXX"));
 	require(temporary.isValid(), "could not create a Unicode temporary profile path");
 	const QString profile_path = temporary.path();
-	const TargetIdentity target{QStringLiteral("Préflight profile"), profile_path, QStringLiteral("obs_x264"),
-				    QStringLiteral("x264")};
+	const TargetIdentity target{QStringLiteral("Préflight profile"), profile_path,
+				    QStringLiteral("obs_x264"),          QStringLiteral("x264"),
+				    QStringLiteral("obs_x264"),          QStringLiteral("x264")};
 
 	const QString basic_ini = QDir(profile_path).filePath(QStringLiteral("basic.ini"));
 	const QByteArray basic_path_utf8 = basic_ini.toUtf8();
@@ -249,6 +255,8 @@ static void test_apply_contract_regressions()
 	config_set_string(config.get(), "SimpleOutput", "Preset", "veryfast");
 	config_set_bool(config.get(), "SimpleOutput", "UseAdvanced", false);
 	config_set_string(config.get(), "SimpleOutput", "RecQuality", "High");
+	config_set_string(config.get(), "SimpleOutput", "RecEncoder", "x264");
+	config_set_string(config.get(), "SimpleOutput", "RecFormat2", "hybrid_mp4");
 	require(config_save(config.get()) == CONFIG_SUCCESS, "could not seed temporary basic.ini");
 
 	const QJsonObject simple_saved{{QStringLiteral("VBitrate"), 2500},
@@ -287,6 +295,64 @@ static void test_apply_contract_regressions()
 			std::string(config_get_string(applied_config.get(), "SimpleOutput", "RecQuality")) == "High" &&
 			std::string(config_get_string(applied_config.get(), "Output", "Mode")) == "Simple",
 		"Simple Apply changed an unplanned basic.ini key or changed Output.Mode");
+
+	config_set_uint(applied_config.get(), "Video", "OutputCX", 1920);
+	config_set_uint(applied_config.get(), "Video", "OutputCY", 1080);
+	config_set_uint(applied_config.get(), "Video", "FPSType", 1);
+	config_set_uint(applied_config.get(), "Video", "FPSInt", 60);
+	config_set_string(applied_config.get(), "Video", "FPSCommon", "60");
+	config_set_uint(applied_config.get(), "Video", "FPSNum", 60);
+	config_set_uint(applied_config.get(), "Video", "FPSDen", 1);
+	require(config_save(applied_config.get()) == CONFIG_SUCCESS, "could not seed temporary simple Video settings");
+	const QJsonObject simple_composite_stream_saved{{QStringLiteral("VBitrate"), 4000},
+							{QStringLiteral("Preset"), QStringLiteral("fast")},
+							{QStringLiteral("UseAdvanced"), false}};
+	const QJsonObject simple_composite_stream_initial{{QStringLiteral("bitrate"), 4000},
+							  {QStringLiteral("preset"), QStringLiteral("fast")}};
+	const QJsonObject simple_composite_stream_edited{{QStringLiteral("bitrate"), 4500},
+							 {QStringLiteral("preset"), QStringLiteral("fast")}};
+	auto simple_composite = BuildSimplePlan(simple_composite_stream_saved, simple_composite_stream_initial,
+						simple_composite_stream_edited, QStringLiteral("x264"), false, target);
+	const QJsonObject simple_recording_saved{{QStringLiteral("RecQuality"), QStringLiteral("High")},
+						 {QStringLiteral("RecEncoder"), QStringLiteral("x264")},
+						 {QStringLiteral("RecFormat2"), QStringLiteral("hybrid_mp4")}};
+	const QJsonObject simple_recording_edited{{QStringLiteral("RecQuality"), QStringLiteral("HQ")},
+						  {QStringLiteral("RecEncoder"), QStringLiteral("x264")},
+						  {QStringLiteral("RecFormat2"), QStringLiteral("hybrid_mp4")}};
+	AppendConfigSectionChanges(simple_composite, QStringLiteral("SimpleOutput"), simple_recording_saved,
+				   simple_recording_edited);
+	const QJsonObject simple_video_saved{{QStringLiteral("OutputCX"), 1920},
+					     {QStringLiteral("OutputCY"), 1080},
+					     {QStringLiteral("FPSType"), 1},
+					     {QStringLiteral("FPSInt"), 60},
+					     {QStringLiteral("FPSCommon"), QStringLiteral("60")},
+					     {QStringLiteral("FPSNum"), 60},
+					     {QStringLiteral("FPSDen"), 1}};
+	const QJsonObject simple_video_edited{{QStringLiteral("OutputCX"), 1280},
+					      {QStringLiteral("OutputCY"), 720},
+					      {QStringLiteral("FPSType"), 1},
+					      {QStringLiteral("FPSInt"), 30},
+					      {QStringLiteral("FPSCommon"), QStringLiteral("60")},
+					      {QStringLiteral("FPSNum"), 60},
+					      {QStringLiteral("FPSDen"), 1}};
+	AppendConfigSectionChanges(simple_composite, QStringLiteral("Video"), simple_video_saved, simple_video_edited);
+	require(WriteSimpleConfig(applied_config.get(), simple_composite, simple_composite, &error),
+		"Simple Apply did not write the recording quality and Video plan to basic.ini");
+	config_close(applied_config.release());
+	reopened_basic = nullptr;
+	require(config_open(&reopened_basic, basic_path_utf8.constData(), CONFIG_OPEN_EXISTING) == CONFIG_SUCCESS &&
+			reopened_basic,
+		"could not reopen basic.ini after the composite Simple Apply");
+	applied_config.reset(reopened_basic);
+	require(std::string(config_get_string(applied_config.get(), "SimpleOutput", "RecQuality")) == "HQ" &&
+			std::string(config_get_string(applied_config.get(), "SimpleOutput", "RecEncoder")) == "x264" &&
+			std::string(config_get_string(applied_config.get(), "SimpleOutput", "RecFormat2")) ==
+				"hybrid_mp4" &&
+			config_get_uint(applied_config.get(), "Video", "OutputCX") == 1280 &&
+			config_get_uint(applied_config.get(), "Video", "OutputCY") == 720 &&
+			config_get_uint(applied_config.get(), "Video", "FPSInt") == 30 &&
+			std::string(config_get_string(applied_config.get(), "Output", "Mode")) == "Simple",
+		"Simple composite Apply changed unplanned keys or lost the output mode");
 
 	const QString stream_path = QDir(profile_path).filePath(QStringLiteral("streamEncoder.json"));
 	const QString record_path = QDir(profile_path).filePath(QStringLiteral("recordEncoder.json"));
@@ -348,6 +414,45 @@ static void test_apply_contract_regressions()
 	require(std::string(config_get_string(applied_config.get(), "Output", "Mode")) == "Advanced",
 		"Advanced mode did not persist in basic.ini");
 
+	const QJsonObject record_composite_saved{{QStringLiteral("crf"), 20},
+						 {QStringLiteral("profile"), QStringLiteral("high")},
+						 {QStringLiteral("untouched"), QStringLiteral("keep")}};
+	const QJsonObject record_composite_edited{{QStringLiteral("crf"), 18},
+						  {QStringLiteral("profile"), QStringLiteral("high")},
+						  {QStringLiteral("untouched"), QStringLiteral("keep")}};
+	const QJsonObject advanced_video_saved{{QStringLiteral("OutputCX"), 1920}, {QStringLiteral("OutputCY"), 1080},
+					       {QStringLiteral("FPSType"), 1},     {QStringLiteral("FPSInt"), 60},
+					       {QStringLiteral("FPSNum"), 60},     {QStringLiteral("FPSDen"), 1}};
+	const QJsonObject advanced_video_edited{{QStringLiteral("OutputCX"), 1280}, {QStringLiteral("OutputCY"), 720},
+						{QStringLiteral("FPSType"), 2},     {QStringLiteral("FPSInt"), 60},
+						{QStringLiteral("FPSNum"), 30000},  {QStringLiteral("FPSDen"), 1001}};
+	write_json(stream_path, advanced_saved);
+	write_json(record_path, record_composite_saved);
+	config_set_uint(applied_config.get(), "Video", "OutputCX", 1920);
+	config_set_uint(applied_config.get(), "Video", "OutputCY", 1080);
+	config_set_uint(applied_config.get(), "Video", "FPSType", 1);
+	config_set_uint(applied_config.get(), "Video", "FPSInt", 60);
+	config_set_uint(applied_config.get(), "Video", "FPSNum", 60);
+	config_set_uint(applied_config.get(), "Video", "FPSDen", 1);
+	require(config_save(applied_config.get()) == CONFIG_SUCCESS,
+		"could not seed temporary Advanced Video settings");
+	auto composite_advanced = BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited, target);
+	AppendAdvancedEncoderChanges(composite_advanced, QStringLiteral("recordEncoder.json"), record_composite_saved,
+				     record_composite_saved, record_composite_edited);
+	AppendConfigSectionChanges(composite_advanced, QStringLiteral("Video"), advanced_video_saved,
+				   advanced_video_edited);
+	require(WriteAdvancedSettings(applied_config.get(), composite_advanced, composite_advanced, &error),
+		"Advanced Apply did not write stream, recording and Video settings together");
+	const QJsonObject expected_record_composite{{QStringLiteral("crf"), 18},
+						    {QStringLiteral("profile"), QStringLiteral("high")},
+						    {QStringLiteral("untouched"), QStringLiteral("keep")}};
+	require(read_json(stream_path) == expected_advanced && read_json(record_path) == expected_record_composite &&
+			config_get_uint(applied_config.get(), "Video", "OutputCX") == 1280 &&
+			config_get_uint(applied_config.get(), "Video", "FPSNum") == 30000 &&
+			config_get_uint(applied_config.get(), "Video", "FPSDen") == 1001 &&
+			std::string(config_get_string(applied_config.get(), "Output", "Mode")) == "Advanced",
+		"Advanced composite Apply lost encoder keys, Video values or output mode");
+
 	TargetIdentity changed_profile = target;
 	changed_profile.profile_name = QStringLiteral("Other profile");
 	changed_profile.profile_path = QDir(profile_path).filePath(QStringLiteral("autre-配置"));
@@ -369,6 +474,14 @@ static void test_apply_contract_regressions()
 	require(!WriteAdvancedSettings(displayed_advanced, encoder_changed_plan, &error) &&
 			read_json(stream_path) == advanced_saved,
 		"Apply wrote settings after the configured encoder changed");
+	TargetIdentity changed_recording_encoder = target;
+	changed_recording_encoder.recording_encoder_id = QStringLiteral("obs_nvenc_h264_tex");
+	write_json(record_path, record_composite_saved);
+	const auto recording_encoder_changed_plan =
+		BuildAdvancedPlan(advanced_saved, advanced_initial, advanced_edited, changed_recording_encoder);
+	require(!WriteAdvancedSettings(displayed_advanced, recording_encoder_changed_plan, &error) &&
+			read_json(stream_path) == advanced_saved && read_json(record_path) == record_composite_saved,
+		"Apply wrote settings after the configured recording encoder changed");
 
 	const QString corrupt_stream_path = QDir(profile_path).filePath(QStringLiteral("streamEncoder.json"));
 	const QString corrupt_backup_path = corrupt_stream_path + QStringLiteral(".bak");
@@ -513,13 +626,25 @@ int main(int argc, char **argv)
 		PreflightBenchWindowRecordedData recorded;
 		recorded.windows = congested_windows;
 		recorded.bakeoff_rows = {
-			{QStringLiteral("Software encoder"), QStringLiteral("1920 × 1080"), QStringLiteral("60"),
-			 clean},
-			{QStringLiteral("Hardware encoder"), QStringLiteral("1920 × 1080"), QStringLiteral("60"),
-			 congested},
-			{QStringLiteral("Fallback encoder"), QStringLiteral("1280 × 720"), QStringLiteral("30"), stale},
+			{QStringLiteral("Software"), QStringLiteral("1080p"), QStringLiteral("60"), clean},
+			{QStringLiteral("Hardware"), QStringLiteral("1080p"), QStringLiteral("60"), congested},
+			{QStringLiteral("Fallback"), QStringLiteral("720p"), QStringLiteral("30"), stale},
 		};
 		recorded.loupe_pair = make_decoded_loupe_pair();
+		recorded.recording_loupe_pair = recorded.loupe_pair;
+		preflight::bench::ImpactEntry impact;
+		impact.id = 1;
+		impact.description = "Stream bitrate";
+		impact.key = "bitrate";
+		impact.old_value = "6000";
+		impact.new_value = "4500";
+		impact.state = preflight::bench::ImpactState::Complete;
+		impact.baseline = preflight::bench::MetricWindow{1, clean};
+		impact.after = preflight::bench::MetricWindow{2, congested};
+		impact.deltas = preflight::bench::CalculateImpactDelta(clean, congested);
+		recorded.impacts.push_back(impact);
+		recorded.toggles.push_back({"Live captions (on-device)", "macos-captions-filter", true, true,
+					    "Enabled immediately for this preview."});
 		recorded.apply_preview = preflight::apply::BuildAdvancedPlan(
 			{{QStringLiteral("bitrate"), 6000},
 			 {QStringLiteral("preset"), QStringLiteral("veryfast")},
@@ -532,9 +657,17 @@ int main(int argc, char **argv)
 			 {QStringLiteral("profile"), QStringLiteral("high")}},
 			{QStringLiteral("Demo profile"), QStringLiteral("recorded-profile"), QStringLiteral("obs_x264"),
 			 QStringLiteral("obs_x264")});
+		preflight::apply::AppendAdvancedEncoderChanges(
+			*recorded.apply_preview, QStringLiteral("recordEncoder.json"),
+			{{QStringLiteral("crf"), 20}, {QStringLiteral("profile"), QStringLiteral("high")}},
+			{{QStringLiteral("crf"), 20}, {QStringLiteral("profile"), QStringLiteral("high")}},
+			{{QStringLiteral("crf"), 18}, {QStringLiteral("profile"), QStringLiteral("high")}});
+		preflight::apply::AppendConfigSectionChanges(*recorded.apply_preview, QStringLiteral("Video"),
+							     {{QStringLiteral("OutputCX"), 1920}},
+							     {{QStringLiteral("OutputCX"), 1280}});
 
 		PreflightBenchWindow window(recorded);
-		window.resize(1040, 720);
+		window.resize(1500, 1280);
 		window.show(); // Qt's offscreen platform keeps this out of the display.
 		QApplication::processEvents();
 
@@ -552,6 +685,14 @@ int main(int argc, char **argv)
 		require(summary && one_screen && one_screen->count() == 2 && settings && right_side &&
 				window.findChildren<QTabWidget *>().empty(),
 			"Preflight must use the single-screen settings and preview layout without tabs");
+		auto *captions_toggle = window.findChild<QCheckBox *>(QStringLiteral("preflight-toggle-live-captions"));
+		auto *impact_list = window.findChild<QTableWidget *>(QStringLiteral("preflight-impact-list"));
+		require(captions_toggle && captions_toggle->isEnabled() && captions_toggle->isChecked() &&
+				impact_list && impact_list->rowCount() == 1 && impact_list->item(0, 4) &&
+				impact_list->item(0, 4)->text() == QStringLiteral("Complete") &&
+				impact_list->item(0, 3) &&
+				impact_list->item(0, 3)->text().contains(QStringLiteral("bitrate")),
+			"one-screen render omitted an enabled filter toggle or completed impact entry");
 
 		auto *metric_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-metric-table"));
 		require(metric_table && metric_table->rowCount() == 8 && metric_table->columnCount() == 4 &&
@@ -598,10 +739,15 @@ int main(int argc, char **argv)
 			"bitrate chart uses fractional tick values instead of round labels");
 
 		auto *table = window.findChild<QTableWidget *>(QStringLiteral("preflight-bakeoff-table"));
-		require(table && table->rowCount() == 3, "bake-off table does not show three engine results");
+		require(table && table->rowCount() == 3 && table->columnCount() == 3,
+			"bake-off table does not show compact candidate results");
+		require(table->columnWidth(2) >= table->cellWidget(0, 2)->sizeHint().width(),
+			"bake-off action column clips the Use these button");
 		require(table->wordWrap() &&
 				table->verticalHeader()->sectionResizeMode(0) == QHeaderView::ResizeToContents,
 			"bake-off reasons do not wrap into compact content-sized rows");
+		require(table->rowHeight(0) >= 48,
+			"bake-off rows do not reserve enough height for candidate details and the result reason");
 		const int bakeoff_content_height = table->horizontalHeader()->sizeHint().height() +
 						   table->verticalHeader()->length() + table->frameWidth() * 2;
 		require(table->height() <= bakeoff_content_height + 4,
@@ -610,22 +756,30 @@ int main(int argc, char **argv)
 		require(bakeoff_group && bakeoff_group->height() - table->geometry().bottom() <= 24,
 			"inline bake-off leaves empty space below its table");
 		for (int row = 0; row < table->rowCount(); ++row) {
-			require(table->item(row, 5) && table->item(row, 6) && !table->item(row, 6)->text().isEmpty(),
-				"bake-off row is missing its verdict or plain-language reason");
+			require(table->item(row, 1) &&
+					table->item(row, 1)->text().contains(row == 0   ? QStringLiteral("Pass")
+									     : row == 1 ? QStringLiteral("Marginal")
+											: QStringLiteral("Fail")) &&
+					table->item(row, 1)->text().contains(QStringLiteral("\n")) &&
+					qobject_cast<QPushButton *>(table->cellWidget(row, 2)) &&
+					qobject_cast<QPushButton *>(table->cellWidget(row, 2))->text() ==
+						QStringLiteral("Use these"),
+				"bake-off row is missing its metrics, reason or Use these action");
 		}
-		require(table->item(0, 5)->text() == QStringLiteral("Pass") &&
-				table->item(1, 5)->text() == QStringLiteral("Marginal") &&
-				table->item(2, 5)->text() == QStringLiteral("Fail"),
-			"bake-off verdicts do not match the engine results");
+		metric_table->clearSelection();
+		metric_table->setCurrentCell(-1, -1);
+		QApplication::processEvents();
 		QWidget *loupe_view = window.findChild<QWidget *>(QStringLiteral("preflight-loupe-view"));
 		require(loupe_view && window.findChild<QWidget *>(QStringLiteral("preflight-live-preview")),
 			"encoded preview or loupe widget is missing");
 		auto *apply_group = window.findChild<QWidget *>(QStringLiteral("preflight-apply-preview"));
 		auto *apply_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-apply-diff"));
-		require(apply_group && apply_table && apply_table->rowCount() == 2 &&
+		require(apply_group && apply_table && apply_table->rowCount() == 4 &&
 				apply_table->item(0, 0)->text() == QStringLiteral("streamEncoder.json/bitrate") &&
-				apply_table->item(1, 2)->text() == QStringLiteral("fast"),
-			"recorded Apply preview does not show the exact proposed config diff");
+				apply_table->item(1, 2)->text() == QStringLiteral("fast") &&
+				apply_table->item(2, 0)->text() == QStringLiteral("recordEncoder.json/crf") &&
+				apply_table->item(3, 0)->text() == QStringLiteral("Video.OutputCX"),
+			"recorded Apply preview does not show the exact stream, recording and Video diff");
 		const int apply_content_height = apply_table->horizontalHeader()->sizeHint().height() +
 						 apply_table->verticalHeader()->length() +
 						 apply_table->frameWidth() * 2;
@@ -637,14 +791,29 @@ int main(int argc, char **argv)
 						   : qEnvironmentVariable("PREFLIGHT_UI_OUTPUT_DIR");
 		require(QDir().mkpath(output_dir), "could not create PNG output directory");
 		const QString yami_screenshot = QStringLiteral("preflight-yami-one-screen-2x.png");
+		const QString yami_chart_screenshot = QStringLiteral("preflight-yami-chart-open-2x.png");
+		const QString yami_apply_screenshot = QStringLiteral("preflight-yami-apply-state-2x.png");
 		const QString system_screenshot = QStringLiteral("preflight-system-one-screen-2x.png");
-		metric_table->setCurrentCell(1, 0);
+		chart_detail_group->hide();
 		QApplication::processEvents();
 		save_png(window, QDir(output_dir).filePath(yami_screenshot));
+		metric_table->setCurrentCell(1, 0);
+		QApplication::processEvents();
+		save_png(window, QDir(output_dir).filePath(yami_chart_screenshot));
+		metric_table->setCurrentCell(-1, -1);
+		QApplication::processEvents();
+		auto *settings_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-settings-scroll"));
+		require(settings_scroll && apply_group, "settings scroll area or Apply preview is missing");
+		settings_scroll->ensureWidgetVisible(apply_group);
+		QApplication::processEvents();
+		require(!chart_detail_group->isVisible(), "Apply-state render unexpectedly keeps a metric chart open");
+		save_png(window, QDir(output_dir).filePath(yami_apply_screenshot));
 
 		require(ApplyOBSThemeForRenderTest(app, {QDir(theme_dir).filePath(QStringLiteral("System.obt"))},
 						   default_palette, &theme_error),
 			QStringLiteral("could not apply OBS System theme: %1").arg(theme_error).toUtf8().constData());
+		settings_scroll->verticalScrollBar()->setValue(0);
+		chart_detail_group->hide();
 		QApplication::processEvents();
 		save_png(window, QDir(output_dir).filePath(system_screenshot));
 

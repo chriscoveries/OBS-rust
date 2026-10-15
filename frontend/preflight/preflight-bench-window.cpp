@@ -21,7 +21,9 @@
 #endif
 
 #include <QColor>
+#include <QCheckBox>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
@@ -41,6 +43,7 @@
 #include <QPolygonF>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QTableWidget>
@@ -58,6 +61,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <map>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -359,13 +363,15 @@ protected:
 };
 
 class LoupeView final : public QWidget {
-	std::shared_ptr<const preflight::loupe::FramePair> pair;
+	std::shared_ptr<const preflight::loupe::FramePair> stream_pair;
+	std::shared_ptr<const preflight::loupe::FramePair> recording_pair;
 	std::optional<preflight::loupe::CropRegion> selection;
 	std::optional<preflight::loupe::CropRegion> dragging_region;
-	QRectF source_image_rect;
-	QRectF source_panel;
+	QRectF preview_image_rect;
+	QRectF preview_panel;
 	QRectF source_zoom_panel;
 	QRectF encoded_zoom_panel;
+	QRectF recording_zoom_panel;
 	QPoint drag_start;
 	QPoint moving_offset;
 	std::optional<preflight::loupe::PixelRect> moving_crop;
@@ -402,15 +408,15 @@ class LoupeView final : public QWidget {
 
 	std::optional<QPoint> source_point(const QPointF &point) const
 	{
-		if (!pair || !pair->source || !source_image_rect.contains(point) || source_image_rect.width() <= 0 ||
-		    source_image_rect.height() <= 0) {
+		if (!stream_pair || !stream_pair->source || !preview_image_rect.contains(point) ||
+		    preview_image_rect.width() <= 0 || preview_image_rect.height() <= 0) {
 			return std::nullopt;
 		}
-		const auto &frame = *pair->source;
+		const auto &frame = *stream_pair->source;
 		const uint32_t logical_width = source_width(frame);
 		const uint32_t logical_height = source_height(frame);
-		const qreal x = (point.x() - source_image_rect.left()) / source_image_rect.width();
-		const qreal y = (point.y() - source_image_rect.top()) / source_image_rect.height();
+		const qreal x = (point.x() - preview_image_rect.left()) / preview_image_rect.width();
+		const qreal y = (point.y() - preview_image_rect.top()) / preview_image_rect.height();
 		return QPoint(std::clamp(static_cast<int>(x * logical_width), 0, static_cast<int>(logical_width) - 1),
 			      std::clamp(static_cast<int>(y * logical_height), 0,
 					 static_cast<int>(logical_height) - 1));
@@ -418,7 +424,7 @@ class LoupeView final : public QWidget {
 
 	std::optional<preflight::loupe::CropRegion> bounded_drag_region(const QPoint &end) const
 	{
-		if (!pair || !pair->source) {
+		if (!stream_pair || !stream_pair->source) {
 			return std::nullopt;
 		}
 		const auto start = source_point(drag_start);
@@ -426,15 +432,15 @@ class LoupeView final : public QWidget {
 		if (!start || !finish) {
 			return std::nullopt;
 		}
-		const auto &frame = *pair->source;
+		const auto &frame = *stream_pair->source;
 		const uint32_t logical_width = source_width(frame);
 		const uint32_t logical_height = source_height(frame);
-		const int max_width = std::max(
-			1,
-			static_cast<int>((std::min(source_zoom_panel.width(), encoded_zoom_panel.width()) - 8) / 4.0));
-		const int max_height = std::max(
-			1, static_cast<int>((std::min(source_zoom_panel.height(), encoded_zoom_panel.height()) - 28) /
-					    4.0));
+		const qreal zoom_width =
+			std::min({source_zoom_panel.width(), encoded_zoom_panel.width(), recording_zoom_panel.width()});
+		const qreal zoom_height = std::min(
+			{source_zoom_panel.height(), encoded_zoom_panel.height(), recording_zoom_panel.height()});
+		const int max_width = std::max(1, static_cast<int>((zoom_width - 8) / 4.0));
+		const int max_height = std::max(1, static_cast<int>((zoom_height - 28) / 4.0));
 		int left = std::min(start->x(), finish->x());
 		int top = std::min(start->y(), finish->y());
 		int right = std::max(start->x(), finish->x());
@@ -489,37 +495,44 @@ protected:
 		painter.fillRect(rect(), palette().color(QPalette::Base));
 		const QRectF bounds = QRectF(rect()).adjusted(6, 5, -6, -6);
 		const qreal gap = 8;
-		const qreal preview_width = std::min<qreal>(190, std::max<qreal>(140, bounds.width() * 0.24));
-		const qreal zoom_width = (bounds.width() - preview_width - gap * 2) / 2;
-		source_panel = QRectF(bounds.left(), bounds.top(), preview_width, bounds.height());
-		source_zoom_panel = QRectF(source_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
+		const qreal preview_width = std::max<qreal>(260, bounds.width() * 0.46);
+		const qreal zoom_width = (bounds.width() - preview_width - gap * 3) / 3;
+		preview_panel = QRectF(bounds.left(), bounds.top(), preview_width, bounds.height());
+		source_zoom_panel = QRectF(preview_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
 		encoded_zoom_panel = QRectF(source_zoom_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
-		for (const QRectF &panel : {source_panel, source_zoom_panel, encoded_zoom_panel}) {
+		recording_zoom_panel =
+			QRectF(encoded_zoom_panel.right() + gap, bounds.top(), zoom_width, bounds.height());
+		for (const QRectF &panel :
+		     {preview_panel, source_zoom_panel, encoded_zoom_panel, recording_zoom_panel}) {
 			painter.setPen(palette().color(QPalette::Mid));
 			painter.drawRect(panel);
 		}
 		painter.setPen(palette().color(QPalette::Text));
-		painter.drawText(source_panel.adjusted(4, 2, -4, -4), Qt::AlignTop | Qt::AlignHCenter,
-				 tr("Source · drag to move"));
-		if (!pair || !pair->source || !pair->encoded) {
+		painter.drawText(preview_panel.adjusted(4, 2, -4, -4), Qt::AlignTop | Qt::AlignHCenter,
+				 tr("Stream · drag to select"));
+		if (!stream_pair || !stream_pair->source || !stream_pair->encoded) {
 			painter.drawText(bounds, Qt::AlignCenter, tr("Waiting for matching source and encoded frames"));
 			return;
 		}
 
-		const auto &source = *pair->source;
-		const auto &encoded = *pair->encoded;
-		const QRectF preview_bounds = source_panel.adjusted(5, 24, -5, -5);
-		source_image_rect = fitted_image_rect(preview_bounds, source);
+		const auto &source = *stream_pair->source;
+		const auto &encoded = *stream_pair->encoded;
+		const QRectF preview_bounds = preview_panel.adjusted(5, 24, -5, -5);
+		preview_image_rect = fitted_image_rect(preview_bounds, encoded);
 		painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
-		painter.drawImage(source_image_rect, image_for(source));
+		painter.drawImage(preview_image_rect, image_for(encoded));
 
 		if (!selection) {
 			const uint32_t logical_width = source_width(source);
 			const uint32_t logical_height = source_height(source);
-			const uint32_t visible_crop_width = static_cast<uint32_t>(std::max<qreal>(
-				1, (std::min(source_zoom_panel.width(), encoded_zoom_panel.width()) - 8) / 4.0));
-			const uint32_t visible_crop_height = static_cast<uint32_t>(std::max<qreal>(
-				1, (std::min(source_zoom_panel.height(), encoded_zoom_panel.height()) - 28) / 4.0));
+			const uint32_t visible_crop_width = static_cast<uint32_t>(
+				std::max<qreal>(1, (std::min({source_zoom_panel.width(), encoded_zoom_panel.width(),
+							      recording_zoom_panel.width()}) -
+						    8) / 4.0));
+			const uint32_t visible_crop_height = static_cast<uint32_t>(
+				std::max<qreal>(1, (std::min({source_zoom_panel.height(), encoded_zoom_panel.height(),
+							      recording_zoom_panel.height()}) -
+						    28) / 4.0));
 			const uint32_t crop_width =
 				std::min({64U, visible_crop_width, std::max<uint32_t>(1, logical_width / 8)});
 			const uint32_t crop_height =
@@ -535,20 +548,28 @@ protected:
 		if (!active_region) {
 			return;
 		}
-		const auto source_crop = preflight::loupe::project_crop(*active_region, source.width, source.height);
-		if (source_crop) {
+		const auto stream_crop = preflight::loupe::project_crop(*active_region, encoded.width, encoded.height);
+		if (stream_crop) {
 			const QRectF selection_rect(
-				source_image_rect.left() + source_image_rect.width() * source_crop->left / source.width,
-				source_image_rect.top() + source_image_rect.height() * source_crop->top / source.height,
-				source_image_rect.width() * source_crop->width / source.width,
-				source_image_rect.height() * source_crop->height / source.height);
+				preview_image_rect.left() +
+					preview_image_rect.width() * stream_crop->left / encoded.width,
+				preview_image_rect.top() +
+					preview_image_rect.height() * stream_crop->top / encoded.height,
+				preview_image_rect.width() * stream_crop->width / encoded.width,
+				preview_image_rect.height() * stream_crop->height / encoded.height);
 			painter.setPen(QPen(palette().color(QPalette::Highlight), 2));
 			painter.drawRect(selection_rect);
 		}
-		painter.drawText(source_panel.adjusted(4, source_panel.height() - 22, -4, -2), Qt::AlignCenter,
-				 tr("Drag a small area"));
 		draw_zoom(painter, source_zoom_panel, tr("Source · 400%"), source, *active_region);
-		draw_zoom(painter, encoded_zoom_panel, tr("Encoded · 400%"), encoded, *active_region);
+		draw_zoom(painter, encoded_zoom_panel, tr("Stream · 400%"), encoded, *active_region);
+		if (recording_pair && recording_pair->encoded) {
+			draw_zoom(painter, recording_zoom_panel, tr("Recording · 400%"), *recording_pair->encoded,
+				  *active_region);
+		} else {
+			painter.setPen(palette().color(QPalette::Text));
+			painter.drawText(recording_zoom_panel, Qt::AlignCenter,
+					 tr("Recording frame not available yet"));
+		}
 	}
 
 	void mousePressEvent(QMouseEvent *event) override
@@ -559,9 +580,10 @@ protected:
 			drag_start = event->position().toPoint();
 			moving_selection = false;
 			moving_crop.reset();
-			if (selection && pair && pair->source) {
-				const auto projected = preflight::loupe::project_crop(
-					*selection, source_width(*pair->source), source_height(*pair->source));
+			if (selection && stream_pair && stream_pair->source) {
+				const auto projected =
+					preflight::loupe::project_crop(*selection, source_width(*stream_pair->source),
+								       source_height(*stream_pair->source));
 				if (projected && point->x() >= static_cast<int>(projected->left) &&
 				    point->x() < static_cast<int>(projected->left + projected->width) &&
 				    point->y() >= static_cast<int>(projected->top) &&
@@ -570,12 +592,13 @@ protected:
 					moving_crop = projected;
 					moving_offset = QPoint(point->x() - static_cast<int>(projected->left),
 							       point->y() - static_cast<int>(projected->top));
-					dragging_region = preflight::loupe::CropRegion{source_width(*pair->source),
-										       source_height(*pair->source),
-										       projected->left,
-										       projected->top,
-										       projected->width,
-										       projected->height};
+					dragging_region =
+						preflight::loupe::CropRegion{source_width(*stream_pair->source),
+									     source_height(*stream_pair->source),
+									     projected->left,
+									     projected->top,
+									     projected->width,
+									     projected->height};
 				}
 			}
 			if (!moving_selection) {
@@ -591,20 +614,24 @@ protected:
 	void mouseMoveEvent(QMouseEvent *event) override
 	{
 		if (dragging) {
-			if (moving_selection && moving_crop && pair && pair->source) {
+			if (moving_selection && moving_crop && stream_pair && stream_pair->source) {
 				const auto point = source_point(event->position());
 				if (point) {
-					const int max_left =
-						static_cast<int>(source_width(*pair->source) - moving_crop->width);
-					const int max_top =
-						static_cast<int>(source_height(*pair->source) - moving_crop->height);
+					const int max_left = static_cast<int>(source_width(*stream_pair->source) -
+									      moving_crop->width);
+					const int max_top = static_cast<int>(source_height(*stream_pair->source) -
+									     moving_crop->height);
 					const uint32_t left = static_cast<uint32_t>(
 						std::clamp(point->x() - moving_offset.x(), 0, max_left));
 					const uint32_t top = static_cast<uint32_t>(
 						std::clamp(point->y() - moving_offset.y(), 0, max_top));
-					dragging_region = preflight::loupe::CropRegion{
-						source_width(*pair->source), source_height(*pair->source), left, top,
-						moving_crop->width,          moving_crop->height};
+					dragging_region =
+						preflight::loupe::CropRegion{source_width(*stream_pair->source),
+									     source_height(*stream_pair->source),
+									     left,
+									     top,
+									     moving_crop->width,
+									     moving_crop->height};
 				}
 			} else {
 				dragging_region = bounded_drag_region(event->position().toPoint());
@@ -641,22 +668,24 @@ public:
 		setToolTip(tr("Drag on the source image to compare the same region at four-times magnification."));
 	}
 
-	void SetPair(std::shared_ptr<const preflight::loupe::FramePair> new_pair)
+	void SetPairs(std::shared_ptr<const preflight::loupe::FramePair> new_stream_pair,
+		      std::shared_ptr<const preflight::loupe::FramePair> new_recording_pair)
 	{
-		if (pair == new_pair) {
+		if (stream_pair == new_stream_pair && recording_pair == new_recording_pair) {
 			return;
 		}
-		pair = std::move(new_pair);
-		if (!pair) {
+		stream_pair = std::move(new_stream_pair);
+		recording_pair = std::move(new_recording_pair);
+		if (!stream_pair) {
 			selection.reset();
-		} else if (selection && pair->source &&
-			   (selection->source_width != source_width(*pair->source) ||
-			    selection->source_height != source_height(*pair->source))) {
-			const auto remapped = preflight::loupe::project_crop(*selection, source_width(*pair->source),
-									     source_height(*pair->source));
+		} else if (selection && stream_pair->source &&
+			   (selection->source_width != source_width(*stream_pair->source) ||
+			    selection->source_height != source_height(*stream_pair->source))) {
+			const auto remapped = preflight::loupe::project_crop(
+				*selection, source_width(*stream_pair->source), source_height(*stream_pair->source));
 			if (remapped) {
-				selection = preflight::loupe::CropRegion{source_width(*pair->source),
-									 source_height(*pair->source),
+				selection = preflight::loupe::CropRegion{source_width(*stream_pair->source),
+									 source_height(*stream_pair->source),
 									 remapped->left,
 									 remapped->top,
 									 remapped->width,
@@ -725,6 +754,30 @@ QJsonObject json_object_from_settings(obs_data_t *settings)
 	return document.isObject() ? document.object() : QJsonObject{};
 }
 
+QJsonObject video_config_snapshot(config_t *config)
+{
+	QJsonObject values;
+	values.insert(QStringLiteral("OutputCX"), static_cast<double>(config_get_uint(config, "Video", "OutputCX")));
+	values.insert(QStringLiteral("OutputCY"), static_cast<double>(config_get_uint(config, "Video", "OutputCY")));
+	values.insert(QStringLiteral("FPSType"), static_cast<double>(config_get_uint(config, "Video", "FPSType")));
+	const char *fps_common = config_get_string(config, "Video", "FPSCommon");
+	values.insert(QStringLiteral("FPSCommon"), QString::fromUtf8(fps_common ? fps_common : ""));
+	values.insert(QStringLiteral("FPSInt"), static_cast<double>(config_get_uint(config, "Video", "FPSInt")));
+	values.insert(QStringLiteral("FPSNum"), static_cast<double>(config_get_uint(config, "Video", "FPSNum")));
+	values.insert(QStringLiteral("FPSDen"), static_cast<double>(config_get_uint(config, "Video", "FPSDen")));
+	return values;
+}
+
+QJsonObject simple_recording_config_snapshot(config_t *config)
+{
+	QJsonObject values;
+	for (const char *key : {"RecQuality", "RecEncoder", "RecFormat2"}) {
+		const char *value = config_get_string(config, "SimpleOutput", key);
+		values.insert(QString::fromUtf8(key), QString::fromUtf8(value ? value : ""));
+	}
+	return values;
+}
+
 QString output_error(obs_output_t *output, const QString &fallback)
 {
 	const char *error = output ? obs_output_get_last_error(output) : nullptr;
@@ -750,7 +803,7 @@ QString test_mode_label(preflight::UplinkTestMode mode)
 
 } // namespace
 
-struct PreflightBenchWindow::Impl {
+struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	PreflightBenchWindow *dialog;
 	QPushButton *run_button = nullptr;
 	QPushButton *bakeoff_button = nullptr;
@@ -763,8 +816,8 @@ struct PreflightBenchWindow::Impl {
 	QLabel *recording_path_label = nullptr;
 	QLabel *bakeoff_status_label = nullptr;
 	QTableWidget *bakeoff_table = nullptr;
-	QTabWidget *tabs = nullptr;
 	QTableWidget *metric_table = nullptr;
+	QTableWidget *impact_table = nullptr;
 	QGroupBox *chart_detail_group = nullptr;
 	MetricChart *chart_detail = nullptr;
 	QGroupBox *apply_group = nullptr;
@@ -777,7 +830,17 @@ struct PreflightBenchWindow::Impl {
 	QTimer *settings_timer = nullptr;
 	QTimer *uplink_timer = nullptr;
 	OBSPropertiesView *encoder_properties = nullptr;
+	OBSPropertiesView *recording_encoder_properties = nullptr;
+	QComboBox *resolution_combo = nullptr;
+	QComboBox *fps_combo = nullptr;
+	QComboBox *simple_recording_quality_combo = nullptr;
+	QVBoxLayout *stream_settings_layout = nullptr;
+	QCheckBox *captions_toggle = nullptr;
+	QVBoxLayout *toggle_layout = nullptr;
+	std::map<std::string, obs_source_t *> toggle_filters;
+	std::map<std::string, QCheckBox *> toggle_widgets;
 	obs_data_t *initial_encoder_settings = nullptr;
+	obs_data_t *initial_recording_encoder_settings = nullptr;
 	OBSServiceAutoRelease test_service;
 	OBSOutputAutoRelease stream_output;
 	OBSOutputAutoRelease recording_output;
@@ -790,11 +853,18 @@ struct PreflightBenchWindow::Impl {
 	obs_preflight_collector_t *collector = nullptr;
 	LoupeView *loupe_view = nullptr;
 	PreflightLoupeCapture loupe_capture;
+	PreflightLoupeCapture recording_loupe_capture;
 	preflight::CloudflareSpeedTest cloudflare_speed_test;
 	obs_preflight_engine_t *engine = nullptr;
 	obs_preflight_engine_t *bakeoff_engine = nullptr;
 	obs_preflight_bakeoff_t *bakeoff_planner = nullptr;
 	std::vector<BenchPoint> points;
+	std::vector<preflight::bench::MetricWindow> metric_history;
+	preflight::bench::ImpactTracker impact_tracker;
+	uint64_t impact_window_sequence = 0;
+	QJsonObject last_stream_editor_settings;
+	QJsonObject last_recording_editor_settings;
+	QJsonObject simple_quality_expected_settings;
 	std::vector<BakeoffCandidate> bakeoff_candidates;
 	obs_preflight_candidate_plan active_candidate{};
 	std::array<ChartPane, 8> charts;
@@ -809,9 +879,17 @@ struct PreflightBenchWindow::Impl {
 	QString bakeoff_candidate_reason;
 	QString initial_output_mode;
 	QString simple_output_encoder;
+	QString simple_recording_encoder;
+	QString initial_simple_recording_quality;
+	QString current_simple_recording_quality;
+	QString stream_video_encoder_id;
+	QString recording_video_encoder_id;
 	QString apply_feedback;
 	std::optional<preflight::apply::Plan> apply_plan;
 	std::optional<preflight::apply::Plan> recorded_apply_preview;
+	preflight::bench::VideoSettings video_settings;
+	preflight::bench::VideoSettings initial_video_settings;
+	std::vector<preflight::bench::FeatureToggle> feature_toggles;
 	bool enable_recorded_apply_controls_for_test = false;
 	preflight::apply::TargetIdentity initial_apply_target;
 	std::string configured_service_name;
@@ -827,7 +905,10 @@ struct PreflightBenchWindow::Impl {
 	uint64_t last_window_end_ms = 0;
 	uint64_t candidate_last_window_end_ms = 0;
 	bool restart_stream_when_stopped = false;
-	bool restart_was_active = false;
+	bool restart_recording_when_stopped = false;
+	bool stream_settings_pending = false;
+	bool recording_settings_pending = false;
+	bool video_settings_pending = false;
 	bool bench_running = false;
 	bool stopping = false;
 	bool bakeoff_running = false;
@@ -842,6 +923,279 @@ struct PreflightBenchWindow::Impl {
 	bool simple_output_advanced = false;
 
 	explicit Impl(PreflightBenchWindow *dialog_) : dialog(dialog_) {}
+
+	preflight::bench::Snapshot GetSnapshot() const override
+	{
+		preflight::bench::Snapshot snapshot;
+		snapshot.stream_frame = loupe_capture.LatestPair();
+		snapshot.recording_frame = recording_loupe_capture.LatestPair();
+		if (!metric_history.empty()) {
+			snapshot.latest_metrics = metric_history.back();
+			snapshot.metric_history = metric_history;
+		}
+		snapshot.stream_encoder.encoder_id = stream_video_encoder_id.toStdString();
+		snapshot.stream_encoder.values = preflight::bench::SettingsObject::Retain(
+			encoder_properties ? encoder_properties->GetSettings() : nullptr);
+		snapshot.recording_encoder.encoder_id = recording_video_encoder_id.toStdString();
+		snapshot.recording_encoder.values = preflight::bench::SettingsObject::Retain(
+			recording_encoder_properties ? recording_encoder_properties->GetSettings() : nullptr);
+		snapshot.video = video_settings;
+		snapshot.impacts = impact_tracker.Entries();
+		snapshot.toggles = feature_toggles;
+		return snapshot;
+	}
+
+	bool SetEncoderSettings(preflight::bench::EncoderRole role, const preflight::bench::SettingsObject &settings,
+				const std::vector<preflight::bench::SettingChange> &changes) override
+	{
+		OBSPropertiesView *view = role == preflight::bench::EncoderRole::Stream ? encoder_properties
+											: recording_encoder_properties;
+		if (!view || !settings) {
+			return false;
+		}
+		impact_tracker.RecordChanges(changes);
+		obs_data_clear(view->GetSettings());
+		obs_data_apply(view->GetSettings(), settings.get());
+		view->ReloadProperties();
+		if (role == preflight::bench::EncoderRole::Stream) {
+			stream_settings_pending = true;
+			last_stream_editor_settings = json_object_from_settings(view->GetSettings());
+		} else {
+			recording_settings_pending = true;
+			last_recording_editor_settings = json_object_from_settings(view->GetSettings());
+		}
+		RenderImpactEntries(impact_tracker.Entries());
+		InvalidateApplyPreview();
+		if (settings_timer) {
+			settings_timer->start(0);
+		}
+		return true;
+	}
+
+	bool SetVideoSettings(const preflight::bench::VideoSettings &settings,
+			      const std::vector<preflight::bench::SettingChange> &changes) override
+	{
+		if (settings.base_width != video_settings.base_width ||
+		    settings.base_height != video_settings.base_height || settings.output_width == 0 ||
+		    settings.output_height == 0 || settings.fps_num == 0 || settings.fps_den == 0 ||
+		    settings.fps_divisor == 0) {
+			return false;
+		}
+		const int fps_index = fps_combo ? fps_combo->findData(static_cast<uint>(settings.fps_divisor)) : 0;
+		if (fps_index < 0) {
+			return false;
+		}
+		impact_tracker.RecordChanges(changes);
+		video_settings = settings;
+		video_settings_pending = true;
+		if (resolution_combo) {
+			const QSignalBlocker blocker(resolution_combo);
+			resolution_combo->setCurrentText(
+				QStringLiteral("%1 × %2").arg(settings.output_width).arg(settings.output_height));
+		}
+		if (fps_combo) {
+			const QSignalBlocker blocker(fps_combo);
+			fps_combo->setCurrentIndex(fps_index);
+		}
+		RenderImpactEntries(impact_tracker.Entries());
+		InvalidateApplyPreview();
+		if (settings_timer) {
+			settings_timer->start(0);
+		}
+		return true;
+	}
+
+	bool SetFeatureToggle(obs_source_t *filter, const std::string &name, const std::string &source_filter_id,
+			      bool enabled) override
+	{
+		if (!filter || obs_source_get_type(filter) != OBS_SOURCE_TYPE_FILTER) {
+			return false;
+		}
+		const char *actual_id = obs_source_get_id(filter);
+		if (!actual_id || source_filter_id != actual_id) {
+			return false;
+		}
+		const bool old_enabled = obs_source_enabled(filter);
+		if (old_enabled != enabled) {
+			impact_tracker.RecordChanges(
+				{{name, source_filter_id, old_enabled ? "on" : "off", enabled ? "on" : "off"}});
+		}
+		obs_source_set_enabled(filter, enabled);
+		const auto existing = std::find_if(feature_toggles.begin(), feature_toggles.end(),
+						   [&source_filter_id](const auto &item) {
+							   return item.source_filter_id == source_filter_id;
+						   });
+		preflight::bench::FeatureToggle toggle{name, source_filter_id, enabled, true,
+						       "Takes effect immediately; excluded from Apply."};
+		if (existing == feature_toggles.end()) {
+			feature_toggles.push_back(std::move(toggle));
+		} else {
+			*existing = std::move(toggle);
+		}
+		const auto widget = toggle_widgets.find(source_filter_id);
+		if (widget != toggle_widgets.end()) {
+			const QSignalBlocker blocker(widget->second);
+			widget->second->setChecked(enabled);
+		}
+		RenderImpactEntries(impact_tracker.Entries());
+		return true;
+	}
+
+	bool RegisterFeatureToggle(obs_source_t *filter, const std::string &name,
+				   const std::string &source_filter_id) override
+	{
+		if (!filter || obs_source_get_type(filter) != OBS_SOURCE_TYPE_FILTER) {
+			return false;
+		}
+		const char *actual_id = obs_source_get_id(filter);
+		if (!actual_id || source_filter_id != actual_id) {
+			return false;
+		}
+		obs_source_t *retained = obs_source_get_ref(filter);
+		if (!retained) {
+			return false;
+		}
+		auto bound = toggle_filters.find(source_filter_id);
+		if (bound != toggle_filters.end()) {
+			obs_source_release(bound->second);
+		}
+		toggle_filters[source_filter_id] = retained;
+		const bool enabled = obs_source_enabled(filter);
+		const auto existing = std::find_if(feature_toggles.begin(), feature_toggles.end(),
+						   [&source_filter_id](const auto &item) {
+							   return item.source_filter_id == source_filter_id;
+						   });
+		preflight::bench::FeatureToggle toggle{name, source_filter_id, enabled, true,
+						       "Takes effect immediately; excluded from Apply."};
+		if (existing == feature_toggles.end()) {
+			feature_toggles.push_back(std::move(toggle));
+		} else {
+			*existing = std::move(toggle);
+		}
+		QCheckBox *toggle_widget = nullptr;
+		auto widget = toggle_widgets.find(source_filter_id);
+		if (widget != toggle_widgets.end()) {
+			toggle_widget = widget->second;
+		} else if (name == "Live captions (on-device)" && captions_toggle) {
+			toggle_widget = captions_toggle;
+			toggle_widget->setText(QString::fromStdString(name));
+			toggle_widgets[source_filter_id] = toggle_widget;
+			QObject::connect(
+				toggle_widget, &QCheckBox::toggled, dialog, [this, source_filter_id, name](bool on) {
+					auto live_filter = toggle_filters.find(source_filter_id);
+					if (live_filter == toggle_filters.end() ||
+					    !SetFeatureToggle(live_filter->second, name, source_filter_id, on)) {
+						SetStatus(QObject::tr("This live filter is no longer available."));
+					}
+				});
+		} else if (toggle_layout) {
+			toggle_widget = new QCheckBox(QString::fromStdString(name), toggle_layout->parentWidget());
+			toggle_widget->setObjectName(QStringLiteral("preflight-toggle-%1").arg(toggle_widgets.size()));
+			toggle_layout->insertWidget(std::max(0, toggle_layout->count() - 1), toggle_widget);
+			toggle_widgets[source_filter_id] = toggle_widget;
+			QObject::connect(
+				toggle_widget, &QCheckBox::toggled, dialog, [this, source_filter_id, name](bool on) {
+					auto live_filter = toggle_filters.find(source_filter_id);
+					if (live_filter == toggle_filters.end() ||
+					    !SetFeatureToggle(live_filter->second, name, source_filter_id, on)) {
+						SetStatus(QObject::tr("This live filter is no longer available."));
+					}
+				});
+		}
+		if (toggle_widget) {
+			toggle_widgets[source_filter_id] = toggle_widget;
+			const QSignalBlocker blocker(toggle_widget);
+			toggle_widget->setChecked(enabled);
+			toggle_widget->setEnabled(true);
+			toggle_widget->setToolTip(QObject::tr("This filter toggle takes effect immediately."));
+		}
+		return true;
+	}
+
+	bool ReplaceStreamEncoderEditor(const std::string &encoder_id, const preflight::bench::SettingsObject &settings)
+	{
+		if (!stream_settings_layout || !settings || encoder_id.empty()) {
+			return false;
+		}
+		const QByteArray id = QByteArray::fromStdString(encoder_id);
+		OBSDataAutoRelease editor_settings = clone_settings(settings.get());
+		if (!editor_settings) {
+			return false;
+		}
+		auto *replacement = new OBSPropertiesView(editor_settings.Get(), id.constData(),
+							  (PropertiesReloadCallback)obs_get_encoder_properties, 190);
+		replacement->setFrameShape(QFrame::NoFrame);
+		replacement->setScrolling(true);
+		QObject::connect(replacement, &OBSPropertiesView::Changed, dialog, [this]() {
+			RecordEditorChanges(preflight::bench::EncoderRole::Stream);
+			stream_settings_pending = true;
+			InvalidateApplyPreview();
+			settings_timer->start(600);
+		});
+		if (encoder_properties) {
+			stream_settings_layout->removeWidget(encoder_properties);
+			delete encoder_properties;
+		}
+		encoder_properties = replacement;
+		stream_settings_layout->insertWidget(0, encoder_properties);
+		stream_video_encoder_id = QString::fromUtf8(id);
+		last_stream_editor_settings = json_object_from_settings(encoder_properties->GetSettings());
+		return true;
+	}
+
+	bool LoadCandidate(const preflight::bench::CandidateSettings &candidate) override
+	{
+		if (candidate.video.base_width != video_settings.base_width ||
+		    candidate.video.base_height != video_settings.base_height || bench_running || bakeoff_running ||
+		    stopping || !candidate.stream_encoder.values) {
+			return false;
+		}
+		const std::string previous_encoder = stream_video_encoder_id.toStdString();
+		const QJsonObject previous_settings =
+			encoder_properties ? json_object_from_settings(encoder_properties->GetSettings())
+					   : QJsonObject{};
+		if (candidate.stream_encoder.encoder_id != previous_encoder &&
+		    !ReplaceStreamEncoderEditor(candidate.stream_encoder.encoder_id, candidate.stream_encoder.values)) {
+			return false;
+		}
+		const QJsonObject next_settings = json_object_from_settings(candidate.stream_encoder.values.get());
+		std::vector<preflight::bench::SettingChange> encoder_changes;
+		if (previous_encoder != candidate.stream_encoder.encoder_id) {
+			encoder_changes.push_back({"Stream encoder", "encoder_id", previous_encoder,
+						   candidate.stream_encoder.encoder_id});
+		}
+		for (auto it = next_settings.constBegin(); it != next_settings.constEnd(); ++it) {
+			const QJsonValue previous = previous_settings.value(it.key());
+			if (previous != it.value()) {
+				encoder_changes.push_back(
+					{"Stream encoder", it.key().toStdString(),
+					 preflight::apply::ValueForDisplay(previous).toStdString(),
+					 preflight::apply::ValueForDisplay(it.value()).toStdString()});
+			}
+		}
+		if (!SetEncoderSettings(preflight::bench::EncoderRole::Stream, candidate.stream_encoder.values,
+					encoder_changes)) {
+			return false;
+		}
+		std::vector<preflight::bench::SettingChange> video_changes;
+		if (candidate.video.output_width != video_settings.output_width ||
+		    candidate.video.output_height != video_settings.output_height) {
+			video_changes.push_back({"Video", "output resolution",
+						 std::to_string(video_settings.output_width) + "x" +
+							 std::to_string(video_settings.output_height),
+						 std::to_string(candidate.video.output_width) + "x" +
+							 std::to_string(candidate.video.output_height)});
+		}
+		if (static_cast<uint64_t>(candidate.video.fps_num) * video_settings.fps_den !=
+		    static_cast<uint64_t>(video_settings.fps_num) * candidate.video.fps_den) {
+			video_changes.push_back(
+				{"Video", "FPS",
+				 std::to_string(video_settings.fps_num) + "/" + std::to_string(video_settings.fps_den),
+				 std::to_string(candidate.video.fps_num) + "/" +
+					 std::to_string(candidate.video.fps_den)});
+		}
+		return SetVideoSettings(candidate.video, video_changes);
+	}
 
 	~Impl()
 	{
@@ -862,8 +1216,15 @@ struct PreflightBenchWindow::Impl {
 		obs_preflight_engine_destroy(engine);
 		obs_preflight_engine_destroy(bakeoff_engine);
 		obs_preflight_bakeoff_destroy(bakeoff_planner);
+		for (const auto &[id, filter] : toggle_filters) {
+			(void)id;
+			obs_source_release(filter);
+		}
 		if (initial_encoder_settings) {
 			obs_data_release(initial_encoder_settings);
+		}
+		if (initial_recording_encoder_settings) {
+			obs_data_release(initial_recording_encoder_settings);
 		}
 		if (bakeoff_audio_settings) {
 			obs_data_release(bakeoff_audio_settings);
@@ -877,7 +1238,6 @@ struct PreflightBenchWindow::Impl {
 		StopLoupe();
 		bench_running = false;
 		restart_stream_when_stopped = false;
-		restart_was_active = false;
 		stopping = true;
 		if (stream_output && obs_output_active(stream_output)) {
 			obs_output_stop(stream_output);
@@ -895,13 +1255,18 @@ struct PreflightBenchWindow::Impl {
 	void UpdateLoupe()
 	{
 		if (loupe_view) {
-			loupe_view->SetPair(loupe_capture.LatestPair());
+			loupe_view->SetPairs(loupe_capture.LatestPair(), recording_loupe_capture.LatestPair());
 			if (const auto crop = loupe_view->SelectedCrop()) {
 				loupe_capture.SetSourceCrop(*crop);
+				recording_loupe_capture.SetSourceCrop(*crop);
 			}
 		}
 		if (loupe_status_label) {
-			loupe_status_label->setText(QString::fromStdString(loupe_capture.Status()));
+			const QString stream_status = QString::fromStdString(loupe_capture.Status());
+			const QString recording_status = QString::fromStdString(recording_loupe_capture.Status());
+			loupe_status_label->setText(recording_status.isEmpty()
+							    ? stream_status
+							    : stream_status + QStringLiteral(" · ") + recording_status);
 		}
 	}
 
@@ -918,12 +1283,24 @@ struct PreflightBenchWindow::Impl {
 		UpdateLoupe();
 	}
 
+	void StartRecordingLoupe()
+	{
+		if (!recording_output || !recording_video_encoder) {
+			return;
+		}
+		if (recording_loupe_capture.Start(recording_output, recording_video_encoder)) {
+			loupe_timer->start(100);
+		}
+		UpdateLoupe();
+	}
+
 	void StopLoupe()
 	{
 		if (loupe_timer) {
 			loupe_timer->stop();
 		}
 		loupe_capture.Stop();
+		recording_loupe_capture.Stop();
 		UpdateLoupe();
 	}
 
@@ -962,6 +1339,88 @@ struct PreflightBenchWindow::Impl {
 		return settings;
 	}
 
+	bool ApplySimpleRecordingQuality(const QString &quality)
+	{
+		if (!recording_encoder_properties || quality == QStringLiteral("Lossless")) {
+			return false;
+		}
+		OBSDataAutoRelease settings(obs_data_create());
+		if (!settings) {
+			return false;
+		}
+		if (quality == QStringLiteral("Stream")) {
+			if (stream_video_encoder_id != recording_video_encoder_id || !encoder_properties) {
+				return false;
+			}
+			obs_data_apply(settings, encoder_properties->GetSettings());
+		} else {
+			const QString encoder_id = recording_video_encoder_id.toLower();
+			const bool low_cpu_x264 =
+				simple_recording_encoder.contains(QStringLiteral("lowcpu"), Qt::CaseInsensitive);
+			const bool x264 = encoder_id.contains(QStringLiteral("x264"));
+			const bool apple = encoder_id.contains(QStringLiteral("videotoolbox")) ||
+					   encoder_id.contains(QStringLiteral("apple"));
+			const bool qsv = encoder_id.contains(QStringLiteral("qsv"));
+			const bool hardware_cqp = qsv || encoder_id.contains(QStringLiteral("nvenc")) ||
+						  encoder_id.contains(QStringLiteral("amf")) ||
+						  encoder_id.contains(QStringLiteral("amd"));
+			if (!x264 && !apple && !hardware_cqp) {
+				return false;
+			}
+			const double diagonal = std::hypot(static_cast<double>(video_settings.output_width),
+							   static_cast<double>(video_settings.output_height));
+			const int crf_reduction = static_cast<int>((1.0 - std::min(2000.0, diagonal) / 2000.0) * 10.0);
+			const int quality_value =
+				(quality == QStringLiteral("HQ") ? 16 : 23) - crf_reduction - (low_cpu_x264 ? 2 : 0);
+			if (x264) {
+				obs_data_set_string(settings, "rate_control", "CRF");
+				obs_data_set_int(settings, "crf", quality_value);
+				obs_data_set_bool(settings, "use_bufsize", true);
+				obs_data_set_string(settings, "profile", "high");
+				obs_data_set_string(settings, "preset", low_cpu_x264 ? "ultrafast" : "veryfast");
+			} else if (apple) {
+				obs_data_set_string(settings, "rate_control", "CRF");
+				obs_data_set_string(settings, "profile",
+						    encoder_id.contains(QStringLiteral("hevc")) ? "main" : "high");
+				obs_data_set_int(settings, "quality", quality == QStringLiteral("HQ") ? 70 : 50);
+			} else {
+				bool supports_icq = false;
+				if (qsv && !encoder_id.contains(QStringLiteral("av1"))) {
+					OBSProperties properties = obs_encoder_properties(recording_video_encoder);
+					obs_property_t *rate_control = obs_properties_get(properties, "rate_control");
+					for (size_t i = 0;
+					     rate_control && i < obs_property_list_item_count(rate_control); ++i) {
+						const char *value = obs_property_list_item_string(rate_control, i);
+						if (value && strcmp(value, "ICQ") == 0) {
+							supports_icq = true;
+							break;
+						}
+					}
+				}
+				const bool main_profile = encoder_id.contains(QStringLiteral("nvenc")) &&
+							  (encoder_id.contains(QStringLiteral("hevc")) ||
+							   encoder_id.contains(QStringLiteral("av1")));
+				obs_data_set_string(settings, "rate_control", supports_icq ? "ICQ" : "CQP");
+				obs_data_set_string(settings, "profile", main_profile ? "main" : "high");
+				obs_data_set_int(settings, supports_icq ? "icq_quality" : "cqp", quality_value);
+				if (encoder_id.contains(QStringLiteral("amf")) ||
+				    encoder_id.contains(QStringLiteral("amd"))) {
+					obs_data_set_string(settings, "preset", "quality");
+				}
+			}
+		}
+		obs_data_clear(recording_encoder_properties->GetSettings());
+		obs_data_apply(recording_encoder_properties->GetSettings(), settings);
+		recording_encoder_properties->ReloadProperties();
+		last_recording_editor_settings = json_object_from_settings(recording_encoder_properties->GetSettings());
+		simple_quality_expected_settings = last_recording_editor_settings;
+		recording_settings_pending = true;
+		if (settings_timer) {
+			settings_timer->start(0);
+		}
+		return true;
+	}
+
 	preflight::apply::TargetIdentity MakeApplyTarget(OBSBasic *main, const QString &mode,
 							 const char *actual_encoder_id) const
 	{
@@ -984,6 +1443,20 @@ struct PreflightBenchWindow::Impl {
 				encoder_selection = config_get_string(main->Config(), "AdvOut", "Encoder");
 			}
 			target.encoder_selection = QString::fromUtf8(encoder_selection ? encoder_selection : "");
+			OBSOutputAutoRelease configured_recording = obs_frontend_get_recording_output();
+			OBSEncoderAutoRelease configured_recording_video =
+				configured_recording ? obs_output_get_video_encoder(configured_recording) : nullptr;
+			const char *recording_id =
+				configured_recording_video ? obs_encoder_get_id(configured_recording_video) : nullptr;
+			target.recording_encoder_id = QString::fromUtf8(recording_id ? recording_id : "");
+			const char *recording_selection = nullptr;
+			if (mode == QStringLiteral("Simple")) {
+				recording_selection = config_get_string(main->Config(), "SimpleOutput", "RecEncoder");
+			} else if (mode == QStringLiteral("Advanced")) {
+				recording_selection = config_get_string(main->Config(), "AdvOut", "RecEncoder");
+			}
+			target.recording_encoder_selection =
+				QString::fromUtf8(recording_selection ? recording_selection : "");
 		} catch (const std::exception &) {
 			return {};
 		}
@@ -1020,27 +1493,95 @@ struct PreflightBenchWindow::Impl {
 		if (plan.target.profile_name != initial_apply_target.profile_name ||
 		    plan.target.profile_path != initial_apply_target.profile_path ||
 		    plan.target.encoder_id != initial_apply_target.encoder_id ||
-		    plan.target.encoder_selection != initial_apply_target.encoder_selection) {
+		    plan.target.encoder_selection != initial_apply_target.encoder_selection ||
+		    plan.target.recording_encoder_id != initial_apply_target.recording_encoder_id ||
+		    plan.target.recording_encoder_selection != initial_apply_target.recording_encoder_selection) {
 			plan.error = QObject::tr(
-				"The active profile or streaming encoder changed while Preflight was open. Close and reopen Preflight to review it.");
+				"The active profile or stream/recording encoder changed while Preflight was open. Close and reopen Preflight to review it.");
 			return plan;
 		}
 
 		const QJsonObject initial = json_object_from_settings(initial_encoder_settings);
 		const QJsonObject edited = json_object_from_settings(encoder_properties->GetSettings());
+		if (stream_video_encoder_id != initial_apply_target.encoder_id) {
+			plan.error = QObject::tr(
+				"Apply is available only when the selected bake-off encoder matches the OBS stream encoder. The current preview remains private to Preflight.");
+			return plan;
+		}
+		QJsonObject saved_video = video_config_snapshot(main->Config());
+		QJsonObject edited_video = saved_video;
+		if (video_settings.output_width != initial_video_settings.output_width ||
+		    video_settings.output_height != initial_video_settings.output_height) {
+			edited_video.insert(QStringLiteral("OutputCX"),
+					    static_cast<double>(video_settings.output_width));
+			edited_video.insert(QStringLiteral("OutputCY"),
+					    static_cast<double>(video_settings.output_height));
+		}
+		const bool fps_changed =
+			static_cast<uint64_t>(video_settings.fps_num) * initial_video_settings.fps_den !=
+			static_cast<uint64_t>(initial_video_settings.fps_num) * video_settings.fps_den;
+		if (fps_changed) {
+			if (video_settings.fps_den == 1) {
+				edited_video.insert(QStringLiteral("FPSType"), 1);
+				edited_video.insert(QStringLiteral("FPSInt"),
+						    static_cast<double>(video_settings.fps_num));
+			} else {
+				edited_video.insert(QStringLiteral("FPSType"), 2);
+				edited_video.insert(QStringLiteral("FPSNum"),
+						    static_cast<double>(video_settings.fps_num));
+				edited_video.insert(QStringLiteral("FPSDen"),
+						    static_cast<double>(video_settings.fps_den));
+			}
+		}
 		if (mode == QStringLiteral("Advanced")) {
-			const QString saved_path =
+			QJsonObject saved_stream;
+			const QString saved_stream_path =
 				QDir(plan.target.profile_path).filePath(QStringLiteral("streamEncoder.json"));
-			QJsonObject saved;
-			if (!preflight::apply::ReadAdvancedSettings(saved_path, &saved, &plan.error)) {
+			if (!preflight::apply::ReadAdvancedSettings(saved_stream_path, &saved_stream, &plan.error)) {
 				return plan;
 			}
-			return preflight::apply::BuildAdvancedPlan(saved, initial, edited, plan.target);
+			plan = preflight::apply::BuildAdvancedPlan(saved_stream, initial, edited, plan.target);
+			QJsonObject saved_recording;
+			const QString saved_recording_path =
+				QDir(plan.target.profile_path).filePath(QStringLiteral("recordEncoder.json"));
+			if (!preflight::apply::ReadAdvancedSettings(saved_recording_path, &saved_recording,
+								    &plan.error)) {
+				return plan;
+			}
+			preflight::apply::AppendAdvancedEncoderChanges(
+				plan, QStringLiteral("recordEncoder.json"), saved_recording,
+				json_object_from_settings(initial_recording_encoder_settings),
+				json_object_from_settings(recording_encoder_properties->GetSettings()));
+			preflight::apply::AppendConfigSectionChanges(plan, QStringLiteral("Video"), saved_video,
+								     edited_video);
+			return plan;
 		}
 		if (mode == QStringLiteral("Simple")) {
-			return preflight::apply::BuildSimplePlan(SimpleConfigSnapshot(main), initial, edited,
+			plan = preflight::apply::BuildSimplePlan(SimpleConfigSnapshot(main), initial, edited,
 								 simple_output_encoder, simple_output_advanced,
 								 plan.target);
+			const QJsonObject initial_recording =
+				json_object_from_settings(initial_recording_encoder_settings);
+			const QJsonObject edited_recording =
+				json_object_from_settings(recording_encoder_properties->GetSettings());
+			if (initial_recording != edited_recording &&
+			    edited_recording != simple_quality_expected_settings) {
+				plan.error = QObject::tr(
+					"This recording encoder edit has no matching SimpleOutput key. Change the Simple recording quality instead.");
+				return plan;
+			}
+			QJsonObject saved_recording = simple_recording_config_snapshot(main->Config());
+			QJsonObject edited_recording_config = saved_recording;
+			if (simple_recording_quality_combo && simple_recording_quality_combo->currentIndex() >= 0) {
+				edited_recording_config.insert(
+					QStringLiteral("RecQuality"),
+					simple_recording_quality_combo->currentData().toString());
+			}
+			preflight::apply::AppendConfigSectionChanges(plan, QStringLiteral("SimpleOutput"),
+								     saved_recording, edited_recording_config);
+			preflight::apply::AppendConfigSectionChanges(plan, QStringLiteral("Video"), saved_video,
+								     edited_video);
+			return plan;
 		}
 		plan.error = QObject::tr("This OBS output mode does not have a supported Apply mapping.");
 		return plan;
@@ -1138,7 +1679,8 @@ struct PreflightBenchWindow::Impl {
 		QString write_error;
 		const bool wrote =
 			displayed.mode == preflight::apply::OutputMode::Advanced
-				? preflight::apply::WriteAdvancedSettings(displayed, current, &write_error)
+				? preflight::apply::WriteAdvancedSettings(main->Config(), displayed, current,
+									  &write_error)
 			: displayed.mode == preflight::apply::OutputMode::Simple
 				? preflight::apply::WriteSimpleConfig(main->Config(), displayed, current, &write_error)
 				: false;
@@ -1187,7 +1729,13 @@ struct PreflightBenchWindow::Impl {
 		if (initial_output_mode == QStringLiteral("Simple")) {
 			const char *encoder = config_get_string(main->Config(), "SimpleOutput", "StreamEncoder");
 			simple_output_encoder = QString::fromUtf8(encoder ? encoder : "");
+			const char *recording_encoder = config_get_string(main->Config(), "SimpleOutput", "RecEncoder");
+			simple_recording_encoder = QString::fromUtf8(recording_encoder ? recording_encoder : "");
 			simple_output_advanced = config_get_bool(main->Config(), "SimpleOutput", "UseAdvanced");
+			const char *recording_quality = config_get_string(main->Config(), "SimpleOutput", "RecQuality");
+			initial_simple_recording_quality =
+				QString::fromUtf8(recording_quality ? recording_quality : "Stream");
+			current_simple_recording_quality = initial_simple_recording_quality;
 		}
 		OBSServiceAutoRelease selected_service = obs_frontend_get_streaming_service();
 		if (!selected_service) {
@@ -1278,6 +1826,7 @@ struct PreflightBenchWindow::Impl {
 		obs_data_addref(bakeoff_audio_settings);
 		stream_bitrate_kbps = obs_data_get_int(stream_video_settings, "bitrate");
 		const char *stream_video_id = obs_encoder_get_id(configured_stream_video);
+		stream_video_encoder_id = QString::fromUtf8(stream_video_id ? stream_video_id : "");
 		initial_apply_target = MakeApplyTarget(main, initial_output_mode, stream_video_id);
 		const char *stream_audio_id = configured_stream_audio ? obs_encoder_get_id(configured_stream_audio)
 								      : "ffmpeg_aac";
@@ -1315,8 +1864,39 @@ struct PreflightBenchWindow::Impl {
 							   (PropertiesReloadCallback)obs_get_encoder_properties, 190);
 		encoder_properties->setFrameShape(QFrame::NoFrame);
 		encoder_properties->setScrolling(true);
-		QObject::connect(encoder_properties, &OBSPropertiesView::Changed, dialog,
-				 [this]() { InvalidateApplyPreview(); });
+		QObject::connect(encoder_properties, &OBSPropertiesView::Changed, dialog, [this]() {
+			RecordEditorChanges(preflight::bench::EncoderRole::Stream);
+			stream_settings_pending = true;
+			if (initial_output_mode == QStringLiteral("Simple") &&
+			    current_simple_recording_quality == QStringLiteral("Stream")) {
+				ApplySimpleRecordingQuality(current_simple_recording_quality);
+			}
+			InvalidateApplyPreview();
+			settings_timer->start(600);
+		});
+		last_stream_editor_settings = json_object_from_settings(encoder_properties->GetSettings());
+
+		recording_video_encoder_id = QString::fromUtf8(recording_video_id ? recording_video_id : "");
+		OBSDataAutoRelease recording_property_settings = clone_settings(recording_video_settings);
+		OBSDataAutoRelease initial_recording = clone_settings(recording_property_settings);
+		if (!recording_property_settings || !initial_recording) {
+			setup_error = QObject::tr("Could not create the recording encoder settings view.");
+			return false;
+		}
+		obs_data_addref(initial_recording);
+		initial_recording_encoder_settings = initial_recording.Get();
+		recording_encoder_properties =
+			new OBSPropertiesView(recording_property_settings.Get(), recording_video_id,
+					      (PropertiesReloadCallback)obs_get_encoder_properties, 190);
+		recording_encoder_properties->setFrameShape(QFrame::NoFrame);
+		recording_encoder_properties->setScrolling(true);
+		QObject::connect(recording_encoder_properties, &OBSPropertiesView::Changed, dialog, [this]() {
+			RecordEditorChanges(preflight::bench::EncoderRole::Recording);
+			recording_settings_pending = true;
+			InvalidateApplyPreview();
+			settings_timer->start(600);
+		});
+		last_recording_editor_settings = json_object_from_settings(recording_encoder_properties->GetSettings());
 
 		stream_video_encoder = obs_video_encoder_create(stream_video_id, "preflight_stream_video",
 								stream_video_settings, nullptr);
@@ -1340,6 +1920,21 @@ struct PreflightBenchWindow::Impl {
 			setup_error = QObject::tr("OBS audio and video must be initialized before starting Preflight.");
 			return false;
 		}
+		struct obs_video_info active_video_info = {};
+		if (!obs_get_video_info(&active_video_info) || active_video_info.fps_num == 0 ||
+		    active_video_info.fps_den == 0) {
+			setup_error = QObject::tr("OBS video settings are not ready for Preflight.");
+			return false;
+		}
+		video_settings.base_width = active_video_info.base_width;
+		video_settings.base_height = active_video_info.base_height;
+		video_settings.output_width = active_video_info.output_width;
+		video_settings.output_height = active_video_info.output_height;
+		video_settings.fps_num = active_video_info.fps_num;
+		video_settings.fps_den = active_video_info.fps_den;
+		video_settings.fps_divisor = 1;
+		video_settings.fps_divisor_supported = true;
+		initial_video_settings = video_settings;
 		obs_encoder_set_video(stream_video_encoder, video);
 		obs_encoder_set_audio(stream_audio_encoder, audio);
 		obs_encoder_set_video(recording_video_encoder, video);
@@ -1578,17 +2173,26 @@ struct PreflightBenchWindow::Impl {
 			const QString fps =
 				QString::number(static_cast<double>(candidate.mode.fps_num) / candidate.mode.fps_den,
 						'f', candidate.mode.fps_den == 1 ? 0 : 2);
-			bakeoff_table->setItem(static_cast<int>(row), 0,
-					       new QTableWidgetItem(QString::fromStdString(candidate.encoder_id)));
-			bakeoff_table->setItem(
-				static_cast<int>(row), 1,
-				new QTableWidgetItem(
-					QStringLiteral("%1 × %2").arg(candidate.mode.width).arg(candidate.mode.height)));
-			bakeoff_table->setItem(static_cast<int>(row), 2, new QTableWidgetItem(fps));
-			bakeoff_table->setItem(static_cast<int>(row), 3, new QTableWidgetItem(QStringLiteral("—")));
-			bakeoff_table->setItem(static_cast<int>(row), 4, new QTableWidgetItem(QStringLiteral("—")));
-			bakeoff_table->setItem(static_cast<int>(row), 5, new QTableWidgetItem(QObject::tr("Pending")));
-			bakeoff_table->setItem(static_cast<int>(row), 6, new QTableWidgetItem());
+			QString encoder_label = QString::fromStdString(candidate.encoder_id);
+			if (encoder_label.startsWith(QStringLiteral("obs_"))) {
+				encoder_label.remove(0, 4);
+			}
+			if (encoder_label.endsWith(QStringLiteral("_tex"))) {
+				encoder_label.chop(4);
+			}
+			encoder_label.replace(QLatin1Char('_'), QLatin1Char(' '));
+			const QString candidate_label = QStringLiteral("%1\n%2×%3 · %4fps")
+								.arg(encoder_label)
+								.arg(candidate.mode.width)
+								.arg(candidate.mode.height)
+								.arg(fps);
+			bakeoff_table->setItem(static_cast<int>(row), 0, new QTableWidgetItem(candidate_label));
+			bakeoff_table->setItem(static_cast<int>(row), 1, new QTableWidgetItem(QObject::tr("Pending")));
+			auto *use = new QPushButton(QObject::tr("Use these"), bakeoff_table);
+			use->setObjectName(QStringLiteral("preflight-bakeoff-use-%1").arg(row));
+			QObject::connect(use, &QPushButton::clicked, dialog,
+					 [this, row]() { UseBakeoffCandidate(row); });
+			bakeoff_table->setCellWidget(static_cast<int>(row), 2, use);
 		}
 		ResizeBakeoffTableToContents();
 		SetBakeoffStatus(QObject::tr("Ready to test %1 candidates (%2 seconds each).")
@@ -1602,6 +2206,116 @@ struct PreflightBenchWindow::Impl {
 		if (bakeoff_status_label) {
 			bakeoff_status_label->setText(text);
 		}
+	}
+
+	void SetBakeoffUseActionsEnabled(bool enabled)
+	{
+		if (!bakeoff_table) {
+			return;
+		}
+		for (int row = 0; row < bakeoff_table->rowCount(); ++row) {
+			if (auto *use = qobject_cast<QPushButton *>(bakeoff_table->cellWidget(row, 2))) {
+				use->setEnabled(enabled);
+			}
+		}
+	}
+
+	void UseBakeoffCandidate(size_t row)
+	{
+		if (row >= bakeoff_candidates.size() || bench_running || bakeoff_running) {
+			SetStatus(QObject::tr("Stop the bench before loading bake-off settings."));
+			return;
+		}
+		const BakeoffCandidate &candidate = bakeoff_candidates[row];
+		const QByteArray encoder_id = QByteArray::fromStdString(candidate.encoder_id);
+		OBSDataAutoRelease settings = obs_encoder_defaults(encoder_id.constData());
+		if (!settings) {
+			SetBakeoffStatus(QObject::tr("OBS could not load the selected encoder settings."));
+			return;
+		}
+		if (stream_bitrate_kbps > 0) {
+			obs_data_set_int(settings, "bitrate", stream_bitrate_kbps);
+		}
+		if (test_service) {
+			obs_service_apply_encoder_settings(test_service, settings, bakeoff_audio_settings);
+		}
+		preflight::bench::CandidateSettings selected;
+		selected.stream_encoder.encoder_id = candidate.encoder_id;
+		selected.stream_encoder.values = preflight::bench::SettingsObject::Retain(settings);
+		selected.video.base_width = video_settings.base_width;
+		selected.video.base_height = video_settings.base_height;
+		selected.video.output_width = candidate.mode.width;
+		selected.video.output_height = candidate.mode.height;
+		selected.video.fps_num = candidate.mode.fps_num;
+		selected.video.fps_den = candidate.mode.fps_den;
+		selected.video.fps_divisor = current_fps_den && candidate.mode.fps_den % current_fps_den == 0
+						     ? candidate.mode.fps_den / current_fps_den
+						     : 0;
+		selected.video.fps_divisor_supported = selected.video.fps_divisor > 0;
+		if (!selected.video.fps_divisor_supported || !LoadCandidate(selected)) {
+			SetBakeoffStatus(QObject::tr("These settings cannot be loaded while the bench is active."));
+			return;
+		}
+		SetBakeoffStatus(QObject::tr("Loaded into the Preflight editors. Nothing was written to OBS."));
+	}
+
+	void RenderImpactEntries(const std::vector<preflight::bench::ImpactEntry> &entries)
+	{
+		if (!impact_table) {
+			return;
+		}
+		impact_table->setRowCount(static_cast<int>(entries.size()));
+		auto window_text = [this](const std::optional<preflight::bench::MetricWindow> &window) {
+			return window ? QStringLiteral("%1 · %2% CPU")
+						.arg(BakeoffVerdictText(window->value.verdict))
+						.arg(window->value.cpu_percent, 0, 'f', 1)
+				      : QStringLiteral("—");
+		};
+		auto signed_value = [](double value, int precision) {
+			const QString magnitude = QString::number(std::abs(value), 'f', precision);
+			return (value < 0.0 ? QStringLiteral("−") : QStringLiteral("+")) + magnitude;
+		};
+		for (size_t row = 0; row < entries.size(); ++row) {
+			const auto &entry = entries[row];
+			const QString description = QString::fromStdString(entry.description);
+			const QString change =
+				description + (entry.key.empty()
+						       ? QString()
+						       : QStringLiteral("\n%1: %2 → %3")
+								 .arg(QString::fromStdString(entry.key),
+								      QString::fromStdString(entry.old_value),
+								      QString::fromStdString(entry.new_value)));
+			QString deltas = QStringLiteral("—");
+			if (entry.deltas) {
+				const auto &delta = *entry.deltas;
+				deltas =
+					QStringLiteral(
+						"CPU %1 pp · render %2 ms\nskip %3 · missed %4 · drop %5 pp\nbitrate %6 kb/s · %7 → %8")
+						.arg(signed_value(delta.cpu_percentage_points, 1),
+						     signed_value(delta.render_time_ms, 2),
+						     signed_value(delta.encoder_skipped_percentage_points, 2),
+						     signed_value(delta.missed_percentage_points, 2),
+						     signed_value(delta.output_dropped_percentage_points, 2),
+						     signed_value(delta.bitrate_kbps, 0),
+						     BakeoffVerdictText(delta.verdict_before),
+						     BakeoffVerdictText(delta.verdict_after));
+			}
+			const QString state =
+				entry.state == preflight::bench::ImpactState::Settling     ? QObject::tr("Settling")
+				: entry.state == preflight::bench::ImpactState::Complete   ? QObject::tr("Complete")
+				: entry.state == preflight::bench::ImpactState::NoBaseline ? QObject::tr("No baseline")
+											   : QObject::tr("Waiting");
+			const int index = static_cast<int>(row);
+			impact_table->setItem(index, 0, new QTableWidgetItem(change));
+			impact_table->setItem(index, 1, new QTableWidgetItem(window_text(entry.baseline)));
+			impact_table->setItem(index, 2, new QTableWidgetItem(window_text(entry.after)));
+			impact_table->setItem(index, 3, new QTableWidgetItem(deltas));
+			impact_table->setItem(index, 4, new QTableWidgetItem(state));
+		}
+		impact_table->resizeRowsToContents();
+		impact_table->setMaximumHeight(std::min(230, impact_table->horizontalHeader()->sizeHint().height() +
+								     impact_table->verticalHeader()->length() +
+								     impact_table->frameWidth() * 2 + 4));
 	}
 
 	bool PrepareRecordingPath()
@@ -1708,7 +2422,12 @@ struct PreflightBenchWindow::Impl {
 
 	void ShowMetricDetail(int index)
 	{
-		if (index < 0 || index >= static_cast<int>(charts.size())) {
+		if (index < 0) {
+			selected_metric = -1;
+			chart_detail_group->setVisible(false);
+			return;
+		}
+		if (index >= static_cast<int>(charts.size())) {
 			return;
 		}
 		selected_metric = index;
@@ -1761,48 +2480,9 @@ struct PreflightBenchWindow::Impl {
 		setClasses(state_label, "text-muted");
 		run_button = new QPushButton(
 			cloudflare_speed_only ? QObject::tr("Run speed test") : QObject::tr("Start bench"), dialog);
+		run_button->setObjectName(QStringLiteral("preflight-start-button"));
 		header->addWidget(title);
-		header->addSpacing(8);
-		header->addWidget(state_label);
-		header->addStretch(1);
-		header->addWidget(run_button);
-		root->addLayout(header);
-
-		QString destination;
-		if (supported_test_mode.isEmpty()) {
-			destination = QObject::tr("No safe test service selected");
-		} else if (cloudflare_speed_only) {
-			destination = supported_test_mode;
-		} else {
-			destination = QObject::tr("Private test: %1").arg(supported_test_mode);
-		}
-		destination_label = new QLabel(destination, dialog);
-		destination_label->setWordWrap(true);
-		setClasses(destination_label, "text-muted");
-		// A recorded preview already says so in the header; there is no destination to show.
-		destination_label->setVisible(!recorded_apply_preview);
-		root->addWidget(destination_label);
-
-		tabs = new QTabWidget(dialog);
-		tabs->setObjectName(QStringLiteral("preflight-tabs"));
-		root->addWidget(tabs, 1);
-
-		auto *live_tab = new QWidget(tabs);
-		live_tab->setObjectName(QStringLiteral("preflight-live-tab"));
-		auto *live_layout = new QVBoxLayout(live_tab);
-		if (cloudflare_speed_only) {
-			auto *privacy_note = new QLabel(
-				QObject::tr(
-					"Speed test only. Cloudflare receives your IP and up to 4 MiB in each direction; no OBS stream is sent."),
-				live_tab);
-			privacy_note->setWordWrap(true);
-			live_layout->addWidget(privacy_note);
-			uplink_result_label = new QLabel(QObject::tr("No speed test has run yet."), live_tab);
-			uplink_result_label->setWordWrap(true);
-			live_layout->addWidget(uplink_result_label);
-		}
-
-		auto *summary = new QFrame(live_tab);
+		auto *summary = new QFrame(dialog);
 		summary->setObjectName(QStringLiteral("preflight-verdict-summary"));
 		auto *summary_layout = new QHBoxLayout(summary);
 		verdict_label = new QLabel(QObject::tr("Waiting"), summary);
@@ -1814,7 +2494,126 @@ struct PreflightBenchWindow::Impl {
 		reason_label->setWordWrap(true);
 		summary_layout->addWidget(verdict_label, 0, Qt::AlignVCenter);
 		summary_layout->addWidget(reason_label, 1);
-		live_layout->addWidget(summary);
+		header->addWidget(summary, 1);
+		header->addWidget(run_button);
+		root->addLayout(header);
+		auto *status_row = new QHBoxLayout;
+		state_label->setObjectName(QStringLiteral("preflight-operation-status"));
+		status_row->addWidget(state_label, 1);
+
+		QString destination;
+		if (supported_test_mode.isEmpty()) {
+			destination = QObject::tr("No safe test service selected");
+		} else if (cloudflare_speed_only) {
+			destination = supported_test_mode;
+		} else {
+			destination = QObject::tr("Private test: %1").arg(supported_test_mode);
+		}
+		destination_label = new QLabel(destination, dialog);
+		destination_label->setObjectName(QStringLiteral("preflight-destination"));
+		destination_label->setWordWrap(true);
+		setClasses(destination_label, "text-muted");
+		destination_label->setVisible(!recorded_apply_preview);
+		status_row->addWidget(destination_label, 2);
+		if (cloudflare_speed_only) {
+			auto *privacy_note = new QLabel(
+				QObject::tr(
+					"Speed test only. Cloudflare receives your IP and up to 4 MiB in each direction; no OBS stream is sent."),
+				dialog);
+			privacy_note->setWordWrap(true);
+			status_row->addWidget(privacy_note, 2);
+			uplink_result_label = new QLabel(QObject::tr("No speed test has run yet."), dialog);
+			uplink_result_label->setObjectName(QStringLiteral("preflight-uplink-result"));
+			uplink_result_label->setWordWrap(true);
+			status_row->addWidget(uplink_result_label, 2);
+		}
+		root->addLayout(status_row);
+
+		auto *one_screen = new QSplitter(Qt::Horizontal, dialog);
+		one_screen->setObjectName(QStringLiteral("preflight-one-screen"));
+		root->addWidget(one_screen, 1);
+		auto *left_scroll = new QScrollArea(one_screen);
+		left_scroll->setObjectName(QStringLiteral("preflight-settings-scroll"));
+		left_scroll->setWidgetResizable(true);
+		left_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+		left_scroll->setMinimumWidth(350);
+		auto *settings = new QWidget(left_scroll);
+		settings->setObjectName(QStringLiteral("preflight-settings"));
+		auto *settings_layout = new QVBoxLayout(settings);
+		settings_layout->setContentsMargins(4, 4, 8, 4);
+		settings_layout->setSpacing(8);
+		left_scroll->setWidget(settings);
+		one_screen->addWidget(left_scroll);
+
+		auto *right_side = new QWidget(one_screen);
+		right_side->setObjectName(QStringLiteral("preflight-right-side"));
+		auto *right_layout = new QVBoxLayout(right_side);
+		right_layout->setContentsMargins(8, 4, 4, 4);
+		right_layout->setSpacing(8);
+		one_screen->addWidget(right_side);
+		one_screen->setStretchFactor(0, 4);
+		one_screen->setStretchFactor(1, 6);
+		one_screen->setSizes({430, 700});
+
+		auto *video_group = new QGroupBox(QObject::tr("Video"), settings);
+		video_group->setObjectName(QStringLiteral("preflight-video-settings"));
+		auto *video_form = new QFormLayout(video_group);
+		resolution_combo = new QComboBox(video_group);
+		resolution_combo->setObjectName(QStringLiteral("preflight-output-resolution"));
+		fps_combo = new QComboBox(video_group);
+		fps_combo->setObjectName(QStringLiteral("preflight-output-fps"));
+		struct obs_video_info initial_video = {};
+		const bool have_video = !recorded_apply_preview && obs_get_video_info(&initial_video);
+		if (have_video && video_settings.base_width == 0) {
+			video_settings = {initial_video.base_width,
+					  initial_video.base_height,
+					  initial_video.output_width,
+					  initial_video.output_height,
+					  initial_video.fps_num,
+					  initial_video.fps_den,
+					  1,
+					  true};
+			initial_video_settings = video_settings;
+		}
+		const uint32_t output_width = video_settings.output_width ? video_settings.output_width : 1920;
+		const uint32_t output_height = video_settings.output_height ? video_settings.output_height : 1080;
+		const std::array<std::pair<uint32_t, uint32_t>, 4> output_sizes = {
+			std::pair{output_width, output_height}, std::pair{1920U, 1080U}, std::pair{1280U, 720U},
+			std::pair{960U, 540U}};
+		for (const auto &[width, height] : output_sizes) {
+			const QString label = QStringLiteral("%1 × %2").arg(width).arg(height);
+			if (resolution_combo->findText(label) < 0) {
+				resolution_combo->addItem(label, QVariant::fromValue(QSize(static_cast<int>(width),
+											   static_cast<int>(height))));
+			}
+		}
+		const uint32_t base_fps_num = video_settings.fps_num ? video_settings.fps_num : 60;
+		const uint32_t base_fps_den = video_settings.fps_den && video_settings.fps_divisor
+						      ? video_settings.fps_den / video_settings.fps_divisor
+						      : 1;
+		for (uint32_t divisor = 1; divisor <= 4; ++divisor) {
+			const double fps = static_cast<double>(base_fps_num) / (base_fps_den * divisor);
+			fps_combo->addItem(QString::number(fps, 'f', std::abs(fps - std::round(fps)) < 0.001 ? 0 : 2),
+					   QVariant::fromValue(divisor));
+		}
+		if (have_video) {
+			const QString current_resolution =
+				QStringLiteral("%1 × %2").arg(output_width).arg(output_height);
+			resolution_combo->setCurrentText(current_resolution);
+			fps_combo->setCurrentIndex(fps_combo->findData(
+				static_cast<uint>(video_settings.fps_divisor ? video_settings.fps_divisor : 1)));
+		}
+		video_form->addRow(QObject::tr("Output resolution"), resolution_combo);
+		video_form->addRow(QObject::tr("Frame rate"), fps_combo);
+		auto *canvas_note =
+			new QLabel(QObject::tr("Base canvas stays %1 × %2 while OBS is running.")
+					   .arg(video_settings.base_width ? video_settings.base_width : 1920)
+					   .arg(video_settings.base_height ? video_settings.base_height : 1080),
+				   video_group);
+		canvas_note->setObjectName(QStringLiteral("preflight-base-canvas-note"));
+		setClasses(canvas_note, "text-muted");
+		video_form->addRow(QString(), canvas_note);
+		settings_layout->addWidget(video_group);
 
 		charts[0] = {QObject::tr("CPU"), {QObject::tr("CPU")}, {}};
 		charts[1] = {QObject::tr("Render time vs interval"),
@@ -1834,7 +2633,7 @@ struct PreflightBenchWindow::Impl {
 			      {QObject::tr("66.67%"), OBS_CONGESTION_DANGER_PERCENT, {}}}};
 		charts[7] = {QObject::tr("Connect time"), {QObject::tr("ms")}, {}};
 
-		metric_table = new QTableWidget(static_cast<int>(metric_rows.size()), 4, live_tab);
+		metric_table = new QTableWidget(static_cast<int>(metric_rows.size()), 4, right_side);
 		metric_table->setObjectName(QStringLiteral("preflight-metric-table"));
 		metric_table->setHorizontalHeaderLabels(
 			{QObject::tr("Metric"), QObject::tr("Value"), QObject::tr("Trend"), QObject::tr("Status")});
@@ -1881,9 +2680,14 @@ struct PreflightBenchWindow::Impl {
 		connect(metric_table, &QTableWidget::currentCellChanged, dialog,
 			[this](int row, int, int, int) { ShowMetricDetail(row); });
 		ResizeMetricTableToContents();
-		live_layout->addWidget(metric_table);
+		auto *metrics_group = new QGroupBox(QObject::tr("Live stats"), right_side);
+		metrics_group->setObjectName(QStringLiteral("preflight-metrics"));
+		auto *metrics_layout = new QVBoxLayout(metrics_group);
+		metrics_layout->setContentsMargins(6, 8, 6, 6);
+		metrics_layout->addWidget(metric_table);
+		right_layout->addWidget(metrics_group);
 
-		chart_detail_group = new QGroupBox(QObject::tr("Metric detail"), live_tab);
+		chart_detail_group = new QGroupBox(QObject::tr("Metric detail"), right_side);
 		chart_detail_group->setObjectName(QStringLiteral("preflight-chart-detail-group"));
 		auto *detail_layout = new QVBoxLayout(chart_detail_group);
 		chart_detail = new MetricChart(chart_detail_group);
@@ -1891,95 +2695,172 @@ struct PreflightBenchWindow::Impl {
 		chart_detail->setMinimumHeight(148);
 		detail_layout->addWidget(chart_detail);
 		chart_detail_group->setVisible(false);
-		live_layout->addWidget(chart_detail_group);
+		right_layout->addWidget(chart_detail_group);
 
-		auto *recording_group = new QGroupBox(QObject::tr("Local recording"), live_tab);
-		auto *recording_layout = new QFormLayout(recording_group);
-		recording_path_label = new QLabel(QObject::tr("Created when the bench starts."), recording_group);
-		recording_path_label->setWordWrap(true);
-		recording_layout->addRow(QObject::tr("File"), recording_path_label);
-		live_layout->addWidget(recording_group);
-		live_layout->addStretch(1);
-		tabs->addTab(live_tab, QObject::tr("Live bench"));
+		auto *preview_group = new QGroupBox(QObject::tr("Live encoded preview"), right_side);
+		preview_group->setObjectName(QStringLiteral("preflight-live-preview"));
+		auto *preview_layout = new QVBoxLayout(preview_group);
+		loupe_status_label = new QLabel(QObject::tr("Waiting for the live bench."), preview_group);
+		loupe_status_label->setWordWrap(true);
+		loupe_view = new LoupeView(preview_group);
+		loupe_view->setObjectName(QStringLiteral("preflight-loupe-view"));
+		loupe_view->setMinimumHeight(220);
+		loupe_view->setMaximumHeight(350);
+		preview_layout->addWidget(loupe_view, 1);
+		preview_layout->addWidget(loupe_status_label);
+		right_layout->insertWidget(0, preview_group, 2);
+		auto *impact_group = new QGroupBox(QObject::tr("Impact of recent changes"), right_side);
+		impact_group->setObjectName(QStringLiteral("preflight-impact-group"));
+		auto *impact_layout = new QVBoxLayout(impact_group);
+		impact_table = new QTableWidget(0, 5, impact_group);
+		impact_table->setObjectName(QStringLiteral("preflight-impact-list"));
+		impact_table->setHorizontalHeaderLabels(
+			{QObject::tr("Change"), QObject::tr("Baseline"), QObject::tr("After"),
+			 QObject::tr("Δ · percent points unless shown"), QObject::tr("State")});
+		impact_table->verticalHeader()->hide();
+		impact_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		impact_table->setWordWrap(true);
+		impact_table->setTextElideMode(Qt::ElideNone);
+		impact_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+		impact_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+		impact_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+		impact_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+		impact_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+		impact_table->setMaximumHeight(150);
+		impact_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+		impact_layout->addWidget(impact_table);
+		right_layout->addWidget(impact_group);
+		right_layout->setStretch(0, 3);
+		right_layout->setStretch(1, 2);
+		right_layout->setStretch(2, 0);
 
-		auto *bakeoff_tab = new QWidget(tabs);
-		QVBoxLayout *bakeoff_tab_layout = new QVBoxLayout(bakeoff_tab);
-		auto *bakeoff_group = new QGroupBox(QObject::tr("Encoder bake-off"), bakeoff_tab);
+		auto *stream_group = new QGroupBox(QObject::tr("Stream encoder"), settings);
+		stream_group->setObjectName(QStringLiteral("preflight-stream-settings"));
+		stream_settings_layout = new QVBoxLayout(stream_group);
+		if (encoder_properties) {
+			stream_settings_layout->addWidget(encoder_properties);
+		} else {
+			stream_settings_layout->addWidget(new QLabel(
+				setup_error.isEmpty() ? QObject::tr("Encoder settings unavailable") : setup_error,
+				stream_group));
+		}
+		settings_layout->addWidget(stream_group);
+		auto *recording_group = new QGroupBox(QObject::tr("Recording encoder"), settings);
+		recording_group->setObjectName(QStringLiteral("preflight-recording-settings"));
+		auto *recording_layout = new QVBoxLayout(recording_group);
+		if (initial_output_mode == QStringLiteral("Simple") && !recorded_apply_preview) {
+			auto *quality_form = new QFormLayout;
+			simple_recording_quality_combo = new QComboBox(recording_group);
+			simple_recording_quality_combo->setObjectName(
+				QStringLiteral("preflight-simple-recording-quality"));
+			simple_recording_quality_combo->addItem(QObject::tr("Same as stream"),
+								QStringLiteral("Stream"));
+			simple_recording_quality_combo->addItem(QObject::tr("High quality, medium file"),
+								QStringLiteral("Small"));
+			simple_recording_quality_combo->addItem(QObject::tr("Indistinguishable, large file"),
+								QStringLiteral("HQ"));
+			simple_recording_quality_combo->addItem(QObject::tr("Lossless"), QStringLiteral("Lossless"));
+			const int quality_index =
+				simple_recording_quality_combo->findData(initial_simple_recording_quality);
+			if (quality_index >= 0) {
+				simple_recording_quality_combo->setCurrentIndex(quality_index);
+			}
+			simple_recording_quality_combo->setEnabled(recording_encoder_properties != nullptr);
+			quality_form->addRow(QObject::tr("Simple recording quality"), simple_recording_quality_combo);
+			recording_layout->addLayout(quality_form);
+			QObject::connect(
+				simple_recording_quality_combo, qOverload<int>(&QComboBox::currentIndexChanged), dialog,
+				[this](int index) {
+					if (index < 0 || recorded_apply_preview) {
+						return;
+					}
+					const QString next = simple_recording_quality_combo->currentData().toString();
+					if (next == current_simple_recording_quality) {
+						return;
+					}
+					const QString previous = current_simple_recording_quality;
+					if (!ApplySimpleRecordingQuality(next)) {
+						const QSignalBlocker blocker(simple_recording_quality_combo);
+						simple_recording_quality_combo->setCurrentIndex(
+							simple_recording_quality_combo->findData(previous));
+						SetStatus(QObject::tr(
+							"This Simple recording quality cannot be previewed by the active encoder."));
+						return;
+					}
+					impact_tracker.RecordChanges({{"Recording quality", "RecQuality",
+								       previous.toStdString(), next.toStdString()}});
+					current_simple_recording_quality = next;
+					RenderImpactEntries(impact_tracker.Entries());
+					InvalidateApplyPreview();
+				});
+		}
+		if (recording_encoder_properties) {
+			recording_layout->addWidget(recording_encoder_properties);
+		} else {
+			recording_layout->addWidget(
+				new QLabel(QObject::tr("Recording encoder settings unavailable"), recording_group));
+		}
+		settings_layout->addWidget(recording_group);
+		auto *toggle_group = new QGroupBox(QObject::tr("Live filters"), settings);
+		toggle_group->setObjectName(QStringLiteral("preflight-feature-toggles"));
+		toggle_layout = new QVBoxLayout(toggle_group);
+		captions_toggle = new QCheckBox(QObject::tr("Live captions (on-device)"), toggle_group);
+		captions_toggle->setObjectName(QStringLiteral("preflight-toggle-live-captions"));
+		captions_toggle->setEnabled(false);
+		captions_toggle->setToolTip(QObject::tr("This filter is not available in the current OBS scene."));
+		toggle_layout->addWidget(captions_toggle);
+		auto *toggle_note = new QLabel(
+			QObject::tr("Filter toggles take effect immediately and are not part of Apply."), toggle_group);
+		toggle_note->setObjectName(QStringLiteral("preflight-toggle-note"));
+		toggle_note->setWordWrap(true);
+		setClasses(toggle_note, "text-muted");
+		toggle_layout->addWidget(toggle_note);
+		settings_layout->addWidget(toggle_group);
+
+		auto *bakeoff_group = new QGroupBox(QObject::tr("Encoder bake-off"), settings);
 		bakeoff_group->setObjectName(QStringLiteral("preflight-bakeoff-group"));
 		bakeoff_group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
 		auto *bakeoff_layout = new QVBoxLayout(bakeoff_group);
 		auto *bakeoff_controls = new QHBoxLayout;
-		auto *bakeoff_description = new QLabel(
-			QObject::tr("Each candidate runs for five seconds on the private test output."), bakeoff_group);
-		bakeoff_description->setWordWrap(true);
 		bakeoff_status_label = new QLabel(QObject::tr("No bake-off has run yet."), bakeoff_group);
-		bakeoff_button = new QPushButton(QObject::tr("Run bake-off"), bakeoff_group);
+		bakeoff_status_label->setWordWrap(true);
+		bakeoff_button = new QPushButton(QObject::tr("Try every encoder…"), bakeoff_group);
+		bakeoff_button->setObjectName(QStringLiteral("preflight-bakeoff-button"));
 		bakeoff_controls->addWidget(bakeoff_status_label, 1);
 		bakeoff_controls->addWidget(bakeoff_button);
-		bakeoff_table = new QTableWidget(0, 7, bakeoff_group);
+		bakeoff_table = new QTableWidget(0, 3, bakeoff_group);
 		bakeoff_table->setObjectName(QStringLiteral("preflight-bakeoff-table"));
 		bakeoff_table->setHorizontalHeaderLabels(
-			{QObject::tr("Encoder"), QObject::tr("Resolution"), QObject::tr("FPS"), QObject::tr("Headroom"),
-			 QObject::tr("Skipped"), QObject::tr("Verdict"), QObject::tr("Reason")});
+			{QObject::tr("Candidate"), QObject::tr("Result"), QObject::tr("Action")});
 		bakeoff_table->verticalHeader()->hide();
 		bakeoff_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		bakeoff_table->setSelectionBehavior(QAbstractItemView::SelectRows);
 		bakeoff_table->setSortingEnabled(false);
 		bakeoff_table->setWordWrap(true);
 		bakeoff_table->setTextElideMode(Qt::ElideNone);
-		bakeoff_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-		bakeoff_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-		bakeoff_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-		bakeoff_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-		bakeoff_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-		bakeoff_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
-		bakeoff_table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+		// Keep the action label intact in the narrower settings column; let the
+		// candidate and result descriptions wrap into the remaining space.
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+		bakeoff_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
+		bakeoff_table->horizontalHeader()->resizeSection(0, 108);
+		bakeoff_table->horizontalHeader()->resizeSection(2, 104);
 		bakeoff_table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+		bakeoff_table->verticalHeader()->setMinimumSectionSize(48);
 		bakeoff_table->setMinimumHeight(0);
 		bakeoff_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-		ResizeBakeoffTableToContents();
-		bakeoff_layout->addWidget(bakeoff_description);
 		bakeoff_layout->addLayout(bakeoff_controls);
 		bakeoff_layout->addWidget(bakeoff_table);
-		bakeoff_tab_layout->addWidget(bakeoff_group);
-		bakeoff_tab_layout->addStretch(1);
-		tabs->addTab(bakeoff_tab, QObject::tr("Bake-off"));
+		settings_layout->addWidget(bakeoff_group);
 
-		auto *loupe_tab = new QWidget(tabs);
-		QVBoxLayout *loupe_tab_layout = new QVBoxLayout(loupe_tab);
-		auto *loupe_group = new QGroupBox(QObject::tr("400% loupe"), loupe_tab);
-		loupe_group->setObjectName(QStringLiteral("preflight-loupe-group"));
-		auto *loupe_layout = new QVBoxLayout(loupe_group);
-		loupe_status_label = new QLabel(QObject::tr("Waiting for the live bench."), loupe_group);
-		loupe_status_label->setWordWrap(true);
-		loupe_view = new LoupeView(loupe_group);
-		loupe_view->setObjectName(QStringLiteral("preflight-loupe-view"));
-		// Enough height for the default crop at 400%; the rest of the tab stays empty instead of
-		// stretching the panes around a small picture.
-		loupe_view->setMaximumHeight(320);
-		loupe_layout->addWidget(loupe_status_label);
-		loupe_layout->addWidget(loupe_view, 1);
-		loupe_tab_layout->addWidget(loupe_group);
-		loupe_tab_layout->addStretch(1);
-		tabs->addTab(loupe_tab, QObject::tr("Loupe"));
+		recording_path_label = new QLabel(QObject::tr("Created when the bench starts."), settings);
+		recording_path_label->setObjectName(QStringLiteral("preflight-recording-path"));
+		recording_path_label->setWordWrap(true);
+		setClasses(recording_path_label, "text-muted");
+		settings_layout->addWidget(recording_path_label);
 
-		auto *apply_tab = new QWidget(tabs);
-		QVBoxLayout *apply_tab_layout = new QVBoxLayout(apply_tab);
-		if (encoder_properties || !recorded_apply_preview) {
-			auto *encoder_group = new QGroupBox(QObject::tr("Stream encoder"), apply_tab);
-			auto *encoder_layout = new QVBoxLayout(encoder_group);
-			if (encoder_properties) {
-				encoder_layout->addWidget(encoder_properties);
-			} else {
-				encoder_layout->addWidget(
-					new QLabel(setup_error.isEmpty() ? QObject::tr("Encoder settings unavailable")
-									 : setup_error,
-						   encoder_group));
-			}
-			apply_tab_layout->addWidget(encoder_group, 1);
-		}
 		if (encoder_properties || recorded_apply_preview) {
-			apply_group = new QGroupBox(QObject::tr("Apply preview"), apply_tab);
+			apply_group = new QGroupBox(QObject::tr("Apply to OBS"), settings);
 			apply_group->setObjectName(QStringLiteral("preflight-apply-preview"));
 			auto *apply_layout = new QVBoxLayout(apply_group);
 			apply_mode_label = new QLabel(apply_group);
@@ -2001,27 +2882,23 @@ struct PreflightBenchWindow::Impl {
 			apply_note = new QLabel(apply_group);
 			apply_note->setObjectName(QStringLiteral("preflight-apply-note"));
 			apply_note->setWordWrap(true);
-			apply_button = new QPushButton(QObject::tr("Apply to OBS"), apply_group);
+			apply_button = new QPushButton(QObject::tr("Apply"), apply_group);
 			apply_button->setObjectName(QStringLiteral("preflight-apply-button"));
 			apply_button->setEnabled(false);
-			auto *apply_form = new QFormLayout;
-			apply_form->addRow(QObject::tr("Output mode"), apply_mode_label);
-			apply_layout->addLayout(apply_form);
+			apply_layout->addWidget(apply_mode_label);
 			apply_layout->addWidget(apply_table);
 			apply_layout->addWidget(apply_note);
-			// OBS dialogs keep their action buttons right-aligned.
 			auto *apply_buttons = new QHBoxLayout;
 			apply_buttons->addStretch(1);
 			apply_buttons->addWidget(apply_button);
 			apply_layout->addLayout(apply_buttons);
-			apply_tab_layout->addWidget(apply_group);
-		} else {
-			apply_tab_layout->addWidget(
-				new QLabel(QObject::tr("No editable encoder settings are available."), apply_tab));
+			settings_layout->addWidget(apply_group);
 		}
-		apply_tab_layout->addStretch(1);
-		tabs->addTab(apply_tab, QObject::tr("Apply"));
-
+		settings_layout->addStretch(1);
+		QObject::connect(resolution_combo, qOverload<int>(&QComboBox::currentIndexChanged), dialog,
+				 [this](int) { ApplyVideoControls(); });
+		QObject::connect(fps_combo, qOverload<int>(&QComboBox::currentIndexChanged), dialog,
+				 [this](int) { ApplyVideoControls(); });
 		if (cloudflare_speed_only) {
 			bakeoff_button->setEnabled(false);
 			SetStatus(QObject::tr("Ready · Cloudflare speed test only"));
@@ -2045,27 +2922,45 @@ struct PreflightBenchWindow::Impl {
 			const auto &recorded = recorded_data.bakeoff_rows[row];
 			const auto &result = recorded.result;
 			const int table_row = static_cast<int>(row);
-			bakeoff_table->setItem(table_row, 0, new QTableWidgetItem(recorded.encoder));
-			bakeoff_table->setItem(table_row, 1, new QTableWidgetItem(recorded.resolution));
-			bakeoff_table->setItem(table_row, 2, new QTableWidgetItem(recorded.fps));
-			bakeoff_table->setItem(table_row, 3,
-					       new QTableWidgetItem(QStringLiteral("%1 ms").arg(
-						       result.render_headroom_ns / 1'000'000.0, 0, 'f', 2)));
-			bakeoff_table->setItem(table_row, 4,
-					       new QTableWidgetItem(QStringLiteral("%1 %").arg(
-						       result.encoder_skip_percent, 0, 'f', 2)));
-			bakeoff_table->setItem(table_row, 5, new QTableWidgetItem(BakeoffVerdictText(result.verdict)));
-			bakeoff_table->setItem(table_row, 6, new QTableWidgetItem(QString::fromUtf8(result.reason)));
+			const QString candidate_label = recorded.encoder + QStringLiteral("\n") + recorded.resolution +
+							QStringLiteral(" · ") + recorded.fps + QStringLiteral(" fps");
+			auto *candidate_item = new QTableWidgetItem(candidate_label);
+			candidate_item->setToolTip(candidate_label);
+			bakeoff_table->setItem(table_row, 0, candidate_item);
+			const QString result_summary = QStringLiteral("%1 ms · %2% skipped · %3")
+							       .arg(result.render_headroom_ns / 1'000'000.0, 0, 'f', 2)
+							       .arg(result.encoder_skip_percent, 0, 'f', 2)
+							       .arg(BakeoffVerdictText(result.verdict)) +
+						       QStringLiteral("\n") + QString::fromUtf8(result.reason);
+			auto *result_item = new QTableWidgetItem(result_summary);
+			result_item->setToolTip(result_summary);
+			bakeoff_table->setItem(table_row, 1, result_item);
+			auto *use = new QPushButton(QObject::tr("Use these"), bakeoff_table);
+			use->setObjectName(QStringLiteral("preflight-bakeoff-use-%1").arg(row));
+			use->setEnabled(false); // Recorded render fixtures have no live encoder to load.
+			bakeoff_table->setCellWidget(table_row, 2, use);
 		}
 		ResizeBakeoffTableToContents();
 		bakeoff_status_label->setText(QObject::tr("Recorded results from the preflight engine."));
 		if (loupe_view) {
-			loupe_view->SetPair(recorded_data.loupe_pair);
+			loupe_view->SetPairs(recorded_data.loupe_pair, recorded_data.recording_loupe_pair
+									       ? recorded_data.recording_loupe_pair
+									       : recorded_data.loupe_pair);
 		}
 		if (loupe_status_label) {
 			loupe_status_label->setText(
 				recorded_data.loupe_pair ? QObject::tr("Comparing recorded source and decoded frames.")
 							 : QObject::tr("No recorded frame pair is available."));
+		}
+		RenderImpactEntries(recorded_data.impacts);
+		for (const auto &toggle : recorded_data.toggles) {
+			if (toggle.name == "Live captions (on-device)" && captions_toggle) {
+				captions_toggle->setChecked(toggle.enabled);
+				captions_toggle->setEnabled(toggle.available);
+				if (!toggle.status.empty()) {
+					captions_toggle->setToolTip(QString::fromStdString(toggle.status));
+				}
+			}
 		}
 	}
 
@@ -2089,6 +2984,16 @@ struct PreflightBenchWindow::Impl {
 		point.verdict = window.verdict;
 		point.reason = QString::fromUtf8(window.reason);
 		points.push_back(std::move(point));
+		const preflight::bench::MetricWindow completed{++impact_window_sequence, window};
+		metric_history.push_back(completed);
+		if (metric_history.size() > MAX_ENGINE_WINDOWS) {
+			metric_history.erase(
+				metric_history.begin(),
+				metric_history.begin() +
+					static_cast<std::ptrdiff_t>(metric_history.size() - MAX_ENGINE_WINDOWS));
+		}
+		impact_tracker.ObserveCompleteWindow(completed);
+		RenderImpactEntries(impact_tracker.Entries());
 		if (points.size() > CHART_HISTORY_SIZE) {
 			points.erase(points.begin(),
 				     points.begin() + static_cast<std::ptrdiff_t>(points.size() - CHART_HISTORY_SIZE));
@@ -2211,8 +3116,10 @@ struct PreflightBenchWindow::Impl {
 	{
 		candidate_render_headroom_ns = window.render_headroom_ns;
 		candidate_encoder_skip_percent = window.encoder_skip_percent;
-		SetBakeoffCell(3, QStringLiteral("%1 ms").arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2));
-		SetBakeoffCell(4, QStringLiteral("%1 %").arg(candidate_encoder_skip_percent, 0, 'f', 2));
+		SetBakeoffCell(1, QStringLiteral("%1 ms · %2% skipped · %3")
+					  .arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2)
+					  .arg(candidate_encoder_skip_percent, 0, 'f', 2)
+					  .arg(BakeoffVerdictText(candidate_verdict)));
 	}
 
 	void CompleteBakeoffCandidate(int32_t verdict, const QString &reason)
@@ -2227,9 +3134,14 @@ struct PreflightBenchWindow::Impl {
 			SetBakeoffStatus(QObject::tr("The preflight engine could not record a candidate result."));
 		}
 		bakeoff_candidate_active = false;
-		SetBakeoffCell(5, BakeoffVerdictText(candidate_verdict));
-		SetBakeoffCell(6, final_reason.isEmpty() ? QObject::tr("No plain-language reason was reported.")
-							 : final_reason);
+		SetBakeoffCell(1, QStringLiteral("%1 ms · %2% skipped · %3\n%4")
+					  .arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2)
+					  .arg(candidate_encoder_skip_percent, 0, 'f', 2)
+					  .arg(BakeoffVerdictText(candidate_verdict))
+					  .arg(final_reason.isEmpty()
+						       ? QObject::tr("No plain-language reason was reported.")
+						       : final_reason));
+		bakeoff_table->item(static_cast<int>(active_bakeoff_row), 1)->setToolTip(final_reason);
 		bakeoff_table->scrollToItem(bakeoff_table->item(static_cast<int>(active_bakeoff_row), 0));
 		bakeoff_waiting_for_stop = true;
 		StopLoupe();
@@ -2267,6 +3179,7 @@ struct PreflightBenchWindow::Impl {
 		if (encoder_properties) {
 			encoder_properties->setEnabled(true);
 		}
+		SetBakeoffUseActionsEnabled(true);
 		SetBakeoffStatus(cancelled ? QObject::tr("Bake-off stopped. Completed results remain in the table.")
 					   : QObject::tr("Bake-off complete. Results for %1 candidates are shown.")
 						     .arg(bakeoff_candidates.size()));
@@ -2329,10 +3242,7 @@ struct PreflightBenchWindow::Impl {
 		candidate_encoder_skip_percent = 0.0;
 		candidate_last_window_end_ms = 0;
 		bakeoff_candidate_reason.clear();
-		SetBakeoffCell(3, QStringLiteral("—"));
-		SetBakeoffCell(4, QStringLiteral("—"));
-		SetBakeoffCell(5, QObject::tr("Running"));
-		SetBakeoffCell(6, QString());
+		SetBakeoffCell(1, QObject::tr("Running"));
 		if (!PrepareYouTubeTestKey()) {
 			bakeoff_cancelled = true;
 			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL, youtube_test_error);
@@ -2406,8 +3316,7 @@ struct PreflightBenchWindow::Impl {
 		bakeoff_button->setEnabled(false);
 		bakeoff_button->setText(QObject::tr("Stopping…"));
 		if (bakeoff_candidate_active) {
-			SetBakeoffCell(5, QObject::tr("Stopped"));
-			SetBakeoffCell(6, QObject::tr("Stopped before this candidate finished."));
+			SetBakeoffCell(1, QObject::tr("Stopped\nStopped before this candidate finished."));
 			bakeoff_candidate_active = false;
 		}
 		bakeoff_waiting_for_stop = true;
@@ -2450,7 +3359,6 @@ struct PreflightBenchWindow::Impl {
 						candidate_verdict = window.verdict;
 						bakeoff_candidate_reason = QString::fromUtf8(window.reason);
 					}
-					SetBakeoffCell(5, BakeoffVerdictText(candidate_verdict));
 					if (candidate_verdict == OBS_PREFLIGHT_FAIL) {
 						CompleteBakeoffCandidate(candidate_verdict, bakeoff_candidate_reason);
 						return;
@@ -2470,35 +3378,251 @@ struct PreflightBenchWindow::Impl {
 		}
 	}
 
+	void RecordEditorChanges(preflight::bench::EncoderRole role)
+	{
+		OBSPropertiesView *view = role == preflight::bench::EncoderRole::Stream ? encoder_properties
+											: recording_encoder_properties;
+		QJsonObject &previous = role == preflight::bench::EncoderRole::Stream ? last_stream_editor_settings
+										      : last_recording_editor_settings;
+		if (!view) {
+			return;
+		}
+		const QJsonObject current = json_object_from_settings(view->GetSettings());
+		QStringList keys;
+		for (auto it = previous.constBegin(); it != previous.constEnd(); ++it) {
+			if (current.value(it.key()) != it.value()) {
+				keys.push_back(it.key());
+			}
+		}
+		for (auto it = current.constBegin(); it != current.constEnd(); ++it) {
+			if (!previous.contains(it.key())) {
+				keys.push_back(it.key());
+			}
+		}
+		std::sort(keys.begin(), keys.end());
+		std::vector<preflight::bench::SettingChange> changes;
+		const std::string description = role == preflight::bench::EncoderRole::Stream ? "Stream encoder"
+											      : "Recording encoder";
+		for (const QString &key : keys) {
+			const QString old_value = preflight::apply::ValueForDisplay(previous.value(key));
+			const QString new_value = preflight::apply::ValueForDisplay(current.value(key));
+			if (old_value != new_value) {
+				changes.push_back({description, key.toStdString(), old_value.toStdString(),
+						   new_value.toStdString()});
+			}
+		}
+		previous = current;
+		if (!changes.empty()) {
+			impact_tracker.RecordChanges(changes);
+			RenderImpactEntries(impact_tracker.Entries());
+		}
+	}
+
+	void ApplyVideoControls()
+	{
+		if (!resolution_combo || !fps_combo || recorded_apply_preview || resolution_combo->currentIndex() < 0 ||
+		    fps_combo->currentIndex() < 0) {
+			return;
+		}
+		const QSize output_size = resolution_combo->currentData().toSize();
+		const uint32_t requested_divisor = fps_combo->currentData().toUInt();
+		if (output_size.width() <= 0 || output_size.height() <= 0 || requested_divisor == 0 ||
+		    video_settings.fps_divisor == 0) {
+			return;
+		}
+		const uint32_t base_den = video_settings.fps_den / video_settings.fps_divisor;
+		preflight::bench::VideoSettings requested = video_settings;
+		requested.output_width = static_cast<uint32_t>(output_size.width());
+		requested.output_height = static_cast<uint32_t>(output_size.height());
+		requested.fps_divisor = requested_divisor;
+		requested.fps_den = base_den * requested_divisor;
+		requested.fps_divisor_supported = true;
+		std::vector<preflight::bench::SettingChange> changes;
+		const QString old_resolution =
+			QStringLiteral("%1 × %2").arg(video_settings.output_width).arg(video_settings.output_height);
+		const QString new_resolution =
+			QStringLiteral("%1 × %2").arg(requested.output_width).arg(requested.output_height);
+		if (old_resolution != new_resolution) {
+			changes.push_back({"Video", "Output resolution", old_resolution.toStdString(),
+					   new_resolution.toStdString()});
+		}
+		const QString old_fps =
+			QString::number(static_cast<double>(video_settings.fps_num) / video_settings.fps_den, 'f', 2);
+		const QString new_fps =
+			QString::number(static_cast<double>(requested.fps_num) / requested.fps_den, 'f', 2);
+		if (requested_divisor != video_settings.fps_divisor) {
+			changes.push_back({"Video", "FPS", old_fps.toStdString(), new_fps.toStdString()});
+		}
+		if (requested.output_width != video_settings.output_width ||
+		    requested.output_height != video_settings.output_height ||
+		    requested.fps_den != video_settings.fps_den) {
+			SetVideoSettings(requested, changes);
+			settings_timer->start(600);
+		}
+	}
+
+	bool RecreateVideoEncoders()
+	{
+		if (!video_settings_pending || !encoder_properties || !recording_encoder_properties ||
+		    !video_settings.fps_divisor_supported) {
+			return !video_settings_pending;
+		}
+		video_t *video = obs_get_video();
+		if (!video) {
+			SetStatus(QObject::tr("OBS's video mix is unavailable; output mode was not applied."));
+			return false;
+		}
+		OBSDataAutoRelease stream_settings = clone_settings(encoder_properties->GetSettings());
+		OBSDataAutoRelease recording_settings = clone_settings(recording_encoder_properties->GetSettings());
+		if (!stream_settings || !recording_settings) {
+			SetStatus(
+				QObject::tr("Could not read the bench encoder settings; output mode was not applied."));
+			return false;
+		}
+		if (test_service) {
+			obs_service_apply_encoder_settings(test_service, stream_settings, bakeoff_audio_settings);
+		}
+		const QByteArray stream_id = stream_video_encoder_id.toUtf8();
+		const QByteArray recording_id = recording_video_encoder_id.toUtf8();
+		OBSEncoderAutoRelease new_stream(obs_video_encoder_create(
+			stream_id.constData(), "preflight_stream_video", stream_settings, nullptr));
+		OBSEncoderAutoRelease new_recording(obs_video_encoder_create(
+			recording_id.constData(), "preflight_recording_video", recording_settings, nullptr));
+		if (!new_stream || !new_recording) {
+			SetStatus(QObject::tr("Could not recreate both video encoders; output mode was not applied."));
+			return false;
+		}
+		obs_encoder_set_video(new_stream, video);
+		obs_encoder_set_video(new_recording, video);
+		obs_encoder_set_scaled_size(new_stream, video_settings.output_width, video_settings.output_height);
+		obs_encoder_set_scaled_size(new_recording, video_settings.output_width, video_settings.output_height);
+		if (!obs_encoder_set_frame_rate_divisor(new_stream, video_settings.fps_divisor) ||
+		    !obs_encoder_set_frame_rate_divisor(new_recording, video_settings.fps_divisor)) {
+			SetStatus(QObject::tr(
+				"An encoder rejected OBS's live frame-rate divisor; output mode was not applied."));
+			return false;
+		}
+		if (stream_output) {
+			obs_output_set_video_encoder(stream_output, nullptr);
+		}
+		if (recording_output) {
+			obs_output_set_video_encoder(recording_output, nullptr);
+		}
+		stream_video_encoder = obs_encoder_get_ref(new_stream);
+		recording_video_encoder = obs_encoder_get_ref(new_recording);
+		if (stream_output) {
+			obs_output_set_video_encoder(stream_output, stream_video_encoder);
+		}
+		if (recording_output) {
+			obs_output_set_video_encoder(recording_output, recording_video_encoder);
+		}
+		current_output_width = video_settings.output_width;
+		current_output_height = video_settings.output_height;
+		current_fps_num = video_settings.fps_num;
+		current_fps_den = video_settings.fps_den;
+		video_settings_pending = false;
+		if (engine) {
+			obs_preflight_engine_destroy(engine);
+			engine = obs_preflight_engine_create_with_window(SAMPLE_WINDOW_MS);
+			last_window_end_ms = 0;
+		}
+		return engine != nullptr;
+	}
+
+	void RestartRequestedOutputs()
+	{
+		if (!restart_stream_when_stopped && !restart_recording_when_stopped) {
+			return;
+		}
+		if (restart_stream_when_stopped && !PrepareYouTubeTestKey()) {
+			StopOutputs(QObject::tr("Stopping after the YouTube test key could not be refreshed."),
+				    youtube_test_error);
+			return;
+		}
+		if (restart_recording_when_stopped) {
+			StartRecordingLoupe();
+			if (!obs_output_start(recording_output)) {
+				restart_recording_when_stopped = false;
+				StopOutputs(output_error(recording_output,
+							 QObject::tr("Local recording could not restart.")));
+				return;
+			}
+			restart_recording_when_stopped = false;
+		}
+		if (restart_stream_when_stopped) {
+			StartLoupe(stream_video_encoder);
+			if (!obs_output_start(stream_output)) {
+				restart_stream_when_stopped = false;
+				StopOutputs(output_error(stream_output, QObject::tr("Stream test could not restart.")));
+				return;
+			}
+			restart_stream_when_stopped = false;
+		}
+		bench_running = true;
+		sample_timer->start(static_cast<int>(SAMPLE_WINDOW_MS));
+		SetStatus(QObject::tr("Bench restarted with the reviewed settings."));
+	}
+
 	void UpdateEncoderSettings()
 	{
 		RefreshApplyPreview();
-		if (!stream_video_encoder || !encoder_properties) {
-			return;
-		}
-		if (stream_output && obs_output_active(stream_output)) {
-			StopLoupe();
-			restart_stream_when_stopped = true;
-			restart_was_active = true;
-			obs_output_stop(stream_output);
-			SetStatus(QObject::tr("Restarting the stream test output; local recording continues."));
-			return;
-		}
-		obs_encoder_update(stream_video_encoder, encoder_properties->GetSettings());
-		if (restart_stream_when_stopped && restart_was_active && stream_output) {
-			restart_stream_when_stopped = false;
-			restart_was_active = false;
-			if (!PrepareYouTubeTestKey()) {
-				StopOutputs(QObject::tr("Stopping after the YouTube test key could not be refreshed."),
-					    youtube_test_error);
+		if (video_settings_pending) {
+			const bool stream_active = stream_output && obs_output_active(stream_output);
+			const bool recording_active = recording_output && obs_output_active(recording_output);
+			if (stream_active || recording_active) {
+				restart_stream_when_stopped = stream_active;
+				restart_recording_when_stopped = recording_active;
+				StopLoupe();
+				if (stream_active) {
+					obs_output_stop(stream_output);
+				}
+				if (recording_active) {
+					obs_output_stop(recording_output);
+				}
+				sample_timer->start(100);
+				SetStatus(
+					QObject::tr("Restarting both bench encoders to apply the video output mode."));
 				return;
 			}
-			StartLoupe(stream_video_encoder);
-			if (!obs_output_start(stream_output)) {
-				StopLoupe();
-				SetStatus(output_error(stream_output, QObject::tr("Stream test could not restart.")));
-			} else {
-				SetStatus(QObject::tr("Stream test restarted; local recording was not interrupted."));
+			if (!RecreateVideoEncoders()) {
+				return;
+			}
+			RestartRequestedOutputs();
+		}
+
+		if (stream_settings_pending && stream_video_encoder && encoder_properties) {
+			if (stream_output && obs_output_active(stream_output)) {
+				if (!restart_stream_when_stopped) {
+					restart_stream_when_stopped = true;
+					loupe_capture.Stop();
+					obs_output_stop(stream_output);
+				}
+				SetStatus(QObject::tr("Restarting the stream test output; local recording continues."));
+				sample_timer->start(100);
+				return;
+			}
+			obs_encoder_update(stream_video_encoder, encoder_properties->GetSettings());
+			stream_settings_pending = false;
+			if (restart_stream_when_stopped) {
+				RestartRequestedOutputs();
+			}
+		}
+
+		if (recording_settings_pending && recording_video_encoder && recording_encoder_properties) {
+			if (recording_output && obs_output_active(recording_output)) {
+				if (!restart_recording_when_stopped) {
+					restart_recording_when_stopped = true;
+					recording_loupe_capture.Stop();
+					obs_output_stop(recording_output);
+				}
+				SetStatus(QObject::tr("Restarting the recording encoder; the stream test continues."));
+				sample_timer->start(100);
+				return;
+			}
+			obs_encoder_update(recording_video_encoder, recording_encoder_properties->GetSettings());
+			recording_settings_pending = false;
+			if (restart_recording_when_stopped) {
+				RestartRequestedOutputs();
 			}
 		}
 	}
@@ -2554,6 +3678,11 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 }
 
 PreflightBenchWindow::~PreflightBenchWindow() = default;
+
+preflight::bench::DataApi *PreflightBenchWindow::GetDataApi()
+{
+	return impl.get();
+}
 
 void PreflightBenchWindow::closeEvent(QCloseEvent *event)
 {
@@ -2616,6 +3745,7 @@ void PreflightBenchWindow::ToggleBench()
 		impl->SetStatus(output_error(impl->recording_output, tr("Local recording could not start.")));
 		return;
 	}
+	impl->StartRecordingLoupe();
 	impl->StartLoupe(impl->stream_video_encoder);
 	if (!obs_output_start(impl->stream_output)) {
 		const QString error = output_error(impl->stream_output, tr("Non-public stream test could not start."));
@@ -2658,6 +3788,7 @@ void PreflightBenchWindow::ToggleBakeoff()
 	}
 	impl->bakeoff_running = true;
 	impl->bakeoff_cancelled = false;
+	impl->SetBakeoffUseActionsEnabled(false);
 	impl->bakeoff_button->setText(tr("Stop bake-off"));
 	impl->run_button->setEnabled(false);
 	if (impl->encoder_properties) {
@@ -2685,6 +3816,14 @@ void PreflightBenchWindow::Sample()
 	}
 	if (impl->bakeoff_running) {
 		impl->SampleBakeoff();
+		return;
+	}
+	const bool stream_active = impl->stream_output && obs_output_active(impl->stream_output);
+	const bool recording_active = impl->recording_output && obs_output_active(impl->recording_output);
+	if ((impl->restart_stream_when_stopped && !stream_active) ||
+	    (impl->restart_recording_when_stopped && !recording_active) ||
+	    (impl->video_settings_pending && !stream_active && !recording_active)) {
+		impl->UpdateEncoderSettings();
 		return;
 	}
 

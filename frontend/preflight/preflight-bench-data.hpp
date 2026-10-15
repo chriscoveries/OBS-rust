@@ -149,6 +149,9 @@ public:
 	virtual bool SetEncoderSettings(EncoderRole role, const SettingsObject &settings,
 					const std::vector<SettingChange> &changes) = 0;
 	virtual bool SetVideoSettings(const VideoSettings &settings, const std::vector<SettingChange> &changes) = 0;
+	/* Retains one live OBS filter as the binding for a named immediate toggle. */
+	virtual bool RegisterFeatureToggle(obs_source_t *filter, const std::string &name,
+					   const std::string &source_filter_id) = 0;
 	/* Applies obs_source_set_enabled() immediately to filter after validating its id. */
 	virtual bool SetFeatureToggle(obs_source_t *filter, const std::string &name,
 				      const std::string &source_filter_id, bool enabled) = 0;
