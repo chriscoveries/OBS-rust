@@ -49,6 +49,8 @@ int main()
 		{"avoid duplicate bandwidth flag", "Twitch", "key?bandwidthtest", "key?bandwidthtest"},
 		{"restream test mode", "Restream.io", "key", "key?test=true"},
 		{"reject youtube live key", "YouTube", "key", std::nullopt},
+		{"reject youtube rtmp key", "YouTube - RTMP", "key", std::nullopt},
+		{"reject cloudflare stream key", "Kick", "key", std::nullopt},
 		{"reject unknown service", "Custom", "key", std::nullopt},
 		{"reject empty key", "Twitch", "", std::nullopt},
 	};
