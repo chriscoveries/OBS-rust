@@ -1,4 +1,5 @@
 #include "../preflight/preflight-bench-window.hpp"
+#include "../preflight/preflight-apply-plan.hpp"
 
 #include <QApplication>
 #include <QDir>
@@ -153,6 +154,56 @@ static void save_png(QWidget &widget, const QString &path)
 	std::cout << QFileInfo(path).absoluteFilePath().toStdString() << '\n';
 }
 
+static void test_apply_plans()
+{
+	using preflight::apply::BuildAdvancedPlan;
+	using preflight::apply::BuildSimplePlan;
+	using preflight::apply::OutputMode;
+
+	const QJsonObject saved_encoder{{QStringLiteral("bitrate"), 6000},
+					{QStringLiteral("preset"), QStringLiteral("fast")},
+					{QStringLiteral("profile"), QStringLiteral("high")}};
+	const QJsonObject initial_encoder{{QStringLiteral("bitrate"), 6000},
+					  {QStringLiteral("preset"), QStringLiteral("veryfast")},
+					  {QStringLiteral("profile"), QStringLiteral("high")}};
+	const QJsonObject edited_encoder{{QStringLiteral("bitrate"), 4500},
+					 {QStringLiteral("preset"), QStringLiteral("superfast")},
+					 {QStringLiteral("profile"), QStringLiteral("high")}};
+	const auto advanced = BuildAdvancedPlan(saved_encoder, initial_encoder, edited_encoder);
+	require(advanced.mode == OutputMode::Advanced && advanced.applicable(),
+		"advanced settings did not produce an applicable config preview");
+	require(advanced.changes.size() == 2 && advanced.changes[0].path == QStringLiteral("streamEncoder.json/bitrate") &&
+			advanced.changes[1].path == QStringLiteral("streamEncoder.json/preset"),
+		"advanced preview did not list the exact changed encoder keys");
+	require(advanced.updated_settings.value(QStringLiteral("profile")) == QJsonValue(QStringLiteral("high")),
+		"advanced apply plan discarded an untouched setting");
+
+	const QJsonObject simple_config{{QStringLiteral("VBitrate"), 2500},
+					{QStringLiteral("Preset"), QStringLiteral("veryfast")},
+					{QStringLiteral("UseAdvanced"), false}};
+	const QJsonObject simple_before{{QStringLiteral("bitrate"), 2500},
+					{QStringLiteral("preset"), QStringLiteral("veryfast")},
+					{QStringLiteral("rate_control"), QStringLiteral("CBR")}};
+	const QJsonObject simple_after{{QStringLiteral("bitrate"), 4000},
+				       {QStringLiteral("preset"), QStringLiteral("fast")},
+				       {QStringLiteral("rate_control"), QStringLiteral("CBR")}};
+	const auto simple = BuildSimplePlan(simple_config, simple_before, simple_after, QStringLiteral("x264"), false);
+	require(simple.mode == OutputMode::Simple && simple.applicable() && simple.changes.size() == 2,
+		"simple settings did not produce a two-key preview in Simple mode");
+	require(simple.changes[0].path == QStringLiteral("SimpleOutput.VBitrate") &&
+			simple.changes[1].path == QStringLiteral("SimpleOutput.Preset"),
+		"simple preview did not map properties to OBS SimpleOutput keys");
+	require(simple.updated_settings.value(QStringLiteral("UseAdvanced")) == QJsonValue(false),
+		"simple apply plan changed the user's Simple output mode");
+
+	QJsonObject unsupported_after = simple_after;
+	unsupported_after.insert(QStringLiteral("lookahead"), true);
+	const auto unsupported = BuildSimplePlan(simple_config, simple_before, unsupported_after,
+						 QStringLiteral("x264"), false);
+	require(!unsupported.applicable() && !unsupported.error.isEmpty(),
+		"unpersistable Simple-mode settings were silently offered for Apply");
+}
+
 int main(int argc, char **argv)
 {
 	qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
@@ -168,6 +219,7 @@ int main(int argc, char **argv)
 		const obs_preflight_window clean = clean_windows.back();
 		const obs_preflight_window congested = congested_windows.back();
 		const obs_preflight_window stale = stale_windows.back();
+		test_apply_plans();
 		require(congested_windows.size() > 1, "congested golden trace did not produce chart history");
 		require(clean.verdict == OBS_PREFLIGHT_PASS && congested.verdict == OBS_PREFLIGHT_MARGINAL &&
 				stale.verdict == OBS_PREFLIGHT_FAIL,
