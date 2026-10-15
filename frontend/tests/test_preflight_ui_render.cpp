@@ -14,6 +14,7 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QTemporaryDir>
+#include <QSplitter>
 #include <QTabWidget>
 #include <utility/OBSProxyStyle.hpp>
 
@@ -545,12 +546,12 @@ int main(int argc, char **argv)
 		require(reason_label->text() == QString::fromUtf8(congested.reason),
 			"bench reason text does not match the engine result");
 		auto *summary = window.findChild<QWidget *>(QStringLiteral("preflight-verdict-summary"));
-		auto *tabs = window.findChild<QTabWidget *>(QStringLiteral("preflight-tabs"));
-		require(summary && tabs && tabs->count() == 4 && tabs->tabText(0) == QStringLiteral("Live bench") &&
-				tabs->tabText(1) == QStringLiteral("Bake-off") &&
-				tabs->tabText(2) == QStringLiteral("Loupe") &&
-				tabs->tabText(3) == QStringLiteral("Apply"),
-			"Preflight tabs do not follow the OBS workflow");
+		auto *one_screen = window.findChild<QSplitter *>(QStringLiteral("preflight-one-screen"));
+		auto *settings = window.findChild<QWidget *>(QStringLiteral("preflight-settings"));
+		auto *right_side = window.findChild<QWidget *>(QStringLiteral("preflight-right-side"));
+		require(summary && one_screen && one_screen->count() == 2 && settings && right_side &&
+				window.findChildren<QTabWidget *>().empty(),
+			"Preflight must use the single-screen settings and preview layout without tabs");
 
 		auto *metric_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-metric-table"));
 		require(metric_table && metric_table->rowCount() == 8 && metric_table->columnCount() == 4 &&
@@ -605,11 +606,9 @@ int main(int argc, char **argv)
 						   table->verticalHeader()->length() + table->frameWidth() * 2;
 		require(table->height() <= bakeoff_content_height + 4,
 			"bake-off table has empty space below its visible rows");
-		tabs->setCurrentIndex(1);
-		QApplication::processEvents();
 		auto *bakeoff_group = window.findChild<QWidget *>(QStringLiteral("preflight-bakeoff-group"));
 		require(bakeoff_group && bakeoff_group->height() - table->geometry().bottom() <= 24,
-			"bake-off tab leaves empty space below its table");
+			"inline bake-off leaves empty space below its table");
 		for (int row = 0; row < table->rowCount(); ++row) {
 			require(table->item(row, 5) && table->item(row, 6) && !table->item(row, 6)->text().isEmpty(),
 				"bake-off row is missing its verdict or plain-language reason");
@@ -619,7 +618,8 @@ int main(int argc, char **argv)
 				table->item(2, 5)->text() == QStringLiteral("Fail"),
 			"bake-off verdicts do not match the engine results");
 		QWidget *loupe_view = window.findChild<QWidget *>(QStringLiteral("preflight-loupe-view"));
-		require(loupe_view, "loupe widget is missing");
+		require(loupe_view && window.findChild<QWidget *>(QStringLiteral("preflight-live-preview")),
+			"encoded preview or loupe widget is missing");
 		auto *apply_group = window.findChild<QWidget *>(QStringLiteral("preflight-apply-preview"));
 		auto *apply_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-apply-diff"));
 		require(apply_group && apply_table && apply_table->rowCount() == 2 &&
@@ -636,31 +636,17 @@ int main(int argc, char **argv)
 						   ? QCoreApplication::applicationDirPath()
 						   : qEnvironmentVariable("PREFLIGHT_UI_OUTPUT_DIR");
 		require(QDir().mkpath(output_dir), "could not create PNG output directory");
-		const std::array<QString, 4> yami_screenshots = {QStringLiteral("preflight-yami-live-bench-2x.png"),
-								 QStringLiteral("preflight-yami-bake-off-2x.png"),
-								 QStringLiteral("preflight-yami-loupe-2x.png"),
-								 QStringLiteral("preflight-yami-apply-2x.png")};
-		const std::array<QString, 4> system_screenshots = {QStringLiteral("preflight-system-live-bench-2x.png"),
-								   QStringLiteral("preflight-system-bake-off-2x.png"),
-								   QStringLiteral("preflight-system-loupe-2x.png"),
-								   QStringLiteral("preflight-system-apply-2x.png")};
-		for (int index = 0; index < tabs->count(); ++index) {
-			tabs->setCurrentIndex(index);
-			if (index == 0) {
-				metric_table->setCurrentCell(1, 0);
-			}
-			QApplication::processEvents();
-			save_png(window, QDir(output_dir).filePath(yami_screenshots[static_cast<size_t>(index)]));
-		}
+		const QString yami_screenshot = QStringLiteral("preflight-yami-one-screen-2x.png");
+		const QString system_screenshot = QStringLiteral("preflight-system-one-screen-2x.png");
+		metric_table->setCurrentCell(1, 0);
+		QApplication::processEvents();
+		save_png(window, QDir(output_dir).filePath(yami_screenshot));
 
 		require(ApplyOBSThemeForRenderTest(app, {QDir(theme_dir).filePath(QStringLiteral("System.obt"))},
 						   default_palette, &theme_error),
 			QStringLiteral("could not apply OBS System theme: %1").arg(theme_error).toUtf8().constData());
-		for (int index = 0; index < tabs->count(); ++index) {
-			tabs->setCurrentIndex(index);
-			QApplication::processEvents();
-			save_png(window, QDir(output_dir).filePath(system_screenshots[static_cast<size_t>(index)]));
-		}
+		QApplication::processEvents();
+		save_png(window, QDir(output_dir).filePath(system_screenshot));
 
 	} catch (const std::exception &error) {
 		std::cerr << "FAIL test_preflight_ui_render: " << error.what() << '\n';
