@@ -5,6 +5,7 @@
 #include "preflight-cloudflare-speed-test.hpp"
 #include "preflight-apply-plan.hpp"
 #include "preflight-loupe-capture.hpp"
+#include "preflight-gpu-sampler.hpp"
 #include "preflight-test-mode.hpp"
 
 #include <properties-view.hpp>
@@ -36,10 +37,12 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QImage>
+#include <QIcon>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPolygonF>
 #include <QPushButton>
 #include <QScrollArea>
@@ -86,33 +89,23 @@ public:
 
 namespace {
 
+using preflight::bench::policy::OBS_CONGESTION_DANGER_PERCENT;
+using preflight::bench::policy::OBS_CONGESTION_WARNING_PERCENT;
+using preflight::bench::policy::OBS_ENCODER_SKIP_STATUS_MIN_COUNT;
+using preflight::bench::policy::OBS_ENCODER_SKIP_STATUS_PERCENT;
+using preflight::bench::policy::OBS_RENDER_DANGER_FRACTION;
+using preflight::bench::policy::OBS_RENDER_WARNING_FRACTION;
+using preflight::bench::policy::OBS_STATS_DANGER_PERCENT;
+using preflight::bench::policy::OBS_STATS_WARNING_PERCENT;
+
 constexpr uint64_t SAMPLE_WINDOW_MS = 500;
+// Four GPU reads per 500 ms engine window smooth provider jitter while keeping the data fresh.
+constexpr uint64_t GPU_SAMPLE_INTERVAL_MS = 125;
 // The existing Auto-Configuration wizard measures each encoder step for five seconds.
 constexpr uint64_t BAKEOFF_CANDIDATE_DURATION_MS = 5'000;
 constexpr size_t MAX_ENGINE_WINDOWS = 120;
 constexpr size_t CHART_HISTORY_SIZE = 120;
 constexpr int MAX_BAKEOFF_TABLE_VIEW_HEIGHT = 280;
-// OBSBasicStats.cpp:362-369 warns above 75% of frame time and marks danger above 100%.
-constexpr double OBS_RENDER_WARNING_FRACTION = 0.75;
-constexpr double OBS_RENDER_DANGER_FRACTION = 1.0;
-// OBSBasicStats.cpp:393-398 and 419-424 uses >1% for warning and >5% for danger.
-constexpr double OBS_STATS_WARNING_PERCENT = 1.0;
-constexpr double OBS_STATS_DANGER_PERCENT = 5.0;
-// OBSBasicStatusBar.cpp:10-13 labels congestion good through 33.33% and mediocre through 66.67%.
-constexpr double OBS_CONGESTION_WARNING_PERCENT = 33.33;
-constexpr double OBS_CONGESTION_DANGER_PERCENT = 66.67;
-
-struct ChartSeries {
-	QString name;
-	QColor color;
-	std::vector<double> points;
-};
-
-struct ChartWarningLine {
-	QString label;
-	double value = 0.0;
-	QColor color;
-};
 
 // Reads the text colour the active OBS theme gives a class such as "text-warning", so painted
 // charts use the same warning and danger colours as the Stats window.
@@ -125,38 +118,51 @@ QColor theme_class_color(QWidget *context, const char *classes)
 	return probe.palette().color(QPalette::WindowText);
 }
 
-class MetricChart final : public QWidget {
-	std::vector<ChartSeries> series;
-	std::vector<ChartWarningLine> warning_lines;
-	bool starts_at_zero = false;
+struct CombinedChartSeries {
+	int table_row = -1;
+	QString label;
+	QColor color;
+	std::vector<std::optional<double>> points;
+};
 
-public:
-	explicit MetricChart(QWidget *parent = nullptr) : QWidget(parent)
+class CombinedMetricChart final : public QWidget {
+	std::vector<CombinedChartSeries> series;
+	int emphasized_row = -1;
+
+	static double nice_step(double raw_step)
 	{
-		setMinimumHeight(132);
-		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+		if (raw_step <= 0.0 || !std::isfinite(raw_step)) {
+			return 1.0;
+		}
+		const double magnitude = std::pow(10.0, std::floor(std::log10(raw_step)));
+		const double fraction = raw_step / magnitude;
+		const double rounded = fraction <= 1.0   ? 1.0
+				       : fraction <= 2.0 ? 2.0
+				       : fraction <= 2.5 ? 2.5
+				       : fraction <= 5.0 ? 5.0
+							 : 10.0;
+		return rounded * magnitude;
 	}
 
-	void SetSeries(std::vector<ChartSeries> series_)
+public:
+	explicit CombinedMetricChart(QWidget *parent = nullptr) : QWidget(parent)
 	{
-		series = std::move(series_);
+		setObjectName(QStringLiteral("preflight-combined-chart"));
+		setMinimumHeight(220);
+		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+		setProperty("preflightStartsAtZero", true);
+	}
+
+	void SetSeries(std::vector<CombinedChartSeries> values)
+	{
+		series = std::move(values);
 		update();
 	}
 
-	void SetStartsAtZero(bool value)
+	void SetEmphasizedRow(int row)
 	{
-		starts_at_zero = value;
-		setProperty("preflightStartsAtZero", value);
-	}
-
-	void SetWarningLines(std::vector<ChartWarningLine> lines)
-	{
-		QStringList labels;
-		for (const auto &line : lines) {
-			labels.push_back(line.label);
-		}
-		setProperty("preflightWarningLines", labels);
-		warning_lines = std::move(lines);
+		emphasized_row = row;
+		setProperty("preflightEmphasizedRow", row);
 		update();
 	}
 
@@ -166,199 +172,101 @@ protected:
 		QPainter painter(this);
 		painter.setRenderHint(QPainter::Antialiasing);
 		painter.fillRect(rect(), palette().color(QPalette::Base));
-		QRectF plot = QRectF(rect()).adjusted(70, 24, -10, -22);
+		const QRectF plot = QRectF(rect()).adjusted(64, 26, -12, -18);
+		QStringList series_names;
+		QStringList series_colors;
+		QStringList latest_values;
+		double maximum = 120.0;
 		bool has_points = false;
-		double minValue = 0.0;
-		double maxValue = 100.0;
-		qreal legend_x = plot.left();
-		painter.setFont(QFont(painter.font().family(), painter.font().pointSize() - 1));
 		for (const auto &line : series) {
-			painter.setPen(QPen(line.color, 2.0));
-			painter.drawLine(QPointF(legend_x, 10), QPointF(legend_x + 13, 10));
-			painter.setPen(palette().color(QPalette::Text));
-			painter.drawText(QPointF(legend_x + 18, 14), line.name);
-			legend_x += painter.fontMetrics().horizontalAdvance(line.name) + 34;
-			for (double value : line.points) {
-				if (!has_points) {
-					minValue = maxValue = value;
+			series_names.push_back(line.label);
+			series_colors.push_back(line.color.name(QColor::HexRgb).toUpper());
+			latest_values.push_back(line.points.empty() || !line.points.back()
+							? QString()
+							: QString::number(*line.points.back(), 'f', 2));
+			for (const auto &value : line.points) {
+				if (value && std::isfinite(*value)) {
+					maximum = std::max(maximum, *value);
 					has_points = true;
-				} else {
-					minValue = std::min(minValue, value);
-					maxValue = std::max(maxValue, value);
 				}
 			}
 		}
-		for (const auto &line : warning_lines) {
-			if (!has_points) {
-				minValue = maxValue = line.value;
-				has_points = true;
-			} else {
-				minValue = std::min(minValue, line.value);
-				maxValue = std::max(maxValue, line.value);
-			}
-		}
-		auto nice_step = [](double raw_step) {
-			if (raw_step <= 0.0 || !std::isfinite(raw_step)) {
-				return 1.0;
-			}
-			const double magnitude = std::pow(10.0, std::floor(std::log10(raw_step)));
-			const double fraction = raw_step / magnitude;
-			const double rounded = fraction <= 1.0   ? 1.0
-					       : fraction <= 2.0 ? 2.0
-					       : fraction <= 2.5 ? 2.5
-					       : fraction <= 5.0 ? 5.0
-								 : 10.0;
-			return rounded * magnitude;
-		};
-		if (starts_at_zero) {
-			minValue = 0.0;
-			const double step = nice_step(std::max(0.0, maxValue) / 3.0);
-			maxValue = std::max(step * 3.0, step);
-		} else {
-			if (maxValue - minValue < 0.001) {
-				const double padding = std::max(1.0, std::abs(maxValue) * 0.05);
-				minValue -= padding;
-				maxValue += padding;
-			}
-			const double step = nice_step((maxValue - minValue) / 3.0);
-			const double original_min = minValue;
-			const double original_max = maxValue;
-			minValue = std::floor(original_min / step) * step;
-			maxValue = minValue + step * 3.0;
-			if (maxValue < original_max) {
-				maxValue = std::ceil(original_max / step) * step;
-				minValue = maxValue - step * 3.0;
-			}
-		}
-		const double axis_step = (maxValue - minValue) / 3.0;
+		setProperty("preflightSeriesNames", series_names);
+		setProperty("preflightSeriesColors", series_colors);
+		setProperty("preflightLatestValues", latest_values);
+		const double step = nice_step(maximum / 4.0);
+		maximum = std::ceil(maximum / (step * 4.0)) * step * 4.0;
+		const double axis_step = maximum / 4.0;
 		QStringList y_axis_labels;
 		painter.setPen(palette().color(QPalette::Mid));
-		for (int row = 0; row <= 3; ++row) {
-			const qreal y = plot.top() + plot.height() * row / 3.0;
-			const double value = maxValue - (maxValue - minValue) * row / 3.0;
-			int precision = 0;
-			double scaled_step = axis_step;
-			while (precision < 3 && std::abs(scaled_step - std::round(scaled_step)) > 0.000001) {
-				scaled_step *= 10.0;
-				++precision;
-			}
-			QString label = QString::number(value, 'f', precision);
-			while (label.contains('.') && label.endsWith('0')) {
-				label.chop(1);
-			}
-			if (label.endsWith('.')) {
-				label.chop(1);
-			}
+		for (int row = 0; row <= 4; ++row) {
+			const double value = maximum - axis_step * row;
+			const qreal y = plot.top() + plot.height() * row / 4.0;
+			const QString label = QString::number(qRound(value));
 			y_axis_labels.push_back(label);
 			painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
 			painter.setPen(palette().color(QPalette::Text));
-			painter.drawText(QRectF(0, y - 8, plot.left() - 6, 16), Qt::AlignRight | Qt::AlignVCenter,
+			painter.drawText(QRectF(0, y - 9, plot.left() - 8, 18), Qt::AlignRight | Qt::AlignVCenter,
 					 label);
 			painter.setPen(palette().color(QPalette::Mid));
 		}
 		setProperty("preflightYAxisLabels", y_axis_labels);
+		setProperty("preflightYAxisTitle", QStringLiteral("% of limit"));
+		painter.save();
+		painter.translate(14, plot.center().y());
+		painter.rotate(-90);
+		painter.setPen(palette().color(QPalette::Text));
+		painter.drawText(QRectF(-plot.height() / 2.0, -10, plot.height(), 20), Qt::AlignCenter,
+				 QStringLiteral("% of limit"));
+		painter.restore();
 
-		if (!has_points || series.empty() || series.front().points.empty()) {
-			painter.setPen(palette().color(QPalette::Text));
-			painter.drawText(plot, Qt::AlignCenter, tr("Waiting for samples"));
-		} else {
-			QStringList warning_labels_off_line;
-			for (const auto &line : warning_lines) {
-				const qreal normalized = (line.value - minValue) / (maxValue - minValue);
-				const qreal y = plot.bottom() - plot.height() * normalized;
-				painter.setPen(QPen(line.color, 1.0, Qt::DashLine));
-				painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
-				const int label_height = 17;
-				const int label_width = painter.fontMetrics().horizontalAdvance(line.label) + 16;
-				const qreal above = y - label_height - 4;
-				const qreal below = y + 4;
-				const qreal label_y =
-					above >= plot.top() ? above : std::min(below, plot.bottom() - label_height);
-				warning_labels_off_line.push_back(label_y + label_height < y || label_y > y
-									  ? QStringLiteral("true")
-									  : QStringLiteral("false"));
-				QRectF label_rect(plot.right() - label_width - 8, label_y, label_width, 17);
-				painter.fillRect(label_rect, palette().color(QPalette::Base));
-				painter.setPen(line.color);
-				painter.drawText(label_rect, Qt::AlignRight | Qt::AlignVCenter, line.label);
+		const qreal limit_y = plot.bottom() - plot.height() * (100.0 / maximum);
+		const QColor danger = theme_class_color(this, "text-danger");
+		painter.setPen(QPen(danger, 1.2, Qt::DashLine));
+		painter.drawLine(QPointF(plot.left(), limit_y), QPointF(plot.right(), limit_y));
+		QRectF limit_label(plot.right() - 52, limit_y - 19, 48, 16);
+		painter.fillRect(limit_label, palette().color(QPalette::Base));
+		painter.setPen(danger);
+		painter.drawText(limit_label, Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("Limit"));
+		setProperty("preflightLimitLine", true);
+		setProperty("preflightLimitLabel", QStringLiteral("Limit"));
+		setProperty("preflightLimitLineY", limit_y);
+		setProperty("preflightEmphasizedRow", emphasized_row);
+
+		for (const auto &line : series) {
+			if (line.points.size() < 2) {
+				continue;
 			}
-			setProperty("preflightWarningLabelsOffLine", warning_labels_off_line);
-
-			for (const auto &line : series) {
-				if (line.points.size() < 2) {
+			QPainterPath path;
+			bool active_segment = false;
+			for (size_t index = 0; index < line.points.size(); ++index) {
+				if (!line.points[index] || !std::isfinite(*line.points[index])) {
+					active_segment = false;
 					continue;
 				}
-				const size_t first = line.points.size() > CHART_HISTORY_SIZE
-							     ? line.points.size() - CHART_HISTORY_SIZE
-							     : 0;
-				const size_t count = line.points.size() - first;
-				QPolygonF path;
-				path.reserve(static_cast<qsizetype>(count));
-				for (size_t i = first; i < line.points.size(); ++i) {
-					const qreal x = plot.left() +
-							plot.width() * static_cast<qreal>(i - first) /
-								static_cast<qreal>(std::max<size_t>(1, count - 1));
-					const double normalized = (line.points[i] - minValue) / (maxValue - minValue);
-					const qreal y = plot.bottom() - plot.height() * normalized;
-					path.append(QPointF(x, y));
+				const qreal x = plot.left() + plot.width() * static_cast<qreal>(index) /
+								      static_cast<qreal>(line.points.size() - 1);
+				const qreal y = plot.bottom() - plot.height() * (*line.points[index] / maximum);
+				const QPointF point(x, y);
+				if (active_segment) {
+					path.lineTo(point);
+				} else {
+					path.moveTo(point);
+					active_segment = true;
 				}
-				painter.setPen(QPen(line.color, 2.0));
-				painter.drawPolyline(path);
 			}
+			QColor stroke = line.color;
+			const bool emphasized = emphasized_row < 0 || line.table_row == emphasized_row;
+			if (!emphasized) {
+				stroke.setAlpha(72);
+			}
+			painter.setPen(QPen(stroke, emphasized_row == line.table_row ? 3.4 : 1.8));
+			painter.drawPath(path);
 		}
-	}
-};
-
-class MetricSparkline final : public QWidget {
-	std::vector<double> points;
-
-public:
-	explicit MetricSparkline(QWidget *parent = nullptr) : QWidget(parent)
-	{
-		setMinimumSize(96, 22);
-		setMaximumHeight(26);
-		setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-	}
-
-	void SetPoints(std::vector<double> values)
-	{
-		points = std::move(values);
-		update();
-	}
-
-protected:
-	void paintEvent(QPaintEvent *) override
-	{
-		if (points.size() < 2) {
-			return;
+		if (!has_points) {
+			painter.setPen(palette().color(QPalette::Text));
+			painter.drawText(plot, Qt::AlignCenter, QStringLiteral("Waiting"));
 		}
-		const auto [minimum, maximum] = std::minmax_element(points.begin(), points.end());
-		double low = *minimum;
-		double high = *maximum;
-		if (high - low < 0.000001) {
-			const double padding = std::max(1.0, std::abs(high) * 0.05);
-			low -= padding;
-			high += padding;
-		}
-		const QRectF plot = QRectF(rect()).adjusted(4, 5, -6, -5);
-		QPolygonF line;
-		line.reserve(static_cast<qsizetype>(points.size()));
-		for (size_t index = 0; index < points.size(); ++index) {
-			const qreal x = plot.left() + plot.width() * static_cast<qreal>(index) /
-							      static_cast<qreal>(points.size() - 1);
-			const qreal y = plot.bottom() - plot.height() * (points[index] - low) / (high - low);
-			line.push_back(QPointF(x, y));
-		}
-		QPainter painter(this);
-		painter.setRenderHint(QPainter::Antialiasing);
-		/* Text colour stays readable on both the row and its selection highlight. */
-		QColor stroke = palette().color(QPalette::Text);
-		stroke.setAlphaF(0.65);
-		painter.setPen(QPen(stroke, 1.25));
-		painter.drawPolyline(line);
-		painter.setPen(Qt::NoPen);
-		painter.setBrush(palette().color(QPalette::Text));
-		painter.drawEllipse(line.back(), 2.5, 2.5);
 	}
 };
 
@@ -511,7 +419,7 @@ protected:
 		painter.drawText(preview_panel.adjusted(4, 2, -4, -4), Qt::AlignTop | Qt::AlignHCenter,
 				 tr("Stream · drag to select"));
 		if (!stream_pair || !stream_pair->source || !stream_pair->encoded) {
-			painter.drawText(bounds, Qt::AlignCenter, tr("Waiting for matching source and encoded frames"));
+			painter.drawText(bounds, Qt::AlignCenter, tr("Waiting"));
 			return;
 		}
 
@@ -567,8 +475,7 @@ protected:
 				  *active_region);
 		} else {
 			painter.setPen(palette().color(QPalette::Text));
-			painter.drawText(recording_zoom_panel, Qt::AlignCenter,
-					 tr("Recording frame not available yet"));
+			painter.drawText(recording_zoom_panel, Qt::AlignCenter, tr("Not available"));
 		}
 	}
 
@@ -665,7 +572,7 @@ public:
 	{
 		setMinimumHeight(205);
 		setMouseTracking(true);
-		setToolTip(tr("Drag on the source image to compare the same region at four-times magnification."));
+		setToolTip(tr("Drag to compare at 400%"));
 	}
 
 	void SetPairs(std::shared_ptr<const preflight::loupe::FramePair> new_stream_pair,
@@ -700,21 +607,19 @@ public:
 	std::optional<preflight::loupe::CropRegion> SelectedCrop() const { return selection; }
 };
 
-struct ChartPane {
-	QString title;
-	std::vector<QString> names;
-	std::vector<ChartWarningLine> warning_lines;
-};
-
 struct MetricRowWidgets {
 	QLabel *value = nullptr;
-	MetricSparkline *sparkline = nullptr;
+	QLabel *limit = nullptr;
 	QLabel *status = nullptr;
 };
 
 struct BenchPoint {
 	uint64_t end_ms = 0;
 	double cpu_percent = 0.0;
+	std::optional<double> gpu_percent;
+	std::optional<double> gpu_renderer_percent;
+	std::optional<double> gpu_tiler_percent;
+	std::optional<double> gpu_video_encode_percent;
 	double average_frame_time_ms = 0.0;
 	double frame_interval_ms = 0.0;
 	double encoder_skipped_percent = 0.0;
@@ -724,7 +629,6 @@ struct BenchPoint {
 	double congestion_percent = 0.0;
 	double connect_time_ms = 0.0;
 	int32_t verdict = OBS_PREFLIGHT_FAIL;
-	QString reason;
 };
 
 struct BakeoffCandidate {
@@ -780,23 +684,24 @@ QJsonObject simple_recording_config_snapshot(config_t *config)
 
 QString output_error(obs_output_t *output, const QString &fallback)
 {
-	const char *error = output ? obs_output_get_last_error(output) : nullptr;
-	return error && *error ? QString::fromUtf8(error) : fallback;
+	/* Raw OBS error strings vary by service/plugin; keep visible errors stable and label-shaped. */
+	(void)output;
+	return fallback;
 }
 
 QString test_mode_label(preflight::UplinkTestMode mode)
 {
 	switch (mode) {
 	case preflight::UplinkTestMode::TwitchBandwidth:
-		return QObject::tr("Twitch ingest bandwidth test (bandwidthtest)");
+		return QObject::tr("Twitch · bandwidthtest");
 	case preflight::UplinkTestMode::AmazonIvsBandwidth:
-		return QObject::tr("Amazon IVS ingest bandwidth test (bandwidthtest)");
+		return QObject::tr("IVS · bandwidthtest");
 	case preflight::UplinkTestMode::RestreamBandwidth:
-		return QObject::tr("Restream ingest test (test=true)");
+		return QObject::tr("Restream · test=true");
 	case preflight::UplinkTestMode::YouTubeThrowawayStream:
-		return QObject::tr("YouTube one-use test stream key (no public broadcast)");
+		return QObject::tr("YouTube · private test stream");
 	case preflight::UplinkTestMode::CloudflareSpeedOnly:
-		return QObject::tr("Cloudflare speed test only");
+		return QObject::tr("Cloudflare · speed test only");
 	}
 	return {};
 }
@@ -818,14 +723,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	QTableWidget *bakeoff_table = nullptr;
 	QTableWidget *metric_table = nullptr;
 	QTableWidget *impact_table = nullptr;
-	QGroupBox *chart_detail_group = nullptr;
-	MetricChart *chart_detail = nullptr;
+	CombinedMetricChart *combined_chart = nullptr;
 	QGroupBox *apply_group = nullptr;
 	QLabel *apply_mode_label = nullptr;
 	QLabel *apply_note = nullptr;
 	QTableWidget *apply_table = nullptr;
 	QPushButton *apply_button = nullptr;
 	QTimer *sample_timer = nullptr;
+	QTimer *gpu_sample_timer = nullptr;
 	QTimer *loupe_timer = nullptr;
 	QTimer *settings_timer = nullptr;
 	QTimer *uplink_timer = nullptr;
@@ -855,6 +760,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	PreflightLoupeCapture loupe_capture;
 	PreflightLoupeCapture recording_loupe_capture;
 	preflight::CloudflareSpeedTest cloudflare_speed_test;
+	std::unique_ptr<preflight::gpu::Sampler> gpu_sampler;
+	preflight::gpu::WindowAverager gpu_window_average;
 	obs_preflight_engine_t *engine = nullptr;
 	obs_preflight_engine_t *bakeoff_engine = nullptr;
 	obs_preflight_bakeoff_t *bakeoff_planner = nullptr;
@@ -867,9 +774,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	QJsonObject simple_quality_expected_settings;
 	std::vector<BakeoffCandidate> bakeoff_candidates;
 	obs_preflight_candidate_plan active_candidate{};
-	std::array<ChartPane, 8> charts;
-	std::array<MetricRowWidgets, 8> metric_rows;
-	int selected_metric = -1;
+	std::array<MetricRowWidgets, 9> metric_rows;
+	int emphasized_chart_row = -1;
 	QElapsedTimer bakeoff_elapsed;
 	QString supported_test_mode;
 	QString recording_path;
@@ -922,7 +828,11 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	bool close_when_stopped = false;
 	bool simple_output_advanced = false;
 
-	explicit Impl(PreflightBenchWindow *dialog_) : dialog(dialog_) {}
+	explicit Impl(PreflightBenchWindow *dialog_)
+		: dialog(dialog_),
+		  gpu_sampler(preflight::gpu::CreatePlatformSampler())
+	{
+	}
 
 	preflight::bench::Snapshot GetSnapshot() const override
 	{
@@ -1025,8 +935,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 						   [&source_filter_id](const auto &item) {
 							   return item.source_filter_id == source_filter_id;
 						   });
-		preflight::bench::FeatureToggle toggle{name, source_filter_id, enabled, true,
-						       "Takes effect immediately; excluded from Apply."};
+		preflight::bench::FeatureToggle toggle{name, source_filter_id, enabled, true, "Applies immediately"};
 		if (existing == feature_toggles.end()) {
 			feature_toggles.push_back(std::move(toggle));
 		} else {
@@ -1065,8 +974,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 						   [&source_filter_id](const auto &item) {
 							   return item.source_filter_id == source_filter_id;
 						   });
-		preflight::bench::FeatureToggle toggle{name, source_filter_id, enabled, true,
-						       "Takes effect immediately; excluded from Apply."};
+		preflight::bench::FeatureToggle toggle{name, source_filter_id, enabled, true, "Applies immediately"};
 		if (existing == feature_toggles.end()) {
 			feature_toggles.push_back(std::move(toggle));
 		} else {
@@ -1085,7 +993,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					auto live_filter = toggle_filters.find(source_filter_id);
 					if (live_filter == toggle_filters.end() ||
 					    !SetFeatureToggle(live_filter->second, name, source_filter_id, on)) {
-						SetStatus(QObject::tr("This live filter is no longer available."));
+						SetStatus(QObject::tr("Live filter: not available"));
 					}
 				});
 		} else if (toggle_layout) {
@@ -1098,7 +1006,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					auto live_filter = toggle_filters.find(source_filter_id);
 					if (live_filter == toggle_filters.end() ||
 					    !SetFeatureToggle(live_filter->second, name, source_filter_id, on)) {
-						SetStatus(QObject::tr("This live filter is no longer available."));
+						SetStatus(QObject::tr("Live filter: not available"));
 					}
 				});
 		}
@@ -1107,9 +1015,46 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			const QSignalBlocker blocker(toggle_widget);
 			toggle_widget->setChecked(enabled);
 			toggle_widget->setEnabled(true);
-			toggle_widget->setToolTip(QObject::tr("This filter toggle takes effect immediately."));
+			toggle_widget->setToolTip(QObject::tr("Applies immediately"));
 		}
 		return true;
+	}
+
+	void BindLiveCaptionsFilter()
+	{
+		constexpr const char *filter_id = "mac_live_captions_filter";
+		constexpr const char *display_name = "Live captions (on-device)";
+		struct SearchState {
+			Impl *self;
+			bool found = false;
+		} state{this};
+		obs_enum_all_sources(
+			[](void *opaque, obs_source_t *source) {
+				auto *search = static_cast<SearchState *>(opaque);
+				obs_source_enum_filters(
+					source,
+					[](obs_source_t *, obs_source_t *filter, void *filter_opaque) {
+						auto *filter_search = static_cast<SearchState *>(filter_opaque);
+						if (filter_search->found) {
+							return;
+						}
+						const char *id = obs_source_get_id(filter);
+						if (id && std::strcmp(id, "mac_live_captions_filter") == 0) {
+							filter_search->found =
+								filter_search->self->RegisterFeatureToggle(
+									filter, "Live captions (on-device)",
+									"mac_live_captions_filter");
+						}
+					},
+					search);
+				return !search->found;
+			},
+			&state);
+		if (!state.found) {
+			captions_toggle->setEnabled(false);
+			captions_toggle->setToolTip(QObject::tr("Not available"));
+			feature_toggles.push_back({display_name, filter_id, false, false, "Not available"});
+		}
 	}
 
 	bool ReplaceStreamEncoderEditor(const std::string &encoder_id, const preflight::bench::SettingsObject &settings)
@@ -1200,6 +1145,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	~Impl()
 	{
 		StopLoupe();
+		StopGpuSampling();
 		if (sample_timer) {
 			sample_timer->stop();
 		}
@@ -1233,9 +1179,33 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 
 	void SetStatus(const QString &text) { state_label->setText(text); }
 
+	void StartGpuSampling()
+	{
+		gpu_window_average.TakeAverage();
+		if (gpu_sample_timer && gpu_sampler) {
+			gpu_sample_timer->start(static_cast<int>(GPU_SAMPLE_INTERVAL_MS));
+		}
+	}
+
+	void StopGpuSampling()
+	{
+		if (gpu_sample_timer) {
+			gpu_sample_timer->stop();
+		}
+		gpu_window_average.TakeAverage();
+	}
+
+	void SampleGpu()
+	{
+		if (gpu_sampler && bench_running && !stopping && !bakeoff_running) {
+			gpu_window_average.Add(gpu_sampler->Read());
+		}
+	}
+
 	void StopOutputs(const QString &status, const QString &completion_status = QString())
 	{
 		StopLoupe();
+		StopGpuSampling();
 		bench_running = false;
 		restart_stream_when_stopped = false;
 		stopping = true;
@@ -1476,7 +1446,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	{
 		preflight::apply::Plan plan;
 		if (!main || !encoder_properties || !initial_encoder_settings) {
-			plan.error = QObject::tr("OBS settings are not available in this window.");
+			plan.error = QObject::tr("OBS settings: not available");
 			return plan;
 		}
 		const char *mode_value = config_get_string(main->Config(), "Output", "Mode");
@@ -1486,8 +1456,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 								 : preflight::apply::OutputMode::Unsupported;
 		plan.target = CurrentApplyTarget(main, mode);
 		if (mode != initial_output_mode) {
-			plan.error = QObject::tr(
-				"The OBS output mode changed while Preflight was open. Close and reopen Preflight to review the new mode.");
+			plan.error = QObject::tr("Output mode: changed; reopen Preflight");
 			return plan;
 		}
 		if (plan.target.profile_name != initial_apply_target.profile_name ||
@@ -1496,16 +1465,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		    plan.target.encoder_selection != initial_apply_target.encoder_selection ||
 		    plan.target.recording_encoder_id != initial_apply_target.recording_encoder_id ||
 		    plan.target.recording_encoder_selection != initial_apply_target.recording_encoder_selection) {
-			plan.error = QObject::tr(
-				"The active profile or stream/recording encoder changed while Preflight was open. Close and reopen Preflight to review it.");
+			plan.error = QObject::tr("Profile/encoder: changed; reopen Preflight");
 			return plan;
 		}
 
 		const QJsonObject initial = json_object_from_settings(initial_encoder_settings);
 		const QJsonObject edited = json_object_from_settings(encoder_properties->GetSettings());
 		if (stream_video_encoder_id != initial_apply_target.encoder_id) {
-			plan.error = QObject::tr(
-				"Apply is available only when the selected bake-off encoder matches the OBS stream encoder. The current preview remains private to Preflight.");
+			plan.error = QObject::tr("Apply: encoder differs from stream");
 			return plan;
 		}
 		QJsonObject saved_video = video_config_snapshot(main->Config());
@@ -1566,8 +1533,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				json_object_from_settings(recording_encoder_properties->GetSettings());
 			if (initial_recording != edited_recording &&
 			    edited_recording != simple_quality_expected_settings) {
-				plan.error = QObject::tr(
-					"This recording encoder edit has no matching SimpleOutput key. Change the Simple recording quality instead.");
+				plan.error = QObject::tr("Recording encoder: unsupported Simple mode");
 				return plan;
 			}
 			QJsonObject saved_recording = simple_recording_config_snapshot(main->Config());
@@ -1583,7 +1549,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 								     edited_video);
 			return plan;
 		}
-		plan.error = QObject::tr("This OBS output mode does not have a supported Apply mapping.");
+		plan.error = QObject::tr("Output mode: unsupported Apply mapping");
 		return plan;
 	}
 
@@ -1595,8 +1561,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			apply_button->setEnabled(false);
 		}
 		if (apply_note) {
-			apply_note->setText(
-				QObject::tr("Setting changed; waiting to refresh the visible Apply preview."));
+			apply_note->setText(QObject::tr("Settling"));
 		}
 		if (settings_timer) {
 			settings_timer->start(600);
@@ -1649,11 +1614,9 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		} else if (!plan.error.isEmpty()) {
 			apply_note->setText(plan.error);
 		} else if (plan.changes.empty()) {
-			apply_note->setText(QObject::tr(
-				"Edit a setting to preview exact config keys. Nothing is written until Apply."));
+			apply_note->setText(QObject::tr("Writes on Apply only"));
 		} else {
-			apply_note->setText(QObject::tr(
-				"Review the exact key changes above. Nothing is written until Apply is pressed."));
+			apply_note->setText(QObject::tr("Writes on Apply only"));
 		}
 	}
 
@@ -1669,8 +1632,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		const preflight::apply::Plan displayed = *apply_plan;
 		const preflight::apply::Plan current = BuildCurrentApplyPlan(main);
 		if (!preflight::apply::SamePlan(displayed, current)) {
-			apply_feedback = QObject::tr(
-				"The editor or OBS target changed after this preview was shown. Review the updated diff before applying.");
+			apply_feedback = QObject::tr("Apply: target changed; review updated diff");
 			apply_preview_ready = false;
 			apply_button->setEnabled(false);
 			RefreshApplyPreview();
@@ -1685,11 +1647,9 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				? preflight::apply::WriteSimpleConfig(main->Config(), displayed, current, &write_error)
 				: false;
 		if (!wrote) {
-			apply_feedback =
-				write_error.isEmpty()
-					? QObject::tr(
-						  "OBS refused to write settings that no longer match the visible preview.")
-					: write_error;
+			apply_feedback = write_error.isEmpty()
+						 ? QObject::tr("Settings write: target changed; review preview")
+						 : write_error;
 			RefreshApplyPreview();
 			return;
 		}
@@ -1710,7 +1670,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		if (!main->Active()) {
 			main->ResetOutputs();
 		}
-		apply_feedback = QObject::tr("Applied to OBS %1 settings. The output mode was not changed.")
+		apply_feedback = QObject::tr("Applied · %1 mode kept")
 					 .arg(displayed.mode == preflight::apply::OutputMode::Simple
 						      ? QObject::tr("Simple")
 						      : QObject::tr("Advanced"));
@@ -1721,7 +1681,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	{
 		OBSBasic *main = OBSBasic::Get();
 		if (!main) {
-			setup_error = QObject::tr("OBS is not ready to read output settings.");
+			setup_error = QObject::tr("OBS settings: not ready");
 			return false;
 		}
 		const char *mode = config_get_string(main->Config(), "Output", "Mode");
@@ -1739,13 +1699,13 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		}
 		OBSServiceAutoRelease selected_service = obs_frontend_get_streaming_service();
 		if (!selected_service) {
-			setup_error = QObject::tr("Choose a stream service in OBS before starting the bench.");
+			setup_error = QObject::tr("Stream service: not set");
 			return false;
 		}
 
 		OBSDataAutoRelease selected_service_settings = obs_service_get_settings(selected_service);
 		if (!selected_service_settings) {
-			setup_error = QObject::tr("Could not read the selected OBS stream service settings.");
+			setup_error = QObject::tr("Stream service: settings unreadable");
 			return false;
 		}
 		const char *service_name = obs_data_get_string(selected_service_settings, "service");
@@ -1755,8 +1715,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		supported_test_mode = test_mode_label(uplink_mode);
 		if (uplink_mode == preflight::UplinkTestMode::CloudflareSpeedOnly) {
 			cloudflare_speed_only = true;
-			setup_error = QObject::tr(
-				"This service has no non-public OBS test mode. Cloudflare will measure network speed only; no OBS stream is sent.");
+			setup_error = QObject::tr("Stream service: no test mode");
 			return false;
 		}
 
@@ -1765,27 +1724,26 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		requires_youtube_throwaway_stream = uplink_mode == preflight::UplinkTestMode::YouTubeThrowawayStream;
 #ifndef YOUTUBE_ENABLED
 		if (requires_youtube_throwaway_stream) {
-			setup_error = QObject::tr("YouTube's private test-key flow is unavailable in this OBS build.");
+			setup_error = QObject::tr("YouTube test key: unavailable in this build");
 			return false;
 		}
 #endif
 		if ((!safe_key && !requires_youtube_throwaway_stream) || supported_test_mode.isEmpty() || !service_id ||
 		    strcmp(service_id, "rtmp_common") != 0) {
-			setup_error = QObject::tr(
-				"This service has no supported non-public test mode yet. Preflight will not send a public stream.");
+			setup_error = QObject::tr("Stream service: no supported test mode");
 			return false;
 		}
 
 		OBSDataAutoRelease test_service_settings = clone_settings(selected_service_settings);
 		if (!test_service_settings) {
-			setup_error = QObject::tr("Could not copy the OBS stream service settings.");
+			setup_error = QObject::tr("Stream service: settings copy failed");
 			return false;
 		}
 		obs_data_set_string(test_service_settings, "key", safe_key ? safe_key->c_str() : "");
 		test_service = obs_service_create(obs_service_get_id(selected_service), "preflight_non_public_test",
 						  test_service_settings, nullptr);
 		if (!test_service) {
-			setup_error = QObject::tr("Could not create the non-public test service.");
+			setup_error = QObject::tr("Test service: could not create");
 			return false;
 		}
 
@@ -1801,7 +1759,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			configured_recording ? obs_output_get_audio_encoder(configured_recording, 0) : nullptr;
 
 		if (!configured_stream_video) {
-			setup_error = QObject::tr("OBS has no configured streaming video encoder.");
+			setup_error = QObject::tr("Stream encoder: not configured");
 			return false;
 		}
 
@@ -1819,7 +1777,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				: clone_settings(stream_audio_settings);
 		if (!stream_video_settings || !stream_audio_settings || !recording_video_settings ||
 		    !recording_audio_settings) {
-			setup_error = QObject::tr("Could not read the configured encoder settings.");
+			setup_error = QObject::tr("Encoder settings: unreadable");
 			return false;
 		}
 		bakeoff_audio_settings = stream_audio_settings.Get();
@@ -1839,23 +1797,23 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			: configured_stream_audio  ? obs_encoder_get_mixer_index(configured_stream_audio)
 						   : 0;
 		if (recording_audio_mixer >= std::numeric_limits<size_t>::digits) {
-			setup_error = QObject::tr("The configured recording audio mixer is not supported.");
+			setup_error = QObject::tr("Recording audio: mixer unsupported");
 			return false;
 		}
 
 		if (!stream_audio_settings) {
-			setup_error = QObject::tr("Could not read the configured stream audio encoder settings.");
+			setup_error = QObject::tr("Stream audio: settings unreadable");
 			return false;
 		}
 		obs_service_apply_encoder_settings(test_service, stream_video_settings, stream_audio_settings);
 		OBSDataAutoRelease property_settings = clone_settings(stream_video_settings);
 		if (!property_settings) {
-			setup_error = QObject::tr("Could not create the stream encoder settings view.");
+			setup_error = QObject::tr("Stream encoder: settings unavailable");
 			return false;
 		}
 		OBSDataAutoRelease initial_settings = clone_settings(property_settings);
 		if (!initial_settings) {
-			setup_error = QObject::tr("Could not snapshot the current stream encoder settings.");
+			setup_error = QObject::tr("Stream encoder: snapshot failed");
 			return false;
 		}
 		obs_data_addref(initial_settings);
@@ -1880,7 +1838,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		OBSDataAutoRelease recording_property_settings = clone_settings(recording_video_settings);
 		OBSDataAutoRelease initial_recording = clone_settings(recording_property_settings);
 		if (!recording_property_settings || !initial_recording) {
-			setup_error = QObject::tr("Could not create the recording encoder settings view.");
+			setup_error = QObject::tr("Recording encoder: settings unavailable");
 			return false;
 		}
 		obs_data_addref(initial_recording);
@@ -1910,20 +1868,20 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 								   nullptr);
 		if (!stream_video_encoder || !stream_audio_encoder || !recording_video_encoder ||
 		    !recording_audio_encoder) {
-			setup_error = QObject::tr("Could not create a separate stream and recording encoder pair.");
+			setup_error = QObject::tr("Bench encoders: could not create");
 			return false;
 		}
 
 		video_t *video = obs_get_video();
 		audio_t *audio = obs_get_audio();
 		if (!video || !audio) {
-			setup_error = QObject::tr("OBS audio and video must be initialized before starting Preflight.");
+			setup_error = QObject::tr("OBS audio/video: not initialized");
 			return false;
 		}
 		struct obs_video_info active_video_info = {};
 		if (!obs_get_video_info(&active_video_info) || active_video_info.fps_num == 0 ||
 		    active_video_info.fps_den == 0) {
-			setup_error = QObject::tr("OBS video settings are not ready for Preflight.");
+			setup_error = QObject::tr("OBS video: settings unavailable");
 			return false;
 		}
 		video_settings.base_width = active_video_info.base_width;
@@ -1946,20 +1904,20 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				? service_output_type
 				: "rtmp_output";
 		if ((obs_get_output_flags(stream_output_type) & OBS_OUTPUT_SERVICE) == 0) {
-			setup_error = QObject::tr("OBS has no service output available for this test.");
+			setup_error = QObject::tr("Stream output: not available");
 			return false;
 		}
 
 		stream_output = obs_output_create(stream_output_type, "preflight_test_stream", nullptr, nullptr);
 		recording_output = obs_output_create("ffmpeg_muxer", "preflight_local_recording", nullptr, nullptr);
 		if (!stream_output || !recording_output) {
-			setup_error = QObject::tr("Could not create both Preflight outputs.");
+			setup_error = QObject::tr("Bench outputs: could not create");
 			return false;
 		}
 
 		OBSDataAutoRelease stream_output_settings = obs_output_get_settings(configured_stream);
 		if (!stream_output_settings) {
-			setup_error = QObject::tr("Could not read the OBS streaming output settings.");
+			setup_error = QObject::tr("Stream output: settings unreadable");
 			return false;
 		}
 		obs_output_update(stream_output, stream_output_settings);
@@ -1975,7 +1933,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		collector = obs_preflight_collector_create();
 		engine = obs_preflight_engine_create_with_window(SAMPLE_WINDOW_MS);
 		if (!collector || !engine) {
-			setup_error = QObject::tr("Could not initialize the Preflight stats collector.");
+			setup_error = QObject::tr("Stats collector: could not initialize");
 			return false;
 		}
 
@@ -1992,25 +1950,20 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		OBSBasic *main = OBSBasic::Get();
 		auto *youtube = main ? dynamic_cast<YoutubeApiWrappers *>(main->GetAuth()) : nullptr;
 		if (!youtube || configured_service_name != youtube->service()) {
-			youtube_test_error = QObject::tr(
-				"Connect the YouTube account that matches the selected OBS stream service before testing.");
+			youtube_test_error = QObject::tr("YouTube test key: account mismatch");
 			return false;
 		}
 
 		// Match the wizard: a new non-reusable ingest stream key is created for each output start.
 		StreamDescription stream = {"", "", "OBS Studio Test Stream"};
 		if (!youtube->InsertStream(stream) || stream.name.isEmpty()) {
-			QString detail = youtube->GetLastError();
-			youtube_test_error =
-				detail.isEmpty() ? QObject::tr("YouTube could not create a one-use test stream key.")
-						 : QObject::tr("YouTube could not create a one-use test stream key: %1")
-							   .arg(detail);
+			youtube_test_error = QObject::tr("YouTube test key: could not create");
 			return false;
 		}
 
 		OBSDataAutoRelease settings = obs_service_get_settings(test_service);
 		if (!settings) {
-			youtube_test_error = QObject::tr("Could not update the one-use YouTube test stream key.");
+			youtube_test_error = QObject::tr("YouTube test key: update failed");
 			return false;
 		}
 		const QByteArray key = stream.name.toUtf8();
@@ -2018,7 +1971,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		obs_service_update(test_service, settings);
 		return true;
 #else
-		youtube_test_error = QObject::tr("YouTube's private test-key flow is unavailable in this OBS build.");
+		youtube_test_error = QObject::tr("YouTube test key: unavailable in this build");
 		return false;
 #endif
 	}
@@ -2029,17 +1982,17 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			cloudflare_speed_test.Cancel();
 			run_button->setEnabled(false);
 			run_button->setText(QObject::tr("Stopping…"));
-			SetStatus(QObject::tr("Stopping the Cloudflare speed test."));
+			SetStatus(QObject::tr("Stopping"));
 			return;
 		}
 		if (!cloudflare_speed_test.Start()) {
-			SetStatus(QObject::tr("Could not start the Cloudflare speed test."));
+			SetStatus(QObject::tr("Cloudflare test: could not start"));
 			return;
 		}
 		run_button->setText(QObject::tr("Cancel speed test"));
-		SetStatus(QObject::tr("Cloudflare speed test only · no OBS stream is sent."));
+		SetStatus(QObject::tr("Cloudflare · speed test only"));
 		if (uplink_result_label) {
-			uplink_result_label->setText(QObject::tr("Measuring download and upload · up to 4 MiB each."));
+			uplink_result_label->setText(QObject::tr("Measuring · 4 MiB each way"));
 		}
 		uplink_timer->start(100);
 	}
@@ -2054,15 +2007,15 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		run_button->setEnabled(true);
 		run_button->setText(QObject::tr("Run speed test only"));
 		if (result->cancelled) {
-			SetStatus(QObject::tr("Cloudflare speed test canceled."));
-			uplink_result_label->setText(QObject::tr("Canceled before both directions finished."));
+			SetStatus(QObject::tr("Stopped"));
+			uplink_result_label->setText(QObject::tr("Incomplete"));
 		} else if (!result->success) {
-			SetStatus(QObject::tr("Cloudflare speed test failed."));
-			uplink_result_label->setText(
-				result->error.empty() ? QObject::tr("Cloudflare returned no usable measurements.")
-						      : QString::fromStdString(result->error));
+			SetStatus(QObject::tr("Cloudflare test: failed"));
+			uplink_result_label->setText(result->error.empty()
+							     ? QObject::tr("Cloudflare result: unavailable")
+							     : QString::fromStdString(result->error));
 		} else {
-			SetStatus(QObject::tr("Cloudflare speed test complete."));
+			SetStatus(QObject::tr("Complete"));
 			uplink_result_label->setText(QObject::tr("Download %1 Mb/s · Upload %2 Mb/s")
 							     .arg(result->download_mbps, 0, 'f', 1)
 							     .arg(result->upload_mbps, 0, 'f', 1));
@@ -2088,14 +2041,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		std::sort(encoders.begin(), encoders.end());
 		encoders.erase(std::unique(encoders.begin(), encoders.end()), encoders.end());
 		if (encoders.empty()) {
-			SetBakeoffStatus(QObject::tr("No video encoders are registered in OBS."));
+			SetBakeoffStatus(QObject::tr("Video encoders: none registered"));
 			return false;
 		}
 
 		struct obs_video_info video_info = {};
 		if (!obs_get_video_info(&video_info) || video_info.output_width == 0 || video_info.output_height == 0 ||
 		    video_info.fps_num == 0 || video_info.fps_den == 0) {
-			SetBakeoffStatus(QObject::tr("OBS video settings are not ready for an encoder bake-off."));
+			SetBakeoffStatus(QObject::tr("OBS video: bake-off unavailable"));
 			return false;
 		}
 		current_output_width = video_info.output_width;
@@ -2143,7 +2096,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			}
 		}
 		if (modes.empty()) {
-			SetBakeoffStatus(QObject::tr("OBS has no usable resolution and frame-rate candidates."));
+			SetBakeoffStatus(QObject::tr("Bake-off candidates: none available"));
 			return false;
 		}
 
@@ -2163,7 +2116,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		bakeoff_planner = obs_preflight_bakeoff_create(encoder_ids.data(), encoder_ids.size(), modes.data(),
 							       modes.size(), BAKEOFF_CANDIDATE_DURATION_MS);
 		if (!bakeoff_planner) {
-			SetBakeoffStatus(QObject::tr("The preflight engine could not build the bake-off plan."));
+			SetBakeoffStatus(QObject::tr("Bake-off plan: could not build"));
 			return false;
 		}
 
@@ -2187,7 +2140,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 								.arg(candidate.mode.height)
 								.arg(fps);
 			bakeoff_table->setItem(static_cast<int>(row), 0, new QTableWidgetItem(candidate_label));
-			bakeoff_table->setItem(static_cast<int>(row), 1, new QTableWidgetItem(QObject::tr("Pending")));
+			bakeoff_table->setItem(static_cast<int>(row), 1, new QTableWidgetItem(QObject::tr("Waiting")));
 			auto *use = new QPushButton(QObject::tr("Use these"), bakeoff_table);
 			use->setObjectName(QStringLiteral("preflight-bakeoff-use-%1").arg(row));
 			QObject::connect(use, &QPushButton::clicked, dialog,
@@ -2195,7 +2148,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			bakeoff_table->setCellWidget(static_cast<int>(row), 2, use);
 		}
 		ResizeBakeoffTableToContents();
-		SetBakeoffStatus(QObject::tr("Ready to test %1 candidates (%2 seconds each).")
+		SetBakeoffStatus(QObject::tr("%1 candidates · %2 s each")
 					 .arg(bakeoff_candidates.size())
 					 .arg(BAKEOFF_CANDIDATE_DURATION_MS / 1000));
 		return true;
@@ -2223,14 +2176,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	void UseBakeoffCandidate(size_t row)
 	{
 		if (row >= bakeoff_candidates.size() || bench_running || bakeoff_running) {
-			SetStatus(QObject::tr("Stop the bench before loading bake-off settings."));
+			SetStatus(QObject::tr("Bench: stop before loading settings"));
 			return;
 		}
 		const BakeoffCandidate &candidate = bakeoff_candidates[row];
 		const QByteArray encoder_id = QByteArray::fromStdString(candidate.encoder_id);
 		OBSDataAutoRelease settings = obs_encoder_defaults(encoder_id.constData());
 		if (!settings) {
-			SetBakeoffStatus(QObject::tr("OBS could not load the selected encoder settings."));
+			SetBakeoffStatus(QObject::tr("Encoder settings: could not load"));
 			return;
 		}
 		if (stream_bitrate_kbps > 0) {
@@ -2253,10 +2206,10 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 						     : 0;
 		selected.video.fps_divisor_supported = selected.video.fps_divisor > 0;
 		if (!selected.video.fps_divisor_supported || !LoadCandidate(selected)) {
-			SetBakeoffStatus(QObject::tr("These settings cannot be loaded while the bench is active."));
+			SetBakeoffStatus(QObject::tr("Bake-off settings: unavailable while running"));
 			return;
 		}
-		SetBakeoffStatus(QObject::tr("Loaded into the Preflight editors. Nothing was written to OBS."));
+		SetBakeoffStatus(QObject::tr("Loaded · not saved"));
 	}
 
 	void RenderImpactEntries(const std::vector<preflight::bench::ImpactEntry> &entries)
@@ -2266,10 +2219,16 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		}
 		impact_table->setRowCount(static_cast<int>(entries.size()));
 		auto window_text = [this](const std::optional<preflight::bench::MetricWindow> &window) {
-			return window ? QStringLiteral("%1 · %2% CPU")
-						.arg(BakeoffVerdictText(window->value.verdict))
-						.arg(window->value.cpu_percent, 0, 'f', 1)
-				      : QStringLiteral("—");
+			if (!window) {
+				return QStringLiteral("—");
+			}
+			QString text = QStringLiteral("%1 · CPU %2%")
+					       .arg(BakeoffVerdictText(window->value.verdict))
+					       .arg(window->value.cpu_percent, 0, 'f', 1);
+			if (window->gpu_percent) {
+				text += QStringLiteral(" · GPU %1%").arg(*window->gpu_percent, 0, 'f', 1);
+			}
+			return text;
 		};
 		auto signed_value = [](double value, int precision) {
 			const QString magnitude = QString::number(std::abs(value), 'f', precision);
@@ -2278,44 +2237,54 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		for (size_t row = 0; row < entries.size(); ++row) {
 			const auto &entry = entries[row];
 			const QString description = QString::fromStdString(entry.description);
-			const QString change =
-				description + (entry.key.empty()
-						       ? QString()
-						       : QStringLiteral("\n%1: %2 → %3")
-								 .arg(QString::fromStdString(entry.key),
+			const QString change = entry.key.empty()
+						       ? description
+						       : QStringLiteral("%1 · %2: %3 → %4")
+								 .arg(description, QString::fromStdString(entry.key),
 								      QString::fromStdString(entry.old_value),
-								      QString::fromStdString(entry.new_value)));
+								      QString::fromStdString(entry.new_value));
 			QString deltas = QStringLiteral("—");
 			if (entry.deltas) {
 				const auto &delta = *entry.deltas;
-				deltas =
-					QStringLiteral(
-						"CPU %1 pp · render %2 ms\nskip %3 · missed %4 · drop %5 pp\nbitrate %6 kb/s · %7 → %8")
-						.arg(signed_value(delta.cpu_percentage_points, 1),
-						     signed_value(delta.render_time_ms, 2),
-						     signed_value(delta.encoder_skipped_percentage_points, 2),
-						     signed_value(delta.missed_percentage_points, 2),
-						     signed_value(delta.output_dropped_percentage_points, 2),
-						     signed_value(delta.bitrate_kbps, 0),
-						     BakeoffVerdictText(delta.verdict_before),
-						     BakeoffVerdictText(delta.verdict_after));
+				deltas = QStringLiteral("CPU %1 pp").arg(signed_value(delta.cpu_percentage_points, 1));
+				if (delta.gpu_percentage_points) {
+					deltas += QStringLiteral(" · GPU %1 pp")
+							  .arg(signed_value(*delta.gpu_percentage_points, 1));
+				}
+				deltas += QStringLiteral(" · Render %1 ms · Skip %2 pp · Missed %3 pp · Drop %4 pp · "
+							 "Bitrate %5 kb/s · %6 → %7")
+						  .arg(signed_value(delta.render_time_ms, 2),
+						       signed_value(delta.encoder_skipped_percentage_points, 2),
+						       signed_value(delta.missed_percentage_points, 2),
+						       signed_value(delta.output_dropped_percentage_points, 2),
+						       signed_value(delta.bitrate_kbps, 0),
+						       BakeoffVerdictText(delta.verdict_before),
+						       BakeoffVerdictText(delta.verdict_after));
 			}
 			const QString state =
-				entry.state == preflight::bench::ImpactState::Settling     ? QObject::tr("Settling")
-				: entry.state == preflight::bench::ImpactState::Complete   ? QObject::tr("Complete")
-				: entry.state == preflight::bench::ImpactState::NoBaseline ? QObject::tr("No baseline")
-											   : QObject::tr("Waiting");
+				entry.state == preflight::bench::ImpactState::Settling   ? QObject::tr("Settling")
+				: entry.state == preflight::bench::ImpactState::Complete ? QObject::tr("Complete")
+				: entry.state == preflight::bench::ImpactState::NoBaseline
+					? QObject::tr("Not available")
+					: QObject::tr("Waiting");
 			const int index = static_cast<int>(row);
-			impact_table->setItem(index, 0, new QTableWidgetItem(change));
-			impact_table->setItem(index, 1, new QTableWidgetItem(window_text(entry.baseline)));
-			impact_table->setItem(index, 2, new QTableWidgetItem(window_text(entry.after)));
-			impact_table->setItem(index, 3, new QTableWidgetItem(deltas));
-			impact_table->setItem(index, 4, new QTableWidgetItem(state));
+			QString summary = change + QStringLiteral(" · ") + window_text(entry.baseline);
+			if (entry.after) {
+				summary += QStringLiteral(" → ") + window_text(entry.after);
+			} else if (entry.state == preflight::bench::ImpactState::Settling) {
+				summary += QStringLiteral(" → ") + QObject::tr("Settling");
+			}
+			auto *item = new QTableWidgetItem(summary + QStringLiteral(" · ") + state);
+			item->setData(Qt::UserRole, state);
+			if (entry.deltas) {
+				item->setText(item->text() + QStringLiteral("\n") + deltas);
+			}
+			impact_table->setItem(index, 0, item);
+			// Keep a complete entry visible even though the vertical header is hidden.
+			// verticalHeader()->length() is zero in that mode and cannot size the table.
+			impact_table->setRowHeight(index, 88);
 		}
-		impact_table->resizeRowsToContents();
-		impact_table->setMaximumHeight(std::min(230, impact_table->horizontalHeader()->sizeHint().height() +
-								     impact_table->verticalHeader()->length() +
-								     impact_table->frameWidth() * 2 + 4));
+		impact_table->setMaximumHeight(230);
 	}
 
 	bool PrepareRecordingPath()
@@ -2324,7 +2293,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		QDir directory(movies.isEmpty() ? QDir::tempPath() : movies);
 		const QString output_directory = directory.filePath(QStringLiteral("OBS Preflight"));
 		if (!QDir().mkpath(output_directory)) {
-			SetStatus(QObject::tr("Could not create the local Preflight recording folder."));
+			SetStatus(QObject::tr("Recording folder: could not create"));
 			return false;
 		}
 
@@ -2334,7 +2303,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 								   QStringLiteral("yyyyMMdd-HHmmss-zzz"))));
 		OBSDataAutoRelease recording_settings = obs_output_get_settings(recording_output);
 		if (!recording_settings) {
-			SetStatus(QObject::tr("Could not prepare the local recording settings."));
+			SetStatus(QObject::tr("Recording settings: could not prepare"));
 			return false;
 		}
 		obs_data_set_string(recording_settings, "path", recording_path.toUtf8().constData());
@@ -2342,97 +2311,64 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		obs_data_set_bool(recording_settings, "allow_overwrite", false);
 		obs_output_update(recording_output, recording_settings);
 		if (recording_path_label) {
-			recording_path_label->setText(QObject::tr("Saved to %1").arg(recording_path));
+			recording_path_label->setText(QObject::tr("Recording: %1").arg(recording_path));
 		}
 		return true;
 	}
 
-	std::vector<double> MetricValues(size_t index) const
+	std::vector<CombinedChartSeries> NormalizedChartSeries() const
 	{
-		std::vector<double> values;
-		values.reserve(points.size());
-		for (const BenchPoint &point : points) {
-			switch (index) {
-			case 0:
-				values.push_back(point.cpu_percent);
-				break;
-			case 1:
-				values.push_back(point.average_frame_time_ms);
-				break;
-			case 2:
-				values.push_back(point.render_lag_percent);
-				break;
-			case 3:
-				values.push_back(point.encoder_skipped_percent);
-				break;
-			case 4:
-				values.push_back(point.dropped_percent);
-				break;
-			case 5:
-				values.push_back(point.bitrate_kbps);
-				break;
-			case 6:
-				values.push_back(point.congestion_percent);
-				break;
-			case 7:
-				values.push_back(point.connect_time_ms);
-				break;
-			default:
-				break;
-			}
-		}
-		return values;
-	}
-
-	void UpdateChartDetail()
-	{
-		if (!chart_detail || selected_metric < 0 || selected_metric >= static_cast<int>(charts.size())) {
-			return;
-		}
-		const size_t index = static_cast<size_t>(selected_metric);
-		chart_detail_group->setTitle(charts[index].title);
-		const QColor primary = chart_detail->palette().color(QPalette::Highlight);
-		const QColor warning_color = theme_class_color(chart_detail, "text-warning");
-		const QColor danger_color = theme_class_color(chart_detail, "text-danger");
-		std::vector<ChartSeries> series;
-		if (index == 1) {
-			// The frame interval is drawn as the 100% line, so only render time needs a series.
-			std::vector<double> render;
-			render.reserve(points.size());
+		// Okabe–Ito palette from the P6c visual spec; status colours remain theme-driven.
+		const std::array<QColor, 7> colors = {QColor("#56B4E9"), QColor("#0072B2"), QColor("#E69F00"),
+						      QColor("#CC79A7"), QColor("#F0E442"), QColor("#D55E00"),
+						      QColor("#009E73")};
+		const std::array<QString, 7> names = {QObject::tr("CPU"),       QObject::tr("GPU"),
+						      QObject::tr("Render"),    QObject::tr("Missed"),
+						      QObject::tr("Skipped"),   QObject::tr("Dropped"),
+						      QObject::tr("Congestion")};
+		std::vector<CombinedChartSeries> result;
+		result.reserve(names.size());
+		for (int row = 0; row < static_cast<int>(names.size()); ++row) {
+			CombinedChartSeries series;
+			series.table_row = row;
+			series.label = names[static_cast<size_t>(row)];
+			series.color = colors[static_cast<size_t>(row)];
+			series.points.reserve(points.size());
 			for (const BenchPoint &point : points) {
-				render.push_back(point.average_frame_time_ms);
+				switch (row) {
+				case 0:
+					series.points.emplace_back(point.cpu_percent);
+					break;
+				case 1:
+					series.points.push_back(point.gpu_percent);
+					break;
+				case 2:
+					series.points.emplace_back(point.frame_interval_ms > 0.0
+									   ? point.average_frame_time_ms /
+										     point.frame_interval_ms * 100.0
+									   : 0.0);
+					break;
+				case 3:
+					series.points.emplace_back(point.render_lag_percent / OBS_STATS_DANGER_PERCENT *
+								   100.0);
+					break;
+				case 4:
+					series.points.emplace_back(point.encoder_skipped_percent /
+								   OBS_STATS_DANGER_PERCENT * 100.0);
+					break;
+				case 5:
+					series.points.emplace_back(point.dropped_percent / OBS_STATS_DANGER_PERCENT *
+								   100.0);
+					break;
+				case 6:
+					series.points.emplace_back(point.congestion_percent /
+								   OBS_CONGESTION_DANGER_PERCENT * 100.0);
+					break;
+				}
 			}
-			series.push_back({charts[index].names[0], primary, std::move(render)});
-		} else {
-			series.push_back({charts[index].names.front(), primary, MetricValues(index)});
+			result.push_back(std::move(series));
 		}
-		chart_detail->SetStartsAtZero(index == 0 || index == 2 || index == 3 || index == 4 || index == 6);
-		std::vector<ChartWarningLine> warnings = charts[index].warning_lines;
-		for (size_t line = 0; line < warnings.size(); ++line) {
-			// Each chart lists its OBS warning band first and its danger band second.
-			warnings[line].color = line == 0 ? warning_color : danger_color;
-		}
-		if (index == 1 && !points.empty() && warnings.size() == 2) {
-			warnings[0].value = points.back().frame_interval_ms * OBS_RENDER_WARNING_FRACTION;
-			warnings[1].value = points.back().frame_interval_ms * OBS_RENDER_DANGER_FRACTION;
-		}
-		chart_detail->SetWarningLines(std::move(warnings));
-		chart_detail->SetSeries(std::move(series));
-	}
-
-	void ShowMetricDetail(int index)
-	{
-		if (index < 0) {
-			selected_metric = -1;
-			chart_detail_group->setVisible(false);
-			return;
-		}
-		if (index >= static_cast<int>(charts.size())) {
-			return;
-		}
-		selected_metric = index;
-		chart_detail_group->setVisible(true);
-		UpdateChartDetail();
+		return result;
 	}
 
 	void ResizeBakeoffTableToContents()
@@ -2452,7 +2388,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		if (!metric_table) {
 			return;
 		}
-		// Show all eight rows without a scroll bar; the detail chart takes the remaining height.
+		// Show all nine metrics without a table scroll bar; the combined chart takes the remaining height.
 		metric_table->resizeRowsToContents();
 		metric_table->setFixedHeight(metric_table->horizontalHeader()->sizeHint().height() +
 					     metric_table->verticalHeader()->length() + metric_table->frameWidth() * 2);
@@ -2476,7 +2412,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		auto *header = new QHBoxLayout;
 		auto *title = new QLabel(QObject::tr("Preflight"), dialog);
 		setClasses(title, "text-title");
-		state_label = new QLabel(QObject::tr("Ready"), dialog);
+		state_label = new QLabel(QObject::tr("Waiting"), dialog);
 		setClasses(state_label, "text-muted");
 		run_button = new QPushButton(
 			cloudflare_speed_only ? QObject::tr("Run speed test") : QObject::tr("Start bench"), dialog);
@@ -2488,8 +2424,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		verdict_label = new QLabel(QObject::tr("Waiting"), summary);
 		verdict_label->setObjectName(QStringLiteral("preflight-verdict"));
 		setClasses(verdict_label, "bg-info text-info");
-		reason_label =
-			new QLabel(QObject::tr("Start a private test to see the current OBS warning bands."), summary);
+		reason_label = new QLabel(QObject::tr("Waiting"), summary);
 		reason_label->setObjectName(QStringLiteral("preflight-reason"));
 		reason_label->setWordWrap(true);
 		summary_layout->addWidget(verdict_label, 0, Qt::AlignVCenter);
@@ -2503,11 +2438,11 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 
 		QString destination;
 		if (supported_test_mode.isEmpty()) {
-			destination = QObject::tr("No safe test service selected");
+			destination = QObject::tr("Stream service: not set");
 		} else if (cloudflare_speed_only) {
 			destination = supported_test_mode;
 		} else {
-			destination = QObject::tr("Private test: %1").arg(supported_test_mode);
+			destination = QObject::tr("Test mode: %1").arg(supported_test_mode);
 		}
 		destination_label = new QLabel(destination, dialog);
 		destination_label->setObjectName(QStringLiteral("preflight-destination"));
@@ -2516,13 +2451,10 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		destination_label->setVisible(!recorded_apply_preview);
 		status_row->addWidget(destination_label, 2);
 		if (cloudflare_speed_only) {
-			auto *privacy_note = new QLabel(
-				QObject::tr(
-					"Speed test only. Cloudflare receives your IP and up to 4 MiB in each direction; no OBS stream is sent."),
-				dialog);
+			auto *privacy_note = new QLabel(QObject::tr("Cloudflare · 4 MiB each way"), dialog);
 			privacy_note->setWordWrap(true);
 			status_row->addWidget(privacy_note, 2);
-			uplink_result_label = new QLabel(QObject::tr("No speed test has run yet."), dialog);
+			uplink_result_label = new QLabel(QObject::tr("Waiting"), dialog);
 			uplink_result_label->setObjectName(QStringLiteral("preflight-uplink-result"));
 			uplink_result_label->setWordWrap(true);
 			status_row->addWidget(uplink_result_label, 2);
@@ -2604,9 +2536,9 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				static_cast<uint>(video_settings.fps_divisor ? video_settings.fps_divisor : 1)));
 		}
 		video_form->addRow(QObject::tr("Output resolution"), resolution_combo);
-		video_form->addRow(QObject::tr("Frame rate"), fps_combo);
+		video_form->addRow(QObject::tr("FPS"), fps_combo);
 		auto *canvas_note =
-			new QLabel(QObject::tr("Base canvas stays %1 × %2 while OBS is running.")
+			new QLabel(QObject::tr("Base canvas: %1 × %2 (fixed while running)")
 					   .arg(video_settings.base_width ? video_settings.base_width : 1920)
 					   .arg(video_settings.base_height ? video_settings.base_height : 1080),
 				   video_group);
@@ -2615,92 +2547,84 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		video_form->addRow(QString(), canvas_note);
 		settings_layout->addWidget(video_group);
 
-		charts[0] = {QObject::tr("CPU"), {QObject::tr("CPU")}, {}};
-		charts[1] = {QObject::tr("Render time vs interval"),
-			     {QObject::tr("Render"), QObject::tr("Interval")},
-			     {{QObject::tr("75% interval"), 0.0, {}}, {QObject::tr("100% interval"), 0.0, {}}}};
-		const std::vector<ChartWarningLine> frame_loss_warnings = {
-			{QObject::tr("1% OBS warning"), OBS_STATS_WARNING_PERCENT, {}},
-			{QObject::tr("5% OBS danger"), OBS_STATS_DANGER_PERCENT, {}},
-		};
-		charts[2] = {QObject::tr("Missed frames"), {QObject::tr("Missed")}, frame_loss_warnings};
-		charts[3] = {QObject::tr("Encoder skipped frames"), {QObject::tr("Skipped")}, frame_loss_warnings};
-		charts[4] = {QObject::tr("Stream dropped frames"), {QObject::tr("Dropped")}, frame_loss_warnings};
-		charts[5] = {QObject::tr("Stream bitrate"), {QObject::tr("kb/s")}, {}};
-		charts[6] = {QObject::tr("Congestion"),
-			     {QObject::tr("%")},
-			     {{QObject::tr("33.33%"), OBS_CONGESTION_WARNING_PERCENT, {}},
-			      {QObject::tr("66.67%"), OBS_CONGESTION_DANGER_PERCENT, {}}}};
-		charts[7] = {QObject::tr("Connect time"), {QObject::tr("ms")}, {}};
-
 		metric_table = new QTableWidget(static_cast<int>(metric_rows.size()), 4, right_side);
 		metric_table->setObjectName(QStringLiteral("preflight-metric-table"));
 		metric_table->setHorizontalHeaderLabels(
-			{QObject::tr("Metric"), QObject::tr("Value"), QObject::tr("Trend"), QObject::tr("Status")});
+			{QObject::tr("Metric"), QObject::tr("Value"), QObject::tr("Limit"), QObject::tr("Status")});
 		metric_table->verticalHeader()->hide();
 		metric_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		metric_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-		metric_table->setSelectionMode(QAbstractItemView::SingleSelection);
+		metric_table->setSelectionMode(QAbstractItemView::NoSelection);
 		metric_table->setShowGrid(false);
 		metric_table->setWordWrap(false);
 		metric_table->setFocusPolicy(Qt::NoFocus);
-		// Names, values and trends stay together on the left, as in OBS's Stats window; the
-		// status column takes the remaining width.
+		// The metric name, value and limit stay compact like OBS Stats.
 		metric_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
 		metric_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-		metric_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
+		metric_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
 		metric_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
 		metric_table->horizontalHeader()->setMinimumSectionSize(72);
-		metric_table->horizontalHeader()->resizeSection(2, 160);
 		metric_table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 		metric_table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
 		metric_table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-		const std::array<QString, 8> metric_names = {
-			QObject::tr("CPU"),        QObject::tr("Render time vs interval"),
-			QObject::tr("Missed"),     QObject::tr("Skipped"),
-			QObject::tr("Dropped"),    QObject::tr("Bitrate"),
-			QObject::tr("Congestion"), QObject::tr("Connect time")};
+		const std::array<QString, 9> metric_names = {QObject::tr("CPU"),         QObject::tr("GPU"),
+							     QObject::tr("Render"),      QObject::tr("Missed"),
+							     QObject::tr("Skipped"),     QObject::tr("Dropped"),
+							     QObject::tr("Congestion"),  QObject::tr("Bitrate"),
+							     QObject::tr("Connect time")};
+		const std::array<QString, 9> metric_limits = {QObject::tr("—"),       QObject::tr("—"),
+							      QObject::tr("—"),       QObject::tr("5 %"),
+							      QObject::tr("5 %"),     QObject::tr("5 %"),
+							      QObject::tr("66.67 %"), QObject::tr("—"),
+							      QObject::tr("—")};
+		const std::array<QColor, 7> metric_colors = {QColor("#56B4E9"), QColor("#0072B2"), QColor("#E69F00"),
+							     QColor("#CC79A7"), QColor("#F0E442"), QColor("#D55E00"),
+							     QColor("#009E73")};
 		for (size_t row = 0; row < metric_rows.size(); ++row) {
 			auto *metric = new QTableWidgetItem(metric_names[row]);
 			metric->setFlags(metric->flags() & ~Qt::ItemIsEditable);
+			if (row < metric_colors.size()) {
+				QPixmap swatch(12, 12);
+				swatch.fill(metric_colors[row]);
+				metric->setIcon(QIcon(swatch));
+			}
 			metric_table->setItem(static_cast<int>(row), 0, metric);
 			auto *value = new QLabel(QStringLiteral("—"), metric_table);
 			value->setObjectName(QStringLiteral("preflight-metric-value-%1").arg(row));
 			setClasses(value, "text-bold");
 			value->setContentsMargins(12, 0, 16, 0);
 			metric_table->setCellWidget(static_cast<int>(row), 1, value);
-			auto *sparkline = new MetricSparkline(metric_table);
-			sparkline->setObjectName(QStringLiteral("preflight-metric-trend-%1").arg(row));
-			metric_table->setCellWidget(static_cast<int>(row), 2, sparkline);
+			auto *limit = new QLabel(metric_limits[row], metric_table);
+			limit->setObjectName(QStringLiteral("preflight-metric-limit-%1").arg(row));
+			limit->setContentsMargins(6, 0, 8, 0);
+			metric_table->setCellWidget(static_cast<int>(row), 2, limit);
 			auto *status = new QLabel(QStringLiteral("—"), metric_table);
 			status->setObjectName(QStringLiteral("preflight-metric-status-%1").arg(row));
 			metric_table->setCellWidget(static_cast<int>(row), 3, status);
-			metric_rows[row] = {value, sparkline, status};
+			metric_rows[row] = {value, limit, status};
 		}
-		connect(metric_table, &QTableWidget::currentCellChanged, dialog,
-			[this](int row, int, int, int) { ShowMetricDetail(row); });
+		connect(metric_table, &QTableWidget::cellClicked, dialog, [this](int row, int) {
+			if (row < 0 || row >= 7 || !combined_chart) {
+				return;
+			}
+			emphasized_chart_row = emphasized_chart_row == row ? -1 : row;
+			combined_chart->SetEmphasizedRow(emphasized_chart_row);
+		});
 		ResizeMetricTableToContents();
 		auto *metrics_group = new QGroupBox(QObject::tr("Live stats"), right_side);
 		metrics_group->setObjectName(QStringLiteral("preflight-metrics"));
 		auto *metrics_layout = new QVBoxLayout(metrics_group);
 		metrics_layout->setContentsMargins(6, 8, 6, 6);
 		metrics_layout->addWidget(metric_table);
+		combined_chart = new CombinedMetricChart(metrics_group);
+		combined_chart->setObjectName(QStringLiteral("preflight-combined-chart"));
+		metrics_layout->addWidget(combined_chart, 1);
 		right_layout->addWidget(metrics_group);
-
-		chart_detail_group = new QGroupBox(QObject::tr("Metric detail"), right_side);
-		chart_detail_group->setObjectName(QStringLiteral("preflight-chart-detail-group"));
-		auto *detail_layout = new QVBoxLayout(chart_detail_group);
-		chart_detail = new MetricChart(chart_detail_group);
-		chart_detail->setObjectName(QStringLiteral("preflight-chart-detail"));
-		chart_detail->setMinimumHeight(148);
-		detail_layout->addWidget(chart_detail);
-		chart_detail_group->setVisible(false);
-		right_layout->addWidget(chart_detail_group);
 
 		auto *preview_group = new QGroupBox(QObject::tr("Live encoded preview"), right_side);
 		preview_group->setObjectName(QStringLiteral("preflight-live-preview"));
 		auto *preview_layout = new QVBoxLayout(preview_group);
-		loupe_status_label = new QLabel(QObject::tr("Waiting for the live bench."), preview_group);
+		loupe_status_label = new QLabel(QObject::tr("Waiting"), preview_group);
 		loupe_status_label->setWordWrap(true);
 		loupe_view = new LoupeView(preview_group);
 		loupe_view->setObjectName(QStringLiteral("preflight-loupe-view"));
@@ -2709,24 +2633,18 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		preview_layout->addWidget(loupe_view, 1);
 		preview_layout->addWidget(loupe_status_label);
 		right_layout->insertWidget(0, preview_group, 2);
-		auto *impact_group = new QGroupBox(QObject::tr("Impact of recent changes"), right_side);
+		auto *impact_group = new QGroupBox(QObject::tr("Impact"), right_side);
 		impact_group->setObjectName(QStringLiteral("preflight-impact-group"));
 		auto *impact_layout = new QVBoxLayout(impact_group);
-		impact_table = new QTableWidget(0, 5, impact_group);
+		impact_table = new QTableWidget(0, 1, impact_group);
 		impact_table->setObjectName(QStringLiteral("preflight-impact-list"));
-		impact_table->setHorizontalHeaderLabels(
-			{QObject::tr("Change"), QObject::tr("Baseline"), QObject::tr("After"),
-			 QObject::tr("Δ · percent points unless shown"), QObject::tr("State")});
+		impact_table->setHorizontalHeaderLabels({QObject::tr("Change · baseline · after · delta")});
 		impact_table->verticalHeader()->hide();
 		impact_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 		impact_table->setWordWrap(true);
 		impact_table->setTextElideMode(Qt::ElideNone);
 		impact_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-		impact_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-		impact_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-		impact_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-		impact_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-		impact_table->setMaximumHeight(150);
+		impact_table->setMaximumHeight(230);
 		impact_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
 		impact_layout->addWidget(impact_table);
 		right_layout->addWidget(impact_group);
@@ -2740,9 +2658,10 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		if (encoder_properties) {
 			stream_settings_layout->addWidget(encoder_properties);
 		} else {
-			stream_settings_layout->addWidget(new QLabel(
-				setup_error.isEmpty() ? QObject::tr("Encoder settings unavailable") : setup_error,
-				stream_group));
+			stream_settings_layout->addWidget(
+				new QLabel(setup_error.isEmpty() ? QObject::tr("Stream encoder: settings unavailable")
+								 : setup_error,
+					   stream_group));
 		}
 		settings_layout->addWidget(stream_group);
 		auto *recording_group = new QGroupBox(QObject::tr("Recording encoder"), settings);
@@ -2783,8 +2702,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 						const QSignalBlocker blocker(simple_recording_quality_combo);
 						simple_recording_quality_combo->setCurrentIndex(
 							simple_recording_quality_combo->findData(previous));
-						SetStatus(QObject::tr(
-							"This Simple recording quality cannot be previewed by the active encoder."));
+						SetStatus(QObject::tr("Recording quality: unsupported encoder"));
 						return;
 					}
 					impact_tracker.RecordChanges({{"Recording quality", "RecQuality",
@@ -2798,7 +2716,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			recording_layout->addWidget(recording_encoder_properties);
 		} else {
 			recording_layout->addWidget(
-				new QLabel(QObject::tr("Recording encoder settings unavailable"), recording_group));
+				new QLabel(QObject::tr("Recording encoder: settings unavailable"), recording_group));
 		}
 		settings_layout->addWidget(recording_group);
 		auto *toggle_group = new QGroupBox(QObject::tr("Live filters"), settings);
@@ -2807,22 +2725,24 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		captions_toggle = new QCheckBox(QObject::tr("Live captions (on-device)"), toggle_group);
 		captions_toggle->setObjectName(QStringLiteral("preflight-toggle-live-captions"));
 		captions_toggle->setEnabled(false);
-		captions_toggle->setToolTip(QObject::tr("This filter is not available in the current OBS scene."));
+		captions_toggle->setToolTip(QObject::tr("Not available"));
 		toggle_layout->addWidget(captions_toggle);
-		auto *toggle_note = new QLabel(
-			QObject::tr("Filter toggles take effect immediately and are not part of Apply."), toggle_group);
+		auto *toggle_note = new QLabel(QObject::tr("Applies immediately"), toggle_group);
 		toggle_note->setObjectName(QStringLiteral("preflight-toggle-note"));
 		toggle_note->setWordWrap(true);
 		setClasses(toggle_note, "text-muted");
 		toggle_layout->addWidget(toggle_note);
 		settings_layout->addWidget(toggle_group);
+		if (!recorded_apply_preview && setup_error.isEmpty()) {
+			BindLiveCaptionsFilter();
+		}
 
 		auto *bakeoff_group = new QGroupBox(QObject::tr("Encoder bake-off"), settings);
 		bakeoff_group->setObjectName(QStringLiteral("preflight-bakeoff-group"));
 		bakeoff_group->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
 		auto *bakeoff_layout = new QVBoxLayout(bakeoff_group);
 		auto *bakeoff_controls = new QHBoxLayout;
-		bakeoff_status_label = new QLabel(QObject::tr("No bake-off has run yet."), bakeoff_group);
+		bakeoff_status_label = new QLabel(QObject::tr("Waiting"), bakeoff_group);
 		bakeoff_status_label->setWordWrap(true);
 		bakeoff_button = new QPushButton(QObject::tr("Try every encoder…"), bakeoff_group);
 		bakeoff_button->setObjectName(QStringLiteral("preflight-bakeoff-button"));
@@ -2853,7 +2773,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		bakeoff_layout->addWidget(bakeoff_table);
 		settings_layout->addWidget(bakeoff_group);
 
-		recording_path_label = new QLabel(QObject::tr("Created when the bench starts."), settings);
+		recording_path_label = new QLabel(QObject::tr("Recording file: created on start"), settings);
 		recording_path_label->setObjectName(QStringLiteral("preflight-recording-path"));
 		recording_path_label->setWordWrap(true);
 		setClasses(recording_path_label, "text-muted");
@@ -2901,20 +2821,23 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				 [this](int) { ApplyVideoControls(); });
 		if (cloudflare_speed_only) {
 			bakeoff_button->setEnabled(false);
-			SetStatus(QObject::tr("Ready · Cloudflare speed test only"));
+			SetStatus(QObject::tr("Waiting · Cloudflare speed test"));
 		} else if (!setup_error.isEmpty()) {
 			SetStatus(recorded_apply_preview ? QObject::tr("Recorded preview") : setup_error);
 			run_button->setEnabled(false);
 			bakeoff_button->setEnabled(false);
 		} else if (!supported_test_mode.isEmpty()) {
-			SetStatus(QObject::tr("Ready · %1").arg(supported_test_mode));
+			SetStatus(QObject::tr("Waiting · %1").arg(supported_test_mode));
 		}
 	}
 
 	void LoadRecordedData(const PreflightBenchWindowRecordedData &recorded_data)
 	{
-		for (const obs_preflight_window &window : recorded_data.windows) {
-			PushPoint(window);
+		for (size_t index = 0; index < recorded_data.windows.size(); ++index) {
+			const preflight::gpu::Sample gpu = index < recorded_data.gpu_samples.size()
+								   ? recorded_data.gpu_samples[index]
+								   : preflight::gpu::Sample{};
+			PushPoint(recorded_data.windows[index], gpu);
 		}
 
 		bakeoff_table->setRowCount(static_cast<int>(recorded_data.bakeoff_rows.size()));
@@ -2927,11 +2850,13 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			auto *candidate_item = new QTableWidgetItem(candidate_label);
 			candidate_item->setToolTip(candidate_label);
 			bakeoff_table->setItem(table_row, 0, candidate_item);
-			const QString result_summary = QStringLiteral("%1 ms · %2% skipped · %3")
-							       .arg(result.render_headroom_ns / 1'000'000.0, 0, 'f', 2)
-							       .arg(result.encoder_skip_percent, 0, 'f', 2)
-							       .arg(BakeoffVerdictText(result.verdict)) +
-						       QStringLiteral("\n") + QString::fromUtf8(result.reason);
+			const QString result_summary =
+				QStringLiteral("%1 ms · %2% skipped · %3")
+					.arg(result.render_headroom_ns / 1'000'000.0, 0, 'f', 2)
+					.arg(result.encoder_skip_percent, 0, 'f', 2)
+					.arg(BakeoffVerdictText(result.verdict)) +
+				QStringLiteral(" · ") +
+				QString::fromStdString(preflight::bench::BuildVerdictReason(result));
 			auto *result_item = new QTableWidgetItem(result_summary);
 			result_item->setToolTip(result_summary);
 			bakeoff_table->setItem(table_row, 1, result_item);
@@ -2941,16 +2866,15 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			bakeoff_table->setCellWidget(table_row, 2, use);
 		}
 		ResizeBakeoffTableToContents();
-		bakeoff_status_label->setText(QObject::tr("Recorded results from the preflight engine."));
+		bakeoff_status_label->setText(QObject::tr("Recorded results"));
 		if (loupe_view) {
 			loupe_view->SetPairs(recorded_data.loupe_pair, recorded_data.recording_loupe_pair
 									       ? recorded_data.recording_loupe_pair
 									       : recorded_data.loupe_pair);
 		}
 		if (loupe_status_label) {
-			loupe_status_label->setText(
-				recorded_data.loupe_pair ? QObject::tr("Comparing recorded source and decoded frames.")
-							 : QObject::tr("No recorded frame pair is available."));
+			loupe_status_label->setText(recorded_data.loupe_pair ? QObject::tr("Recorded preview")
+									     : QObject::tr("Not available"));
 		}
 		RenderImpactEntries(recorded_data.impacts);
 		for (const auto &toggle : recorded_data.toggles) {
@@ -2964,7 +2888,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		}
 	}
 
-	void PushPoint(const obs_preflight_window &window)
+	void PushPoint(const obs_preflight_window &window, const preflight::gpu::Sample &gpu = {})
 	{
 		if (window.end_ms <= last_window_end_ms) {
 			return;
@@ -2973,6 +2897,10 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		BenchPoint point;
 		point.end_ms = window.end_ms;
 		point.cpu_percent = window.cpu_percent;
+		point.gpu_percent = gpu.gpu_percent;
+		point.gpu_renderer_percent = gpu.renderer_percent;
+		point.gpu_tiler_percent = gpu.tiler_percent;
+		point.gpu_video_encode_percent = gpu.video_encode_percent;
 		point.average_frame_time_ms = window.average_frame_time_ns / 1'000'000.0;
 		point.frame_interval_ms = window.frame_interval_ns / 1'000'000.0;
 		point.encoder_skipped_percent = window.encoder_skip_percent;
@@ -2982,9 +2910,10 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		point.congestion_percent = window.congestion_percent;
 		point.connect_time_ms = static_cast<double>(window.connect_time_ms);
 		point.verdict = window.verdict;
-		point.reason = QString::fromUtf8(window.reason);
 		points.push_back(std::move(point));
-		const preflight::bench::MetricWindow completed{++impact_window_sequence, window};
+		const preflight::bench::MetricWindow completed{++impact_window_sequence, window,
+							       gpu.gpu_percent,          gpu.renderer_percent,
+							       gpu.tiler_percent,        gpu.video_encode_percent};
 		metric_history.push_back(completed);
 		if (metric_history.size() > MAX_ENGINE_WINDOWS) {
 			metric_history.erase(
@@ -3008,71 +2937,83 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			return;
 		}
 		const BenchPoint &point = points.back();
-		auto percentage_status = [](double value) {
-			if (value > OBS_STATS_DANGER_PERCENT) {
+		auto band = [](double value, double warning, double danger) {
+			if (value > danger) {
 				return std::pair{QObject::tr("Danger"), "text-danger"};
 			}
-			if (value > OBS_STATS_WARNING_PERCENT) {
+			if (value > warning) {
 				return std::pair{QObject::tr("Warning"), "text-warning"};
 			}
-			// Like OBS's Stats window, a value inside its limits gets no status label.
-			return std::pair{QString(), ""};
+			return std::pair{QObject::tr("OK"), ""};
 		};
-		const double render_percent = point.frame_interval_ms > 0.0
-						      ? point.average_frame_time_ms / point.frame_interval_ms * 100.0
-						      : 0.0;
-		const auto render_status = render_percent > OBS_RENDER_DANGER_FRACTION * 100.0
-						   ? std::pair{QObject::tr("Danger"), "text-danger"}
-					   : render_percent > OBS_RENDER_WARNING_FRACTION * 100.0
-						   ? std::pair{QObject::tr("Warning"), "text-warning"}
-						   : std::pair{QString(), ""};
-		const auto missed_status = percentage_status(point.render_lag_percent);
-		const auto skipped_status = percentage_status(point.encoder_skipped_percent);
-		const auto dropped_status = percentage_status(point.dropped_percent);
-		const auto congestion_status = point.congestion_percent > OBS_CONGESTION_DANGER_PERCENT
-						       ? std::pair{QObject::tr("Danger"), "text-danger"}
-					       : point.congestion_percent > OBS_CONGESTION_WARNING_PERCENT
-						       ? std::pair{QObject::tr("Warning"), "text-warning"}
-						       : std::pair{QString(), ""};
-		const std::array<QString, 8> values = {
+		const double render_fraction =
+			point.frame_interval_ms > 0.0 ? point.average_frame_time_ms / point.frame_interval_ms : 0.0;
+		const auto render_status =
+			band(render_fraction, OBS_RENDER_WARNING_FRACTION, OBS_RENDER_DANGER_FRACTION);
+		const auto missed_status =
+			band(point.render_lag_percent, OBS_STATS_WARNING_PERCENT, OBS_STATS_DANGER_PERCENT);
+		auto skipped_status =
+			band(point.encoder_skipped_percent, OBS_STATS_WARNING_PERCENT, OBS_STATS_DANGER_PERCENT);
+		if (metric_history.back().value.encoder_frames_skipped > OBS_ENCODER_SKIP_STATUS_MIN_COUNT &&
+		    point.encoder_skipped_percent >= OBS_ENCODER_SKIP_STATUS_PERCENT &&
+		    point.encoder_skipped_percent <= OBS_STATS_WARNING_PERCENT) {
+			/* Match the status-bar overload marker even below the Stats warning band. */
+			skipped_status = {QObject::tr("Warning"), "text-warning"};
+		}
+		const auto dropped_status =
+			band(point.dropped_percent, OBS_STATS_WARNING_PERCENT, OBS_STATS_DANGER_PERCENT);
+		const auto congestion_status =
+			band(point.congestion_percent, OBS_CONGESTION_WARNING_PERCENT, OBS_CONGESTION_DANGER_PERCENT);
+		const std::array<QString, 9> values = {
 			QStringLiteral("%1 %").arg(point.cpu_percent, 0, 'f', 1),
+			point.gpu_percent ? QStringLiteral("%1 %").arg(*point.gpu_percent, 0, 'f', 1)
+					  : QObject::tr("Not available"),
 			QStringLiteral("%1 / %2 ms")
 				.arg(point.average_frame_time_ms, 0, 'f', 2)
 				.arg(point.frame_interval_ms, 0, 'f', 2),
 			QStringLiteral("%1 %").arg(point.render_lag_percent, 0, 'f', 2),
 			QStringLiteral("%1 %").arg(point.encoder_skipped_percent, 0, 'f', 2),
 			QStringLiteral("%1 %").arg(point.dropped_percent, 0, 'f', 2),
-			QStringLiteral("%1 kb/s").arg(point.bitrate_kbps, 0, 'f', 0),
 			QStringLiteral("%1 %").arg(point.congestion_percent, 0, 'f', 1),
+			QStringLiteral("%1 kb/s").arg(point.bitrate_kbps, 0, 'f', 0),
 			point.connect_time_ms <= 0 ? QObject::tr("Waiting")
 						   : QStringLiteral("%1 ms").arg(point.connect_time_ms, 0, 'f', 0),
 		};
-		const std::array<QString, 8> statuses = {QString(),
-							 render_status.first,
-							 missed_status.first,
-							 skipped_status.first,
-							 dropped_status.first,
-							 QString(),
-							 congestion_status.first,
-							 point.connect_time_ms <= 0 ? QObject::tr("Waiting")
-										    : QString()};
-		const std::array<const char *, 8> classes = {"",
+		const double interval_ms = point.frame_interval_ms;
+		metric_rows[2].limit->setText(QStringLiteral("%1 ms").arg(interval_ms, 0, 'f', 2));
+		const std::array<QString, 9> limits = {QStringLiteral("—"),          QStringLiteral("—"),
+						       metric_rows[2].limit->text(), QStringLiteral("5 %"),
+						       QStringLiteral("5 %"),        QStringLiteral("5 %"),
+						       QStringLiteral("66.67 %"),    QStringLiteral("—"),
+						       QStringLiteral("—")};
+		const std::array<QString, 9> statuses = {
+			QObject::tr("—"),
+			point.gpu_percent ? QObject::tr("—") : QObject::tr("Not available"),
+			render_status.first,
+			missed_status.first,
+			skipped_status.first,
+			dropped_status.first,
+			congestion_status.first,
+			QObject::tr("—"),
+			point.connect_time_ms <= 0 ? QObject::tr("Waiting") : QObject::tr("—")};
+		const std::array<const char *, 9> classes = {"",
+							     "",
 							     render_status.second,
 							     missed_status.second,
 							     skipped_status.second,
 							     dropped_status.second,
-							     "",
 							     congestion_status.second,
+							     "",
 							     ""};
 		for (size_t index = 0; index < metric_rows.size(); ++index) {
 			metric_rows[index].value->setText(values[index]);
+			metric_rows[index].limit->setText(limits[index]);
 			metric_rows[index].status->setText(statuses[index]);
 			setClasses(metric_rows[index].value, classes[index]);
 			setClasses(metric_rows[index].status, classes[index]);
-			metric_rows[index].sparkline->SetPoints(MetricValues(index));
 		}
 		ResizeMetricTableToContents();
-		UpdateChartDetail();
+		combined_chart->SetSeries(NormalizedChartSeries());
 	}
 
 	void UpdateVerdict()
@@ -3085,7 +3026,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					: point.verdict == OBS_PREFLIGHT_MARGINAL ? QObject::tr("Marginal")
 										  : QObject::tr("Fail");
 		verdict_label->setText(verdict);
-		reason_label->setText(point.reason);
+		reason_label->setText(
+			QString::fromStdString(preflight::bench::BuildVerdictReason(metric_history.back().value)));
 		const char *verdict_class = point.verdict == OBS_PREFLIGHT_PASS ? "bg-success text-success text-bold"
 					    : point.verdict == OBS_PREFLIGHT_MARGINAL
 						    ? "bg-warning text-warning text-bold"
@@ -3116,6 +3058,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	{
 		candidate_render_headroom_ns = window.render_headroom_ns;
 		candidate_encoder_skip_percent = window.encoder_skip_percent;
+		bakeoff_candidate_reason = QString::fromStdString(preflight::bench::BuildVerdictReason(window));
 		SetBakeoffCell(1, QStringLiteral("%1 ms · %2% skipped · %3")
 					  .arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2)
 					  .arg(candidate_encoder_skip_percent, 0, 'f', 2)
@@ -3131,16 +3074,14 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		const QString final_reason = reason.isEmpty() ? bakeoff_candidate_reason : reason;
 		const int32_t status = obs_preflight_bakeoff_complete(bakeoff_planner, candidate_verdict);
 		if (status != OBS_PREFLIGHT_OK) {
-			SetBakeoffStatus(QObject::tr("The preflight engine could not record a candidate result."));
+			SetBakeoffStatus(QObject::tr("Bake-off result: could not record"));
 		}
 		bakeoff_candidate_active = false;
-		SetBakeoffCell(1, QStringLiteral("%1 ms · %2% skipped · %3\n%4")
+		SetBakeoffCell(1, QStringLiteral("%1 ms · %2% skipped · %3 · %4")
 					  .arg(candidate_render_headroom_ns / 1'000'000.0, 0, 'f', 2)
 					  .arg(candidate_encoder_skip_percent, 0, 'f', 2)
 					  .arg(BakeoffVerdictText(candidate_verdict))
-					  .arg(final_reason.isEmpty()
-						       ? QObject::tr("No plain-language reason was reported.")
-						       : final_reason));
+					  .arg(final_reason.isEmpty() ? QObject::tr("Not available") : final_reason));
 		bakeoff_table->item(static_cast<int>(active_bakeoff_row), 1)->setToolTip(final_reason);
 		bakeoff_table->scrollToItem(bakeoff_table->item(static_cast<int>(active_bakeoff_row), 0));
 		bakeoff_waiting_for_stop = true;
@@ -3148,7 +3089,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		if (stream_output && obs_output_active(stream_output)) {
 			obs_output_stop(stream_output);
 			sample_timer->start(100);
-			SetBakeoffStatus(QObject::tr("Candidate %1 of %2 finished; stopping its output.")
+			SetBakeoffStatus(QObject::tr("Candidate %1 / %2 · stopping")
 						 .arg(active_candidate.order)
 						 .arg(bakeoff_candidates.size()));
 		} else {
@@ -3180,10 +3121,9 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			encoder_properties->setEnabled(true);
 		}
 		SetBakeoffUseActionsEnabled(true);
-		SetBakeoffStatus(cancelled ? QObject::tr("Bake-off stopped. Completed results remain in the table.")
-					   : QObject::tr("Bake-off complete. Results for %1 candidates are shown.")
-						     .arg(bakeoff_candidates.size()));
-		SetStatus(cancelled ? QObject::tr("Bake-off stopped.") : QObject::tr("Bake-off complete."));
+		SetBakeoffStatus(cancelled ? QObject::tr("Stopped · completed rows kept")
+					   : QObject::tr("Complete · %1 candidates").arg(bakeoff_candidates.size()));
+		SetStatus(cancelled ? QObject::tr("Stopped") : QObject::tr("Complete"));
 		if (close_when_stopped) {
 			close_when_stopped = false;
 			dialog->close();
@@ -3209,7 +3149,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			return;
 		}
 		if (!bakeoff_engine) {
-			SetBakeoffStatus(QObject::tr("Could not prepare the next candidate's stats window."));
+			SetBakeoffStatus(QObject::tr("Bake-off window: could not create"));
 			FinishBakeoff(true);
 			return;
 		}
@@ -3229,7 +3169,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		}
 		if (next_status != OBS_PREFLIGHT_OK || active_candidate.order == 0 ||
 		    active_candidate.order > bakeoff_candidates.size()) {
-			SetBakeoffStatus(QObject::tr("The preflight engine could not read the next candidate."));
+			SetBakeoffStatus(QObject::tr("Bake-off candidate: could not read"));
 			FinishBakeoff(true);
 			return;
 		}
@@ -3251,8 +3191,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 
 		OBSDataAutoRelease settings = obs_encoder_defaults(active_candidate.encoder);
 		if (!settings) {
-			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL,
-						 QObject::tr("OBS could not create settings for this encoder."));
+			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL, QObject::tr("Encoder settings: could not create"));
 			return;
 		}
 		if (stream_bitrate_kbps > 0) {
@@ -3262,19 +3201,16 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		bakeoff_encoder = obs_video_encoder_create(active_candidate.encoder, "preflight_bakeoff_video",
 							   settings, nullptr);
 		if (!bakeoff_encoder) {
-			CompleteBakeoffCandidate(
-				OBS_PREFLIGHT_FAIL,
-				QObject::tr("OBS could not create this encoder on the current device."));
+			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL,
+						 QObject::tr("Encoder: could not create on this device"));
 			return;
 		}
 
 		video_t *video = obs_get_video();
 		if (!video || active_candidate.fps_num != current_fps_num || current_fps_den == 0 ||
 		    active_candidate.fps_den % current_fps_den != 0) {
-			CompleteBakeoffCandidate(
-				OBS_PREFLIGHT_FAIL,
-				QObject::tr(
-					"OBS could not attach this frame-rate candidate to the current video mix."));
+			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL,
+						 QObject::tr("Video mode: FPS candidate unsupported"));
 			return;
 		}
 		obs_encoder_set_video(bakeoff_encoder, video);
@@ -3284,24 +3220,21 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		}
 		const uint32_t divisor = active_candidate.fps_den / current_fps_den;
 		if (divisor == 0 || !obs_encoder_set_frame_rate_divisor(bakeoff_encoder, divisor)) {
-			CompleteBakeoffCandidate(
-				OBS_PREFLIGHT_FAIL,
-				QObject::tr("This encoder could not apply the requested frame-rate divisor."));
+			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL, QObject::tr("Encoder: FPS divisor unsupported"));
 			return;
 		}
 
 		obs_output_set_video_encoder(stream_output, bakeoff_encoder);
 		StartLoupe(bakeoff_encoder);
 		if (!obs_output_start(stream_output)) {
-			CompleteBakeoffCandidate(
-				OBS_PREFLIGHT_FAIL,
-				output_error(stream_output,
-					     QObject::tr("This encoder could not start the private test output.")));
+			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL,
+						 output_error(stream_output,
+							      QObject::tr("Test output: could not start")));
 			return;
 		}
 		bakeoff_elapsed.start();
 		sample_timer->start(static_cast<int>(SAMPLE_WINDOW_MS));
-		SetBakeoffStatus(QObject::tr("Testing candidate %1 of %2: %3.")
+		SetBakeoffStatus(QObject::tr("Candidate %1 / %2 · %3")
 					 .arg(active_candidate.order)
 					 .arg(bakeoff_candidates.size())
 					 .arg(QString::fromUtf8(active_candidate.encoder)));
@@ -3316,7 +3249,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		bakeoff_button->setEnabled(false);
 		bakeoff_button->setText(QObject::tr("Stopping…"));
 		if (bakeoff_candidate_active) {
-			SetBakeoffCell(1, QObject::tr("Stopped\nStopped before this candidate finished."));
+			SetBakeoffCell(1, QObject::tr("Stopped\nCandidate: incomplete"));
 			bakeoff_candidate_active = false;
 		}
 		bakeoff_waiting_for_stop = true;
@@ -3327,7 +3260,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		} else {
 			QTimer::singleShot(0, dialog, [this]() { ContinueBakeoffAfterStop(); });
 		}
-		SetBakeoffStatus(QObject::tr("Stopping the current private test candidate."));
+		SetBakeoffStatus(QObject::tr("Stopping"));
 	}
 
 	void SampleBakeoff()
@@ -3336,10 +3269,9 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			return;
 		}
 		if (!stream_output || !obs_output_active(stream_output)) {
-			CompleteBakeoffCandidate(
-				OBS_PREFLIGHT_FAIL,
-				output_error(stream_output,
-					     QObject::tr("The private test output stopped unexpectedly.")));
+			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL,
+						 output_error(stream_output,
+							      QObject::tr("Test output: stopped unexpectedly")));
 			return;
 		}
 		video_t *video = obs_encoder_video(bakeoff_encoder);
@@ -3357,7 +3289,8 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					PushPoint(window);
 					if (window.verdict >= candidate_verdict) {
 						candidate_verdict = window.verdict;
-						bakeoff_candidate_reason = QString::fromUtf8(window.reason);
+						bakeoff_candidate_reason = QString::fromStdString(
+							preflight::bench::BuildVerdictReason(window));
 					}
 					if (candidate_verdict == OBS_PREFLIGHT_FAIL) {
 						CompleteBakeoffCandidate(candidate_verdict, bakeoff_candidate_reason);
@@ -3369,9 +3302,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 
 		if (bakeoff_elapsed.elapsed() >= static_cast<qint64>(active_candidate.duration_ms)) {
 			if (!bakeoff_candidate_has_samples) {
-				CompleteBakeoffCandidate(
-					OBS_PREFLIGHT_FAIL,
-					QObject::tr("The encoder produced no usable samples during this test."));
+				CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL, QObject::tr("Encoder: no usable samples"));
 			} else {
 				CompleteBakeoffCandidate(candidate_verdict, bakeoff_candidate_reason);
 			}
@@ -3469,14 +3400,13 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		}
 		video_t *video = obs_get_video();
 		if (!video) {
-			SetStatus(QObject::tr("OBS's video mix is unavailable; output mode was not applied."));
+			SetStatus(QObject::tr("OBS video: unavailable"));
 			return false;
 		}
 		OBSDataAutoRelease stream_settings = clone_settings(encoder_properties->GetSettings());
 		OBSDataAutoRelease recording_settings = clone_settings(recording_encoder_properties->GetSettings());
 		if (!stream_settings || !recording_settings) {
-			SetStatus(
-				QObject::tr("Could not read the bench encoder settings; output mode was not applied."));
+			SetStatus(QObject::tr("Bench encoder settings: unreadable"));
 			return false;
 		}
 		if (test_service) {
@@ -3489,7 +3419,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		OBSEncoderAutoRelease new_recording(obs_video_encoder_create(
 			recording_id.constData(), "preflight_recording_video", recording_settings, nullptr));
 		if (!new_stream || !new_recording) {
-			SetStatus(QObject::tr("Could not recreate both video encoders; output mode was not applied."));
+			SetStatus(QObject::tr("Video encoders: could not recreate"));
 			return false;
 		}
 		obs_encoder_set_video(new_stream, video);
@@ -3498,8 +3428,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 		obs_encoder_set_scaled_size(new_recording, video_settings.output_width, video_settings.output_height);
 		if (!obs_encoder_set_frame_rate_divisor(new_stream, video_settings.fps_divisor) ||
 		    !obs_encoder_set_frame_rate_divisor(new_recording, video_settings.fps_divisor)) {
-			SetStatus(QObject::tr(
-				"An encoder rejected OBS's live frame-rate divisor; output mode was not applied."));
+			SetStatus(QObject::tr("Video FPS: encoder divisor unsupported"));
 			return false;
 		}
 		if (stream_output) {
@@ -3535,16 +3464,15 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			return;
 		}
 		if (restart_stream_when_stopped && !PrepareYouTubeTestKey()) {
-			StopOutputs(QObject::tr("Stopping after the YouTube test key could not be refreshed."),
-				    youtube_test_error);
+			StopOutputs(QObject::tr("Stopping"), youtube_test_error);
 			return;
 		}
 		if (restart_recording_when_stopped) {
 			StartRecordingLoupe();
 			if (!obs_output_start(recording_output)) {
 				restart_recording_when_stopped = false;
-				StopOutputs(output_error(recording_output,
-							 QObject::tr("Local recording could not restart.")));
+				StopOutputs(
+					output_error(recording_output, QObject::tr("Recording: could not restart")));
 				return;
 			}
 			restart_recording_when_stopped = false;
@@ -3553,14 +3481,15 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			StartLoupe(stream_video_encoder);
 			if (!obs_output_start(stream_output)) {
 				restart_stream_when_stopped = false;
-				StopOutputs(output_error(stream_output, QObject::tr("Stream test could not restart.")));
+				StopOutputs(output_error(stream_output, QObject::tr("Stream test: could not restart")));
 				return;
 			}
 			restart_stream_when_stopped = false;
 		}
 		bench_running = true;
+		StartGpuSampling();
 		sample_timer->start(static_cast<int>(SAMPLE_WINDOW_MS));
-		SetStatus(QObject::tr("Bench restarted with the reviewed settings."));
+		SetStatus(QObject::tr("Running"));
 	}
 
 	void UpdateEncoderSettings()
@@ -3572,6 +3501,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			if (stream_active || recording_active) {
 				restart_stream_when_stopped = stream_active;
 				restart_recording_when_stopped = recording_active;
+				StopGpuSampling();
 				StopLoupe();
 				if (stream_active) {
 					obs_output_stop(stream_output);
@@ -3580,8 +3510,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					obs_output_stop(recording_output);
 				}
 				sample_timer->start(100);
-				SetStatus(
-					QObject::tr("Restarting both bench encoders to apply the video output mode."));
+				SetStatus(QObject::tr("Restarting · video settings"));
 				return;
 			}
 			if (!RecreateVideoEncoders()) {
@@ -3594,10 +3523,11 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			if (stream_output && obs_output_active(stream_output)) {
 				if (!restart_stream_when_stopped) {
 					restart_stream_when_stopped = true;
+					StopGpuSampling();
 					loupe_capture.Stop();
 					obs_output_stop(stream_output);
 				}
-				SetStatus(QObject::tr("Restarting the stream test output; local recording continues."));
+				SetStatus(QObject::tr("Restarting · stream encoder"));
 				sample_timer->start(100);
 				return;
 			}
@@ -3612,10 +3542,11 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			if (recording_output && obs_output_active(recording_output)) {
 				if (!restart_recording_when_stopped) {
 					restart_recording_when_stopped = true;
+					StopGpuSampling();
 					recording_loupe_capture.Stop();
 					obs_output_stop(recording_output);
 				}
-				SetStatus(QObject::tr("Restarting the recording encoder; the stream test continues."));
+				SetStatus(QObject::tr("Restarting · recording encoder"));
 				sample_timer->start(100);
 				return;
 			}
@@ -3640,11 +3571,13 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 	  impl(std::make_unique<Impl>(this))
 {
 	setObjectName(QStringLiteral("preflight-bench-window"));
-	setWindowTitle(tr("Preflight live bench"));
+	setWindowTitle(tr("Preflight"));
 	resize(1040, 720);
 	impl->sample_timer = new QTimer(this);
 	impl->sample_timer->setInterval(static_cast<int>(SAMPLE_WINDOW_MS));
 	connect(impl->sample_timer, &QTimer::timeout, this, &PreflightBenchWindow::Sample);
+	impl->gpu_sample_timer = new QTimer(this);
+	connect(impl->gpu_sample_timer, &QTimer::timeout, this, [this]() { impl->SampleGpu(); });
 	impl->loupe_timer = new QTimer(this);
 	impl->loupe_timer->setInterval(100);
 	connect(impl->loupe_timer, &QTimer::timeout, this, [this]() { impl->UpdateLoupe(); });
@@ -3655,7 +3588,7 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent, const PreflightBench
 	impl->uplink_timer->setInterval(100);
 	connect(impl->uplink_timer, &QTimer::timeout, this, [this]() { impl->PollCloudflareSpeedTest(); });
 	if (recorded_data) {
-		impl->setup_error = tr("This preview uses recorded samples; live OBS outputs are unavailable.");
+		impl->setup_error = tr("Recorded preview");
 		impl->recorded_apply_preview = recorded_data->apply_preview;
 		impl->enable_recorded_apply_controls_for_test = recorded_data->enable_recorded_apply_controls_for_test;
 	} else {
@@ -3691,7 +3624,7 @@ void PreflightBenchWindow::closeEvent(QCloseEvent *event)
 		impl->cloudflare_speed_test.Cancel();
 		impl->run_button->setEnabled(false);
 		impl->run_button->setText(tr("Stopping…"));
-		impl->SetStatus(tr("Stopping the Cloudflare speed test before closing."));
+		impl->SetStatus(tr("Stopping"));
 		impl->uplink_timer->start(100);
 		event->ignore();
 		return;
@@ -3707,7 +3640,7 @@ void PreflightBenchWindow::closeEvent(QCloseEvent *event)
 	if (impl->bench_running || impl->stopping) {
 		impl->close_when_stopped = true;
 		if (!impl->stopping) {
-			impl->StopOutputs(tr("Stopping the stream test and local recording."), tr("Stopped"));
+			impl->StopOutputs(tr("Stopping"), tr("Stopped"));
 		}
 		event->ignore();
 		return;
@@ -3722,11 +3655,11 @@ void PreflightBenchWindow::ToggleBench()
 		return;
 	}
 	if (impl->bench_running) {
-		impl->StopOutputs(tr("Stopping the stream test and local recording."), tr("Stopped"));
+		impl->StopOutputs(tr("Stopping"), tr("Stopped"));
 		return;
 	}
 	if (impl->bakeoff_running || impl->stopping) {
-		impl->SetStatus(tr("Stop the current preflight operation before starting the live bench."));
+		impl->SetStatus(tr("Preflight: stop before starting"));
 		return;
 	}
 
@@ -3742,26 +3675,27 @@ void PreflightBenchWindow::ToggleBench()
 		return;
 	}
 	if (!obs_output_start(impl->recording_output)) {
-		impl->SetStatus(output_error(impl->recording_output, tr("Local recording could not start.")));
+		impl->SetStatus(output_error(impl->recording_output, tr("Recording: could not start")));
 		return;
 	}
 	impl->StartRecordingLoupe();
 	impl->StartLoupe(impl->stream_video_encoder);
 	if (!obs_output_start(impl->stream_output)) {
-		const QString error = output_error(impl->stream_output, tr("Non-public stream test could not start."));
-		impl->StopOutputs(tr("Stopping the local recording after the stream test failed."), error);
+		const QString error = output_error(impl->stream_output, tr("Stream test: could not start"));
+		impl->StopOutputs(tr("Stream test failed · stopping recording"), error);
 		return;
 	}
 	impl->bench_running = true;
+	impl->StartGpuSampling();
 	impl->run_button->setText(tr("Stop bench"));
-	impl->SetStatus(tr("Recording locally while the non-public stream test runs."));
+	impl->SetStatus(tr("Running · private stream + local recording"));
 	impl->sample_timer->start();
 }
 
 void PreflightBenchWindow::ToggleBakeoff()
 {
 	if (impl->cloudflare_speed_only) {
-		impl->SetBakeoffStatus(tr("Bake-off needs a service with a non-public OBS test mode."));
+		impl->SetBakeoffStatus(tr("Bake-off: service test mode required"));
 		return;
 	}
 	if (impl->bakeoff_running) {
@@ -3773,7 +3707,7 @@ void PreflightBenchWindow::ToggleBakeoff()
 		return;
 	}
 	if (impl->bench_running || impl->stopping || (impl->stream_output && obs_output_active(impl->stream_output))) {
-		impl->SetBakeoffStatus(tr("Stop the live bench before starting the bake-off."));
+		impl->SetBakeoffStatus(tr("Bench: stop before bake-off"));
 		return;
 	}
 	if (!impl->BuildBakeoffPlan()) {
@@ -3781,7 +3715,7 @@ void PreflightBenchWindow::ToggleBakeoff()
 	}
 	impl->bakeoff_engine = obs_preflight_engine_create_with_window(SAMPLE_WINDOW_MS);
 	if (!impl->bakeoff_engine) {
-		impl->SetBakeoffStatus(tr("Could not create the bake-off stats engine."));
+		impl->SetBakeoffStatus(tr("Bake-off engine: could not create"));
 		obs_preflight_bakeoff_destroy(impl->bakeoff_planner);
 		impl->bakeoff_planner = nullptr;
 		return;
@@ -3794,7 +3728,7 @@ void PreflightBenchWindow::ToggleBakeoff()
 	if (impl->encoder_properties) {
 		impl->encoder_properties->setEnabled(false);
 	}
-	impl->SetStatus(tr("Running each candidate through the non-public test output."));
+	impl->SetStatus(tr("Running · private test output"));
 	impl->StartNextBakeoffCandidate();
 }
 
@@ -3833,15 +3767,15 @@ void PreflightBenchWindow::Sample()
 			return;
 		}
 		if (impl->bench_running) {
-			impl->StopOutputs(tr("Stopping the local recording after the stream test ended."),
-					  output_error(impl->stream_output, tr("The stream test stopped.")));
+			impl->StopOutputs(tr("Stopping recording · stream ended"),
+					  output_error(impl->stream_output, tr("Stream test: stopped")));
 		}
 		return;
 	}
 
 	if (impl->recording_output && !obs_output_active(impl->recording_output)) {
-		impl->StopOutputs(tr("Stopping the stream test after the local recording stopped."),
-				  output_error(impl->recording_output, tr("The local recording stopped.")));
+		impl->StopOutputs(tr("Stopping stream · recording ended"),
+				  output_error(impl->recording_output, tr("Recording: stopped")));
 		return;
 	}
 
@@ -3859,6 +3793,7 @@ void PreflightBenchWindow::Sample()
 		obs_preflight_engine_destroy(impl->engine);
 		impl->engine = obs_preflight_engine_create_with_window(SAMPLE_WINDOW_MS);
 		impl->last_window_end_ms = 0;
+		impl->gpu_window_average.TakeAverage();
 		return;
 	}
 	if (count == 0) {
@@ -3866,7 +3801,7 @@ void PreflightBenchWindow::Sample()
 	}
 	obs_preflight_window window = {};
 	if (obs_preflight_engine_get_window(impl->engine, count - 1, &window) == OBS_PREFLIGHT_OK) {
-		impl->PushPoint(window);
+		impl->PushPoint(window, impl->gpu_window_average.TakeAverage());
 	}
 }
 

@@ -3,6 +3,7 @@
 #include "obs-preflight.h"
 #include "preflight-apply-plan.hpp"
 #include "preflight-bench-data.hpp"
+#include "preflight-gpu-sampler.hpp"
 #include "preflight-loupe-core.hpp"
 
 #include <QDialog>
@@ -23,6 +24,7 @@ struct PreflightBenchWindowRecordedBakeoffRow {
 
 struct PreflightBenchWindowRecordedData {
 	std::vector<obs_preflight_window> windows;
+	std::vector<preflight::gpu::Sample> gpu_samples;
 	std::vector<PreflightBenchWindowRecordedBakeoffRow> bakeoff_rows;
 	std::shared_ptr<const preflight::loupe::FramePair> loupe_pair;
 	std::shared_ptr<const preflight::loupe::FramePair> recording_loupe_pair;

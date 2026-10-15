@@ -625,6 +625,7 @@ int main(int argc, char **argv)
 
 		PreflightBenchWindowRecordedData recorded;
 		recorded.windows = congested_windows;
+		recorded.gpu_samples.resize(congested_windows.size(), preflight::gpu::Sample{54.0, 41.0, 28.0, 16.0});
 		recorded.bakeoff_rows = {
 			{QStringLiteral("Software"), QStringLiteral("1080p"), QStringLiteral("60"), clean},
 			{QStringLiteral("Hardware"), QStringLiteral("1080p"), QStringLiteral("60"), congested},
@@ -639,12 +640,21 @@ int main(int argc, char **argv)
 		impact.old_value = "6000";
 		impact.new_value = "4500";
 		impact.state = preflight::bench::ImpactState::Complete;
-		impact.baseline = preflight::bench::MetricWindow{1, clean};
-		impact.after = preflight::bench::MetricWindow{2, congested};
-		impact.deltas = preflight::bench::CalculateImpactDelta(clean, congested);
+		impact.baseline = preflight::bench::MetricWindow{1, clean, 35.0};
+		impact.after = preflight::bench::MetricWindow{2, congested, 54.0};
+		impact.deltas = preflight::bench::CalculateImpactDelta(*impact.baseline, *impact.after);
 		recorded.impacts.push_back(impact);
-		recorded.toggles.push_back({"Live captions (on-device)", "macos-captions-filter", true, true,
-					    "Enabled immediately for this preview."});
+		preflight::bench::ImpactEntry settling;
+		settling.id = 2;
+		settling.description = "Live captions";
+		settling.key = "enabled";
+		settling.old_value = "off";
+		settling.new_value = "on";
+		settling.state = preflight::bench::ImpactState::Settling;
+		settling.baseline = preflight::bench::MetricWindow{1, clean};
+		recorded.impacts.push_back(settling);
+		recorded.toggles.push_back(
+			{"Live captions (on-device)", "mac_live_captions_filter", true, true, "Applies immediately"});
 		recorded.apply_preview = preflight::apply::BuildAdvancedPlan(
 			{{QStringLiteral("bitrate"), 6000},
 			 {QStringLiteral("preset"), QStringLiteral("veryfast")},
@@ -676,8 +686,8 @@ int main(int argc, char **argv)
 		require(verdict_label && reason_label, "bench verdict widgets are missing");
 		require(verdict_label->text() == QStringLiteral("Marginal"),
 			"bench verdict text does not match the engine result");
-		require(reason_label->text() == QString::fromUtf8(congested.reason),
-			"bench reason text does not match the engine result");
+		require(reason_label->text() == QString::fromStdString(preflight::bench::BuildVerdictReason(congested)),
+			"bench reason text is not derived from the measured OBS limits");
 		auto *summary = window.findChild<QWidget *>(QStringLiteral("preflight-verdict-summary"));
 		auto *one_screen = window.findChild<QSplitter *>(QStringLiteral("preflight-one-screen"));
 		auto *settings = window.findChild<QWidget *>(QStringLiteral("preflight-settings"));
@@ -687,56 +697,72 @@ int main(int argc, char **argv)
 			"Preflight must use the single-screen settings and preview layout without tabs");
 		auto *captions_toggle = window.findChild<QCheckBox *>(QStringLiteral("preflight-toggle-live-captions"));
 		auto *impact_list = window.findChild<QTableWidget *>(QStringLiteral("preflight-impact-list"));
-		require(captions_toggle && captions_toggle->isEnabled() && captions_toggle->isChecked() &&
-				impact_list && impact_list->rowCount() == 1 && impact_list->item(0, 4) &&
-				impact_list->item(0, 4)->text() == QStringLiteral("Complete") &&
-				impact_list->item(0, 3) &&
-				impact_list->item(0, 3)->text().contains(QStringLiteral("bitrate")),
-			"one-screen render omitted an enabled filter toggle or completed impact entry");
+		require(captions_toggle && captions_toggle->isEnabled() && captions_toggle->isChecked(),
+			"recorded live captions toggle is not enabled and on");
+		require(impact_list && impact_list->columnCount() == 1 && impact_list->rowCount() == 2 &&
+				impact_list->item(0, 0) &&
+				impact_list->item(0, 0)->data(Qt::UserRole).toString() == QStringLiteral("Complete") &&
+				impact_list->item(0, 0)->text().contains(QStringLiteral("GPU +19.0 pp")) &&
+				impact_list->item(1, 0) &&
+				impact_list->item(1, 0)->data(Qt::UserRole).toString() == QStringLiteral("Settling"),
+			"one-screen render omitted completed deltas or the settling state");
 
 		auto *metric_table = window.findChild<QTableWidget *>(QStringLiteral("preflight-metric-table"));
-		require(metric_table && metric_table->rowCount() == 8 && metric_table->columnCount() == 4 &&
+		require(metric_table && metric_table->rowCount() == 9 && metric_table->columnCount() == 4 &&
 				metric_table->horizontalHeaderItem(0)->text() == QStringLiteral("Metric") &&
 				metric_table->horizontalHeaderItem(1)->text() == QStringLiteral("Value") &&
-				metric_table->horizontalHeaderItem(2)->text() == QStringLiteral("Trend") &&
+				metric_table->horizontalHeaderItem(2)->text() == QStringLiteral("Limit") &&
 				metric_table->horizontalHeaderItem(3)->text() == QStringLiteral("Status"),
 			"Live bench is missing the compact Stats-style metric table");
 		for (int row = 0; row < metric_table->rowCount(); ++row) {
 			require(metric_table->item(row, 0) && metric_table->cellWidget(row, 1) &&
 					metric_table->cellWidget(row, 2) && metric_table->cellWidget(row, 3),
-				"metric row is missing its value, trend or status");
+				"metric row is missing its value, limit or status");
 		}
-		auto *chart_detail = window.findChild<QWidget *>(QStringLiteral("preflight-chart-detail"));
-		auto *chart_detail_group = window.findChild<QWidget *>(QStringLiteral("preflight-chart-detail-group"));
-		require(chart_detail && chart_detail_group && !chart_detail_group->isVisible(),
-			"metric charts should be hidden until a table row is opened");
-		metric_table->setCurrentCell(0, 0);
+		auto *combined_chart = window.findChild<QWidget *>(QStringLiteral("preflight-combined-chart"));
+		require(combined_chart && combined_chart->isVisible() && combined_chart->minimumHeight() >= 220 &&
+				combined_chart->property("preflightStartsAtZero").toBool(),
+			"combined normalized chart is missing or too small");
+		combined_chart->repaint();
+		QStringList axis = combined_chart->property("preflightYAxisLabels").toStringList();
+		require(axis.size() == 5 && axis.back() == QStringLiteral("0") &&
+				std::all_of(axis.begin(), axis.end(),
+					    [](const QString &label) { return !label.contains('.'); }) &&
+				combined_chart->property("preflightYAxisTitle").toString() ==
+					QStringLiteral("% of limit"),
+			"combined chart axis must start at zero with rounded percent-of-limit ticks");
+		require(combined_chart->property("preflightSeriesNames").toStringList() ==
+					QStringList({QStringLiteral("CPU"), QStringLiteral("GPU"),
+						     QStringLiteral("Render"), QStringLiteral("Missed"),
+						     QStringLiteral("Skipped"), QStringLiteral("Dropped"),
+						     QStringLiteral("Congestion")}) &&
+				combined_chart->property("preflightSeriesColors").toStringList() ==
+					QStringList({QStringLiteral("#56B4E9"), QStringLiteral("#0072B2"),
+						     QStringLiteral("#E69F00"), QStringLiteral("#CC79A7"),
+						     QStringLiteral("#F0E442"), QStringLiteral("#D55E00"),
+						     QStringLiteral("#009E73")}) &&
+				combined_chart->property("preflightLatestValues").toStringList() ==
+					QStringList({QStringLiteral("70.00"), QStringLiteral("54.00"),
+						     QStringLiteral("42.00"), QStringLiteral("0.00"),
+						     QStringLiteral("0.00"), QStringLiteral("66.67"),
+						     QStringLiteral("52.50")}),
+			"combined chart series do not match their OBS limits and Okabe-Ito colors");
+		require(combined_chart->property("preflightLimitLine").toBool() &&
+				combined_chart->property("preflightLimitLabel").toString() == QStringLiteral("Limit"),
+			"combined chart is missing its OBS limit line");
+		auto *gpu_value = window.findChild<QLabel *>(QStringLiteral("preflight-metric-value-1"));
+		require(gpu_value && gpu_value->text() == QStringLiteral("54.0 %"),
+			"GPU row did not show the recorded utilization sample");
+		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 1),
+					  Q_ARG(int, 0));
 		QApplication::processEvents();
-		require(chart_detail_group->isVisible() && chart_detail->property("preflightStartsAtZero").toBool(),
-			"opening a metric row did not show a zero-based chart");
-		QStringList cpu_axis = chart_detail->property("preflightYAxisLabels").toStringList();
-		require(cpu_axis.size() == 4 && cpu_axis.back() == QStringLiteral("0") &&
-				std::all_of(cpu_axis.begin(), cpu_axis.end(),
-					    [](const QString &label) { return !label.contains('.'); }),
-			"percentage chart does not start at zero with round tick labels");
-		metric_table->setCurrentCell(1, 0);
+		require(combined_chart->property("preflightEmphasizedRow").toInt() == 1,
+			"clicking the GPU legend row did not emphasize its series");
+		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 1),
+					  Q_ARG(int, 0));
 		QApplication::processEvents();
-		require(chart_detail->property("preflightWarningLines").toStringList() ==
-				QStringList({QStringLiteral("75% interval"), QStringLiteral("100% interval")}),
-			"render detail omits OBS warning bands");
-		const QStringList warning_offsets =
-			chart_detail->property("preflightWarningLabelsOffLine").toStringList();
-		require(warning_offsets.size() == 2 &&
-				std::all_of(warning_offsets.begin(), warning_offsets.end(),
-					    [](const QString &value) { return value == QStringLiteral("true"); }),
-			"render warning labels overlap their threshold lines");
-		metric_table->setCurrentCell(5, 0);
-		QApplication::processEvents();
-		const QStringList bitrate_axis = chart_detail->property("preflightYAxisLabels").toStringList();
-		require(bitrate_axis.size() == 4 &&
-				std::all_of(bitrate_axis.begin(), bitrate_axis.end(),
-					    [](const QString &label) { return !label.contains('.'); }),
-			"bitrate chart uses fractional tick values instead of round labels");
+		require(combined_chart->property("preflightEmphasizedRow").toInt() == -1,
+			"clicking the emphasized row again did not restore all series");
 
 		auto *table = window.findChild<QTableWidget *>(QStringLiteral("preflight-bakeoff-table"));
 		require(table && table->rowCount() == 3 && table->columnCount() == 3,
@@ -756,19 +782,20 @@ int main(int argc, char **argv)
 		require(bakeoff_group && bakeoff_group->height() - table->geometry().bottom() <= 24,
 			"inline bake-off leaves empty space below its table");
 		for (int row = 0; row < table->rowCount(); ++row) {
+			const QString expected_reason =
+				row == 0 ? QStringLiteral("All OBS limits met")
+					 : QString::fromStdString(
+						   preflight::bench::BuildVerdictReason(row == 1 ? congested : stale));
 			require(table->item(row, 1) &&
 					table->item(row, 1)->text().contains(row == 0   ? QStringLiteral("Pass")
 									     : row == 1 ? QStringLiteral("Marginal")
 											: QStringLiteral("Fail")) &&
-					table->item(row, 1)->text().contains(QStringLiteral("\n")) &&
+					table->item(row, 1)->text().contains(expected_reason) &&
 					qobject_cast<QPushButton *>(table->cellWidget(row, 2)) &&
 					qobject_cast<QPushButton *>(table->cellWidget(row, 2))->text() ==
 						QStringLiteral("Use these"),
 				"bake-off row is missing its metrics, reason or Use these action");
 		}
-		metric_table->clearSelection();
-		metric_table->setCurrentCell(-1, -1);
-		QApplication::processEvents();
 		QWidget *loupe_view = window.findChild<QWidget *>(QStringLiteral("preflight-loupe-view"));
 		require(loupe_view && window.findChild<QWidget *>(QStringLiteral("preflight-live-preview")),
 			"encoded preview or loupe widget is missing");
@@ -790,32 +817,44 @@ int main(int argc, char **argv)
 						   ? QCoreApplication::applicationDirPath()
 						   : qEnvironmentVariable("PREFLIGHT_UI_OUTPUT_DIR");
 		require(QDir().mkpath(output_dir), "could not create PNG output directory");
-		const QString yami_screenshot = QStringLiteral("preflight-yami-one-screen-2x.png");
-		const QString yami_chart_screenshot = QStringLiteral("preflight-yami-chart-open-2x.png");
+		const QString yami_screenshot = QStringLiteral("preflight-yami-emphasized-2x.png");
 		const QString yami_apply_screenshot = QStringLiteral("preflight-yami-apply-state-2x.png");
 		const QString system_screenshot = QStringLiteral("preflight-system-one-screen-2x.png");
-		chart_detail_group->hide();
+		QMetaObject::invokeMethod(metric_table, "cellClicked", Qt::DirectConnection, Q_ARG(int, 0),
+					  Q_ARG(int, 0));
 		QApplication::processEvents();
 		save_png(window, QDir(output_dir).filePath(yami_screenshot));
-		metric_table->setCurrentCell(1, 0);
-		QApplication::processEvents();
-		save_png(window, QDir(output_dir).filePath(yami_chart_screenshot));
-		metric_table->setCurrentCell(-1, -1);
-		QApplication::processEvents();
 		auto *settings_scroll = window.findChild<QScrollArea *>(QStringLiteral("preflight-settings-scroll"));
 		require(settings_scroll && apply_group, "settings scroll area or Apply preview is missing");
 		settings_scroll->ensureWidgetVisible(apply_group);
 		QApplication::processEvents();
-		require(!chart_detail_group->isVisible(), "Apply-state render unexpectedly keeps a metric chart open");
 		save_png(window, QDir(output_dir).filePath(yami_apply_screenshot));
 
 		require(ApplyOBSThemeForRenderTest(app, {QDir(theme_dir).filePath(QStringLiteral("System.obt"))},
 						   default_palette, &theme_error),
 			QStringLiteral("could not apply OBS System theme: %1").arg(theme_error).toUtf8().constData());
 		settings_scroll->verticalScrollBar()->setValue(0);
-		chart_detail_group->hide();
 		QApplication::processEvents();
 		save_png(window, QDir(output_dir).filePath(system_screenshot));
+
+		require(ApplyOBSThemeForRenderTest(app,
+						   {QDir(theme_dir).filePath(QStringLiteral("Yami.obt")),
+						    QDir(theme_dir).filePath(QStringLiteral("Yami_Default.ovt"))},
+						   default_palette, &theme_error),
+			QStringLiteral("could not restore OBS Yami theme: %1").arg(theme_error).toUtf8().constData());
+		PreflightBenchWindowRecordedData failed = recorded;
+		failed.windows = stale_windows;
+		failed.gpu_samples.resize(stale_windows.size(), preflight::gpu::Sample{54.0, 41.0, 28.0, 16.0});
+		PreflightBenchWindow fail_window(failed);
+		fail_window.resize(1500, 1280);
+		fail_window.show();
+		QApplication::processEvents();
+		auto *fail_verdict = fail_window.findChild<QLabel *>(QStringLiteral("preflight-verdict"));
+		auto *fail_reason = fail_window.findChild<QLabel *>(QStringLiteral("preflight-reason"));
+		require(fail_verdict && fail_verdict->text() == QStringLiteral("Fail") && fail_reason &&
+				fail_reason->text() == QStringLiteral("Encoder: 0 frames in window"),
+			"stale-encoder golden trace did not render its deterministic Fail reason");
+		save_png(fail_window, QDir(output_dir).filePath(QStringLiteral("preflight-yami-fail-state-2x.png")));
 
 	} catch (const std::exception &error) {
 		std::cerr << "FAIL test_preflight_ui_render: " << error.what() << '\n';

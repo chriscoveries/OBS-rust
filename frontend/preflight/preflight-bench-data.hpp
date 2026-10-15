@@ -18,6 +18,23 @@ typedef struct obs_source obs_source_t;
 /* Widget-free data and control surface for the Preflight bench. */
 namespace preflight::bench {
 
+namespace policy {
+
+/* OBSBasicStats.cpp:362-369 warns at 75% and marks render time over interval dangerous. */
+inline constexpr double OBS_RENDER_WARNING_FRACTION = 0.75;
+inline constexpr double OBS_RENDER_DANGER_FRACTION = 1.0;
+/* OBSBasicStats.cpp:393-398 and 419-424 use 1% warning and 5% danger. */
+inline constexpr double OBS_STATS_WARNING_PERCENT = 1.0;
+inline constexpr double OBS_STATS_DANGER_PERCENT = 5.0;
+/* OBSBasicStatusBar.cpp:10-13 labels congestion good through 33.33%, mediocre through 66.67%. */
+inline constexpr double OBS_CONGESTION_WARNING_PERCENT = 33.33;
+inline constexpr double OBS_CONGESTION_DANGER_PERCENT = 66.67;
+/* OBSBasicStatusBar.cpp:492 uses fraction 0.1% after more than ten skipped frames. */
+inline constexpr double OBS_ENCODER_SKIP_STATUS_PERCENT = 0.1;
+inline constexpr uint64_t OBS_ENCODER_SKIP_STATUS_MIN_COUNT = 10;
+
+} // namespace policy
+
 /* A retained OBS settings object. get() is borrowed until this wrapper is
  * destroyed; callers that keep the pointer must call obs_data_addref(). */
 class SettingsObject {
@@ -61,6 +78,10 @@ struct VideoSettings {
 struct MetricWindow {
 	uint64_t sequence = 0;
 	obs_preflight_window value{};
+	std::optional<double> gpu_percent;
+	std::optional<double> gpu_renderer_percent;
+	std::optional<double> gpu_tiler_percent;
+	std::optional<double> gpu_video_encode_percent;
 };
 
 struct MetricDelta {
@@ -70,12 +91,15 @@ struct MetricDelta {
 	double missed_percentage_points = 0.0;
 	double output_dropped_percentage_points = 0.0;
 	double bitrate_kbps = 0.0;
+	std::optional<double> gpu_percentage_points;
+	std::optional<double> gpu_video_encode_percentage_points;
 	int32_t verdict_before = OBS_PREFLIGHT_PASS;
 	int32_t verdict_after = OBS_PREFLIGHT_PASS;
 };
 
 /* Deltas are after minus baseline; percentage deltas are percentage points. */
-MetricDelta CalculateImpactDelta(const obs_preflight_window &baseline, const obs_preflight_window &after);
+MetricDelta CalculateImpactDelta(const MetricWindow &baseline, const MetricWindow &after);
+std::string BuildVerdictReason(const obs_preflight_window &window);
 
 enum class ImpactState { WaitingForBaseline, Settling, Complete, NoBaseline };
 
