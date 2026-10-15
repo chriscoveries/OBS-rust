@@ -2,6 +2,7 @@
 
 #include "obs-preflight-collector.h"
 #include "obs-preflight.h"
+#include "preflight-cloudflare-speed-test.hpp"
 #include "preflight-loupe-capture.hpp"
 #include "preflight-test-mode.hpp"
 
@@ -9,6 +10,10 @@
 
 #include <obs-frontend-api.h>
 #include <obs.hpp>
+#ifdef YOUTUBE_ENABLED
+#include <utility/YoutubeApiWrappers.hpp>
+#include <widgets/OBSBasic.hpp>
+#endif
 
 #include <QColor>
 #include <QCloseEvent>
@@ -501,19 +506,19 @@ QString output_error(obs_output_t *output, const QString &fallback)
 	return error && *error ? QString::fromUtf8(error) : fallback;
 }
 
-QString test_mode_label(const char *service_name)
+QString test_mode_label(preflight::UplinkTestMode mode)
 {
-	if (!service_name) {
-		return {};
-	}
-	if (strcmp(service_name, "Twitch") == 0) {
-		return QObject::tr("Twitch ingest bandwidth test");
-	}
-	if (strcmp(service_name, "Amazon IVS") == 0) {
-		return QObject::tr("Amazon IVS ingest bandwidth test");
-	}
-	if (strcmp(service_name, "Restream.io") == 0 || strcmp(service_name, "Restream.io - RTMP") == 0) {
-		return QObject::tr("Restream ingest test");
+	switch (mode) {
+	case preflight::UplinkTestMode::TwitchBandwidth:
+		return QObject::tr("Twitch ingest bandwidth test (bandwidthtest)");
+	case preflight::UplinkTestMode::AmazonIvsBandwidth:
+		return QObject::tr("Amazon IVS ingest bandwidth test (bandwidthtest)");
+	case preflight::UplinkTestMode::RestreamBandwidth:
+		return QObject::tr("Restream ingest test (test=true)");
+	case preflight::UplinkTestMode::YouTubeThrowawayStream:
+		return QObject::tr("YouTube one-use test stream key (no public broadcast)");
+	case preflight::UplinkTestMode::CloudflareSpeedOnly:
+		return QObject::tr("Cloudflare speed test only");
 	}
 	return {};
 }
@@ -525,6 +530,7 @@ struct PreflightBenchWindow::Impl {
 	QPushButton *run_button = nullptr;
 	QPushButton *bakeoff_button = nullptr;
 	QLabel *destination_label = nullptr;
+	QLabel *uplink_result_label = nullptr;
 	QLabel *loupe_status_label = nullptr;
 	QLabel *state_label = nullptr;
 	QLabel *verdict_label = nullptr;
@@ -535,6 +541,7 @@ struct PreflightBenchWindow::Impl {
 	QTimer *sample_timer = nullptr;
 	QTimer *loupe_timer = nullptr;
 	QTimer *settings_timer = nullptr;
+	QTimer *uplink_timer = nullptr;
 	OBSPropertiesView *encoder_properties = nullptr;
 	OBSServiceAutoRelease test_service;
 	OBSOutputAutoRelease stream_output;
@@ -548,6 +555,7 @@ struct PreflightBenchWindow::Impl {
 	obs_preflight_collector_t *collector = nullptr;
 	LoupeView *loupe_view = nullptr;
 	PreflightLoupeCapture loupe_capture;
+	preflight::CloudflareSpeedTest cloudflare_speed_test;
 	obs_preflight_engine_t *engine = nullptr;
 	obs_preflight_engine_t *bakeoff_engine = nullptr;
 	obs_preflight_bakeoff_t *bakeoff_planner = nullptr;
@@ -559,8 +567,10 @@ struct PreflightBenchWindow::Impl {
 	QString supported_test_mode;
 	QString recording_path;
 	QString setup_error;
+	QString youtube_test_error;
 	QString stop_completion_status;
 	QString bakeoff_candidate_reason;
+	std::string configured_service_name;
 	uint32_t current_output_width = 0;
 	uint32_t current_output_height = 0;
 	uint32_t current_fps_num = 0;
@@ -581,6 +591,8 @@ struct PreflightBenchWindow::Impl {
 	bool bakeoff_cancelled = false;
 	bool bakeoff_candidate_active = false;
 	bool bakeoff_candidate_has_samples = false;
+	bool cloudflare_speed_only = false;
+	bool requires_youtube_throwaway_stream = false;
 	bool close_when_stopped = false;
 
 	explicit Impl(PreflightBenchWindow *dialog_) : dialog(dialog_) {}
@@ -695,10 +707,26 @@ struct PreflightBenchWindow::Impl {
 		}
 		const char *service_name = obs_data_get_string(selected_service_settings, "service");
 		const char *service_id = obs_service_get_id(selected_service);
+		configured_service_name = service_name ? service_name : "";
+		const auto uplink_mode = preflight::uplink_test_mode_for_service(configured_service_name);
+		supported_test_mode = test_mode_label(uplink_mode);
+		if (uplink_mode == preflight::UplinkTestMode::CloudflareSpeedOnly) {
+			cloudflare_speed_only = true;
+			setup_error = QObject::tr(
+				"This service has no non-public OBS test mode. Cloudflare will measure network speed only; no OBS stream is sent.");
+			return false;
+		}
+
 		auto safe_key = preflight::make_non_public_test_key(
 			service_name, obs_data_get_string(selected_service_settings, "key"));
-		supported_test_mode = test_mode_label(service_name);
-		if (!safe_key || supported_test_mode.isEmpty() || !service_id ||
+		requires_youtube_throwaway_stream = uplink_mode == preflight::UplinkTestMode::YouTubeThrowawayStream;
+#ifndef YOUTUBE_ENABLED
+		if (requires_youtube_throwaway_stream) {
+			setup_error = QObject::tr("YouTube's private test-key flow is unavailable in this OBS build.");
+			return false;
+		}
+#endif
+		if ((!safe_key && !requires_youtube_throwaway_stream) || supported_test_mode.isEmpty() || !service_id ||
 		    strcmp(service_id, "rtmp_common") != 0) {
 			setup_error = QObject::tr(
 				"This service has no supported non-public test mode yet. Preflight will not send a public stream.");
@@ -710,7 +738,7 @@ struct PreflightBenchWindow::Impl {
 			setup_error = QObject::tr("Could not copy the OBS stream service settings.");
 			return false;
 		}
-		obs_data_set_string(test_service_settings, "key", safe_key->c_str());
+		obs_data_set_string(test_service_settings, "key", safe_key ? safe_key->c_str() : "");
 		test_service = obs_service_create(obs_service_get_id(selected_service), "preflight_non_public_test",
 						  test_service_settings, nullptr);
 		if (!test_service) {
@@ -850,6 +878,97 @@ struct PreflightBenchWindow::Impl {
 		}
 
 		return true;
+	}
+
+	bool PrepareYouTubeTestKey()
+	{
+		youtube_test_error.clear();
+		if (!requires_youtube_throwaway_stream) {
+			return true;
+		}
+#ifdef YOUTUBE_ENABLED
+		OBSBasic *main = OBSBasic::Get();
+		auto *youtube = main ? dynamic_cast<YoutubeApiWrappers *>(main->GetAuth()) : nullptr;
+		if (!youtube || configured_service_name != youtube->service()) {
+			youtube_test_error = QObject::tr(
+				"Connect the YouTube account that matches the selected OBS stream service before testing.");
+			return false;
+		}
+
+		// Match the wizard: a new non-reusable ingest stream key is created for each output start.
+		StreamDescription stream = {"", "", "OBS Studio Test Stream"};
+		if (!youtube->InsertStream(stream) || stream.name.isEmpty()) {
+			QString detail = youtube->GetLastError();
+			youtube_test_error =
+				detail.isEmpty() ? QObject::tr("YouTube could not create a one-use test stream key.")
+						 : QObject::tr("YouTube could not create a one-use test stream key: %1")
+							   .arg(detail);
+			return false;
+		}
+
+		OBSDataAutoRelease settings = obs_service_get_settings(test_service);
+		if (!settings) {
+			youtube_test_error = QObject::tr("Could not update the one-use YouTube test stream key.");
+			return false;
+		}
+		const QByteArray key = stream.name.toUtf8();
+		obs_data_set_string(settings, "key", key.constData());
+		obs_service_update(test_service, settings);
+		return true;
+#else
+		youtube_test_error = QObject::tr("YouTube's private test-key flow is unavailable in this OBS build.");
+		return false;
+#endif
+	}
+
+	void ToggleCloudflareSpeedTest()
+	{
+		if (cloudflare_speed_test.IsRunning()) {
+			cloudflare_speed_test.Cancel();
+			run_button->setEnabled(false);
+			run_button->setText(QObject::tr("Stopping…"));
+			SetStatus(QObject::tr("Stopping the Cloudflare speed test."));
+			return;
+		}
+		if (!cloudflare_speed_test.Start()) {
+			SetStatus(QObject::tr("Could not start the Cloudflare speed test."));
+			return;
+		}
+		run_button->setText(QObject::tr("Cancel speed test"));
+		SetStatus(QObject::tr("Cloudflare speed test only · no OBS stream is sent."));
+		if (uplink_result_label) {
+			uplink_result_label->setText(QObject::tr("Measuring download and upload · up to 4 MiB each."));
+		}
+		uplink_timer->start(100);
+	}
+
+	void PollCloudflareSpeedTest()
+	{
+		auto result = cloudflare_speed_test.TakeResult();
+		if (!result) {
+			return;
+		}
+		uplink_timer->stop();
+		run_button->setEnabled(true);
+		run_button->setText(QObject::tr("Run speed test only"));
+		if (result->cancelled) {
+			SetStatus(QObject::tr("Cloudflare speed test canceled."));
+			uplink_result_label->setText(QObject::tr("Canceled before both directions finished."));
+		} else if (!result->success) {
+			SetStatus(QObject::tr("Cloudflare speed test failed."));
+			uplink_result_label->setText(
+				result->error.empty() ? QObject::tr("Cloudflare returned no usable measurements.")
+						      : QString::fromStdString(result->error));
+		} else {
+			SetStatus(QObject::tr("Cloudflare speed test complete."));
+			uplink_result_label->setText(QObject::tr("Download %1 Mb/s · Upload %2 Mb/s")
+							     .arg(result->download_mbps, 0, 'f', 1)
+							     .arg(result->upload_mbps, 0, 'f', 1));
+		}
+		if (close_when_stopped) {
+			close_when_stopped = false;
+			dialog->close();
+		}
 	}
 
 	bool BuildBakeoffPlan()
@@ -1041,7 +1160,9 @@ struct PreflightBenchWindow::Impl {
 		title_font.setBold(true);
 		title->setFont(title_font);
 		state_label = new QLabel(QObject::tr("Ready"), dialog);
-		run_button = new QPushButton(QObject::tr("Start bench"), dialog);
+		run_button = new QPushButton(cloudflare_speed_only ? QObject::tr("Run speed test only")
+								   : QObject::tr("Start bench"),
+					     dialog);
 		header->addWidget(title);
 		header->addSpacing(12);
 		header->addWidget(state_label);
@@ -1049,12 +1170,25 @@ struct PreflightBenchWindow::Impl {
 		header->addWidget(run_button);
 		root->addLayout(header);
 
-		destination_label = new QLabel(supported_test_mode.isEmpty()
-						       ? QObject::tr("No safe test service selected")
-						       : QObject::tr("Non-public test: %1").arg(supported_test_mode),
-					       dialog);
+		destination_label = new QLabel(
+			supported_test_mode.isEmpty() ? QObject::tr("No safe test service selected")
+			: cloudflare_speed_only       ? supported_test_mode
+						      : QObject::tr("Non-public test: %1").arg(supported_test_mode),
+			dialog);
 		destination_label->setWordWrap(true);
 		root->addWidget(destination_label);
+		if (cloudflare_speed_only) {
+			auto *privacy_note = new QLabel(
+				QObject::tr(
+					"Speed test only: Cloudflare receives your IP and up to 4 MiB in each direction; "
+					"it collects measurements for aggregated connection-quality insights. No OBS stream is sent."),
+				dialog);
+			privacy_note->setWordWrap(true);
+			root->addWidget(privacy_note);
+			uplink_result_label = new QLabel(QObject::tr("No speed test has run yet."), dialog);
+			uplink_result_label->setWordWrap(true);
+			root->addWidget(uplink_result_label);
+		}
 
 		auto *splitter = new QSplitter(Qt::Horizontal, dialog);
 		auto *settings_scroll = new QScrollArea(splitter);
@@ -1167,7 +1301,10 @@ struct PreflightBenchWindow::Impl {
 		summary_layout->addWidget(reason_label);
 		root->addWidget(summary);
 
-		if (!setup_error.isEmpty()) {
+		if (cloudflare_speed_only) {
+			bakeoff_button->setEnabled(false);
+			SetStatus(QObject::tr("Ready · Cloudflare speed test only"));
+		} else if (!setup_error.isEmpty()) {
 			SetStatus(setup_error);
 			run_button->setEnabled(false);
 			bakeoff_button->setEnabled(false);
@@ -1415,6 +1552,11 @@ struct PreflightBenchWindow::Impl {
 		SetBakeoffCell(4, QStringLiteral("—"));
 		SetBakeoffCell(5, QObject::tr("Running"));
 		SetBakeoffCell(6, QString());
+		if (!PrepareYouTubeTestKey()) {
+			bakeoff_cancelled = true;
+			CompleteBakeoffCandidate(OBS_PREFLIGHT_FAIL, youtube_test_error);
+			return;
+		}
 
 		OBSDataAutoRelease settings = obs_encoder_defaults(active_candidate.encoder);
 		if (!settings) {
@@ -1564,6 +1706,11 @@ struct PreflightBenchWindow::Impl {
 		if (restart_stream_when_stopped && restart_was_active && stream_output) {
 			restart_stream_when_stopped = false;
 			restart_was_active = false;
+			if (!PrepareYouTubeTestKey()) {
+				StopOutputs(QObject::tr("Stopping after the YouTube test key could not be refreshed."),
+					    youtube_test_error);
+				return;
+			}
 			StartLoupe(stream_video_encoder);
 			if (!obs_output_start(stream_output)) {
 				StopLoupe();
@@ -1588,6 +1735,9 @@ PreflightBenchWindow::PreflightBenchWindow(QWidget *parent) : QDialog(parent), i
 	impl->settings_timer = new QTimer(this);
 	impl->settings_timer->setSingleShot(true);
 	connect(impl->settings_timer, &QTimer::timeout, this, &PreflightBenchWindow::ApplyEncoderSettings);
+	impl->uplink_timer = new QTimer(this);
+	impl->uplink_timer->setInterval(100);
+	connect(impl->uplink_timer, &QTimer::timeout, this, [this]() { impl->PollCloudflareSpeedTest(); });
 	impl->BuildOutputs();
 	impl->BuildUi();
 	connect(impl->run_button, &QPushButton::clicked, this, &PreflightBenchWindow::ToggleBench);
@@ -1598,6 +1748,16 @@ PreflightBenchWindow::~PreflightBenchWindow() = default;
 
 void PreflightBenchWindow::closeEvent(QCloseEvent *event)
 {
+	if (impl->cloudflare_speed_test.IsRunning()) {
+		impl->close_when_stopped = true;
+		impl->cloudflare_speed_test.Cancel();
+		impl->run_button->setEnabled(false);
+		impl->run_button->setText(tr("Stopping…"));
+		impl->SetStatus(tr("Stopping the Cloudflare speed test before closing."));
+		impl->uplink_timer->start(100);
+		event->ignore();
+		return;
+	}
 	if (impl->bakeoff_running || impl->bakeoff_waiting_for_stop) {
 		impl->close_when_stopped = true;
 		if (impl->bakeoff_running && !impl->bakeoff_cancelled) {
@@ -1619,6 +1779,10 @@ void PreflightBenchWindow::closeEvent(QCloseEvent *event)
 
 void PreflightBenchWindow::ToggleBench()
 {
+	if (impl->cloudflare_speed_only) {
+		impl->ToggleCloudflareSpeedTest();
+		return;
+	}
 	if (impl->bench_running) {
 		impl->StopOutputs(tr("Stopping the stream test and local recording."), tr("Stopped"));
 		return;
@@ -1630,6 +1794,10 @@ void PreflightBenchWindow::ToggleBench()
 
 	if (!impl->setup_error.isEmpty()) {
 		impl->SetStatus(impl->setup_error);
+		return;
+	}
+	if (!impl->PrepareYouTubeTestKey()) {
+		impl->SetStatus(impl->youtube_test_error);
 		return;
 	}
 	if (!impl->PrepareRecordingPath()) {
@@ -1653,6 +1821,10 @@ void PreflightBenchWindow::ToggleBench()
 
 void PreflightBenchWindow::ToggleBakeoff()
 {
+	if (impl->cloudflare_speed_only) {
+		impl->SetBakeoffStatus(tr("Bake-off needs a service with a non-public OBS test mode."));
+		return;
+	}
 	if (impl->bakeoff_running) {
 		impl->StopBakeoff();
 		return;

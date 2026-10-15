@@ -52,6 +52,8 @@ if(TARGET obs-preflight-rust)
       preflight/obs-preflight-collector.c
       preflight/preflight-bench-window.cpp
       preflight/preflight-bench-window.hpp
+      preflight/preflight-cloudflare-speed-test.cpp
+      preflight/preflight-cloudflare-speed-test.hpp
       preflight/preflight-loupe-capture.cpp
       preflight/preflight-loupe-capture.hpp
       preflight/preflight-loupe-core.cpp

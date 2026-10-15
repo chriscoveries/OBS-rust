@@ -24,6 +24,23 @@ bool has_parameter(std::string_view query, std::string_view parameter)
 
 } // namespace
 
+UplinkTestMode uplink_test_mode_for_service(std::string_view service_name)
+{
+	if (service_name == "Twitch") {
+		return UplinkTestMode::TwitchBandwidth;
+	}
+	if (service_name == "Amazon IVS") {
+		return UplinkTestMode::AmazonIvsBandwidth;
+	}
+	if (service_name == "Restream.io" || service_name == "Restream.io - RTMP") {
+		return UplinkTestMode::RestreamBandwidth;
+	}
+	if (service_name == "YouTube - RTMP" || service_name == "YouTube - RTMPS" || service_name == "YouTube - HLS") {
+		return UplinkTestMode::YouTubeThrowawayStream;
+	}
+	return UplinkTestMode::CloudflareSpeedOnly;
+}
+
 std::optional<std::string> make_non_public_test_key(std::string_view service_name, std::string_view key)
 {
 	if (key.empty()) {
@@ -31,11 +48,16 @@ std::optional<std::string> make_non_public_test_key(std::string_view service_nam
 	}
 
 	std::string_view test_parameter;
-	if (service_name == "Twitch" || service_name == "Amazon IVS") {
+	switch (uplink_test_mode_for_service(service_name)) {
+	case UplinkTestMode::TwitchBandwidth:
+	case UplinkTestMode::AmazonIvsBandwidth:
 		test_parameter = "bandwidthtest";
-	} else if (service_name == "Restream.io" || service_name == "Restream.io - RTMP") {
+		break;
+	case UplinkTestMode::RestreamBandwidth:
 		test_parameter = "test=true";
-	} else {
+		break;
+	case UplinkTestMode::YouTubeThrowawayStream:
+	case UplinkTestMode::CloudflareSpeedOnly:
 		return std::nullopt;
 	}
 

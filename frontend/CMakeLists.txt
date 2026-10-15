@@ -43,6 +43,13 @@ if(ENABLE_UNIT_TESTS)
   add_executable(test_preflight_test_mode tests/test_preflight_test_mode.cpp preflight/preflight-test-mode.cpp)
   target_include_directories(test_preflight_test_mode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
   add_test(NAME test_preflight_test_mode COMMAND test_preflight_test_mode)
+  add_executable(
+    test_preflight_cloudflare_speed_test
+    tests/test_preflight_cloudflare_speed_test.cpp
+    preflight/preflight-cloudflare-speed-test.cpp
+  )
+  target_link_libraries(test_preflight_cloudflare_speed_test PRIVATE CURL::libcurl)
+  add_test(NAME test_preflight_cloudflare_speed_test COMMAND test_preflight_cloudflare_speed_test)
   add_executable(test_preflight_loupe tests/test_preflight_loupe.cpp preflight/preflight-loupe-core.cpp)
   target_link_libraries(test_preflight_loupe PRIVATE FFmpeg::avcodec FFmpeg::avutil FFmpeg::swscale)
   if(OS_MACOS)
