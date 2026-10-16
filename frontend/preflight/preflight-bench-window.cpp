@@ -3418,7 +3418,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 							dialog->palette().color(QPalette::Text)});
 			}
 			add_line(sample, QObject::tr("Render"),
-				 QStringLiteral("%1 ms · %2% (warn/danger %3/%4 ms)")
+				 QStringLiteral("%1 ms · %2% (w%3/d%4 ms)")
 					 .arg(sample_point.average_frame_time_ms, 0, 'f', 2)
 					 .arg(sample_render_ratio * 100.0, 0, 'f', 0)
 					 .arg(sample_interval * OBS_RENDER_WARNING_FRACTION, 0, 'f', 2)
@@ -3435,18 +3435,17 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 			    (!missed_skip_class[0] && sample_skip.second[0])) {
 				missed_skip_class = sample_skip.second;
 			}
-			const QString missed_skipped =
-				QStringLiteral("Missed %1%2% · Skipped %3%4% (warn/danger %5/%6%)")
-					.arg(marker(missed_status.second))
-					.arg(sample_point.render_lag_percent, 0, 'f', 2)
-					.arg(marker(sample_skip.second))
-					.arg(sample_point.encoder_skipped_percent, 0, 'f', 2)
-					.arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
-					.arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0);
+			const QString missed_skipped = QStringLiteral("Missed %1%2% · Skipped %3%4% (w%5%/d%6%)")
+							       .arg(marker(missed_status.second))
+							       .arg(sample_point.render_lag_percent, 0, 'f', 2)
+							       .arg(marker(sample_skip.second))
+							       .arg(sample_point.encoder_skipped_percent, 0, 'f', 2)
+							       .arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
+							       .arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0);
 			sample.lines.push_back({missed_skipped, series_colors[3], status_color(missed_skip_class)});
 			add_line(sample, QObject::tr("Dropped"),
 				 QStringLiteral("%1%").arg(sample_point.dropped_percent, 0, 'f', 2),
-				 QStringLiteral("warn/danger %1/%2%")
+				 QStringLiteral("w%1%/d%2%")
 					 .arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
 					 .arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0),
 				 5,
@@ -3454,7 +3453,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					     OBS_STATS_DANGER_PERCENT));
 			add_line(sample, QObject::tr("Congestion"),
 				 QStringLiteral("%1%").arg(sample_point.congestion_percent, 0, 'f', 1),
-				 QStringLiteral("warn/danger %1/%2%")
+				 QStringLiteral("w%1%/d%2%")
 					 .arg(OBS_CONGESTION_WARNING_PERCENT, 0, 'f', 2)
 					 .arg(OBS_CONGESTION_DANGER_PERCENT, 0, 'f', 2),
 				 6,

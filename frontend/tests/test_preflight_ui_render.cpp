@@ -854,10 +854,10 @@ int main(int argc, char **argv)
 		QApplication::sendEvent(combined_chart, &hover_event);
 		QApplication::processEvents();
 		const QString expected_hover = QStringLiteral("t −2.0 s\nCPU 70.0 %\nGPU 54.0 %\n"
-							      "Render 7.00 ms · 42% (warn/danger 12.50/16.67 ms)\n"
-							      "Missed 0.00% · Skipped 0.00% (warn/danger 1/5%)\n"
-							      "Dropped ▲ 3.33% (warn/danger 1/5%)\n"
-							      "Congestion ▲ 35.0% (warn/danger 33.33/66.67%)\n"
+							      "Render 7.00 ms · 42% (w12.50/d16.67 ms)\n"
+							      "Missed 0.00% · Skipped 0.00% (w1%/d5%)\n"
+							      "Dropped ▲ 3.33% (w1%/d5%)\n"
+							      "Congestion ▲ 35.0% (w33.33%/d66.67%)\n"
 							      "Encoder 60 frames\n"
 							      "Bitrate 1600 kb/s · connect 50 ms");
 		require(combined_chart->property("preflightHoverText").toString() == expected_hover,
