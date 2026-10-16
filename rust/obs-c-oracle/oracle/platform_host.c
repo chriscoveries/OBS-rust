@@ -172,13 +172,19 @@ bool os_quick_write_utf8_file_safe(const char *path, const char *str, size_t len
 #endif
 
 /* The MinGW link-check target excludes platform-windows.c because its libobs
- * implementation uses MSVC-only constructs. Supply the three oracle_ symbols
+ * implementation uses MSVC-only constructs. Supply the five oracle_ symbols
  * that file would otherwise provide. This branch is link-only; these stubs are
  * not executed by the Windows test suite.
  */
 #if defined(_WIN32) && !defined(_MSC_VER)
 /* platform-windows.c */
+bool oracle_os_file_exists(const char *path);
+
+/* platform-windows.c */
 int oracle_os_mkdir(const char *path);
+
+/* platform-windows.c */
+int oracle_os_rename(const char *old_path, const char *new_path);
 
 /* platform-windows.c */
 int oracle_os_safe_replace(const char *target, const char *from, const char *backup);
@@ -186,9 +192,22 @@ int oracle_os_safe_replace(const char *target, const char *from, const char *bac
 /* platform-windows.c */
 uint64_t oracle_os_gettime_ns(void);
 
+bool oracle_os_file_exists(const char *path)
+{
+	(void)path;
+	return false;
+}
+
 int oracle_os_mkdir(const char *path)
 {
 	(void)path;
+	return -1;
+}
+
+int oracle_os_rename(const char *old_path, const char *new_path)
+{
+	(void)old_path;
+	(void)new_path;
 	return -1;
 }
 
