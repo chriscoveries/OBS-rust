@@ -1,0 +1,14 @@
+[package]
+name = "obs-preflight-ffi"
+version = "0.1.0"
+description = "Static C ABI adapter for the OBS preflight engine"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+obs-preflight = { path = "../obs-preflight" }
