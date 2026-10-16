@@ -76,6 +76,10 @@ size_t oracle_os_mbs_to_utf8_ptr(const char *str, size_t len, char **pstr);
 FILE *oracle_os_fopen(const char *path, const char *mode);
 int oracle_os_fseeki64(FILE *file, int64_t offset, int origin);
 int64_t oracle_os_ftelli64(FILE *file);
+char *oracle_os_quick_read_utf8_file(const char *path);
+bool oracle_os_quick_write_utf8_file(const char *path, const char *str, size_t len, bool marker);
+bool oracle_os_quick_write_utf8_file_safe(const char *path, const char *str, size_t len, bool marker,
+					  const char *temp_ext, const char *backup_ext);
 
 /* platform.c (compiled by oracle/platform.c) */
 size_t os_mbs_to_wcs(const char *str, size_t str_len, wchar_t *dst, size_t dst_size);
@@ -143,6 +147,23 @@ int os_fseeki64(FILE *file, int64_t offset, int origin)
 int64_t os_ftelli64(FILE *file)
 {
 	return oracle_os_ftelli64(file);
+}
+
+/* The Rust obs-data crate still uses these plain C ABI helpers on Windows. */
+char *os_quick_read_utf8_file(const char *path)
+{
+	return oracle_os_quick_read_utf8_file(path);
+}
+
+bool os_quick_write_utf8_file(const char *path, const char *str, size_t len, bool marker)
+{
+	return oracle_os_quick_write_utf8_file(path, str, len, marker);
+}
+
+bool os_quick_write_utf8_file_safe(const char *path, const char *str, size_t len, bool marker, const char *temp_ext,
+				   const char *backup_ext)
+{
+	return oracle_os_quick_write_utf8_file_safe(path, str, len, marker, temp_ext, backup_ext);
 }
 #endif
 

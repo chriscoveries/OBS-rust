@@ -30,7 +30,6 @@ DEFINITION = re.compile(
 WINDOWS_FORWARDER = "Windows forwarder to the oracle_ copy from oracle/platform.c"
 
 DIFFERENT = {
-    "os_gettime_ns": "test-only zero clock where no Rust shim is linked (macOS, Windows)",
     "os_mbs_to_wcs": WINDOWS_FORWARDER,
     "os_utf8_to_wcs": WINDOWS_FORWARDER,
     "os_wcs_to_utf8": WINDOWS_FORWARDER,
