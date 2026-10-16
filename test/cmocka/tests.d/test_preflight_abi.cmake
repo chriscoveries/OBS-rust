@@ -47,6 +47,10 @@ if(OS_LINUX OR OS_MACOS)
     VERBATIM
   )
   add_custom_target(obs-preflight-rust DEPENDS "${_preflight_archive}")
+  # With Rust libobs enabled, Corrosion also runs Cargo while building libobs.
+  # Serialize this separate Cargo invocation after it: both use rustup's
+  # toolchain proxies, which can race while resolving components.
+  add_dependencies(obs-preflight-rust libobs)
 
   add_executable(test_preflight_abi test_preflight_abi.c)
   target_include_directories(test_preflight_abi PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/frontend/preflight")
