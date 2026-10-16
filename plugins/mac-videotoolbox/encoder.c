@@ -11,6 +11,7 @@
 #include <util/apple/cfstring-utils.h>
 
 #include <assert.h>
+#include "vt-rate-state.h"
 
 #define VT_LOG(level, format, ...) blog(level, "[VideoToolbox encoder]: " format, ##__VA_ARGS__)
 #define VT_LOG_ENCODER(encoder, codec_type, level, format, ...)                        \
@@ -771,13 +772,25 @@ static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
 static bool vt_update(void *data, obs_data_t *settings)
 {
 	struct vt_encoder *enc = data;
+	const struct vt_rate_state previous = {
+		.bitrate = enc->bitrate,
+		.limit_bitrate = enc->limit_bitrate,
+		.max_bitrate = enc->rc_max_bitrate,
+		.max_bitrate_window = enc->rc_max_bitrate_window,
+		.quality = enc->quality,
+	};
 
-	uint32_t old_bitrate = enc->bitrate;
-	bool old_limit_bitrate = enc->limit_bitrate;
+	if (!update_params(enc, settings))
+		return false;
 
-	update_params(enc, settings);
-
-	if (old_bitrate == enc->bitrate && old_limit_bitrate == enc->limit_bitrate)
+	const struct vt_rate_state current = {
+		.bitrate = enc->bitrate,
+		.limit_bitrate = enc->limit_bitrate,
+		.max_bitrate = enc->rc_max_bitrate,
+		.max_bitrate_window = enc->rc_max_bitrate_window,
+		.quality = enc->quality,
+	};
+	if (!vt_rate_state_changed(&previous, &current))
 		return true;
 
 	OSStatus code = session_set_bitrate(enc->session, enc->rate_control, enc->bitrate, enc->quality,
