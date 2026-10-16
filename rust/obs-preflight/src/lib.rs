@@ -1,3 +1,9 @@
+//! Headless decision engine for OBS preflight checks.
+//!
+//! The safe API, counter rollups, and verdict rules live in this crate root.
+//! The C ABI adapter source is in `src/ffi/` and is compiled by the separate
+//! `obs-preflight-ffi` crate.
+
 #![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
@@ -387,7 +393,6 @@ fn roll_up_validated(
         .collect())
 }
 
-#[allow(dead_code)] // The RED stub does not call this until GREEN.
 fn roll_up(
     samples: &[StatSample],
     window_duration_ms: Option<u64>,
@@ -428,17 +433,97 @@ pub fn roll_up_windows(
     samples: &[StatSample],
     window_duration_ms: u64,
 ) -> Result<Vec<WindowRollup>, AnalysisError> {
-    let _ = (samples, window_duration_ms);
-    todo!()
+    roll_up(samples, Some(window_duration_ms))
 }
 
 /// Apply the named M0 verdict limits to one completed window.
 pub fn judge_window(rollup: WindowRollup) -> WindowResult {
-    let _ = rollup;
-    todo!()
+    let mut verdict = Verdict::Pass;
+    let mut reasons = Vec::new();
+
+    if rollup.encoder_frames == 0 {
+        promote(&mut verdict, Verdict::Fail);
+        reasons.push("The encoder produced no frames during this window.".to_owned());
+    }
+
+    if rollup.average_frame_time_ns / rollup.frame_interval_ns > FAIL_RENDER_FRAME_TIME_RATIO {
+        promote(&mut verdict, Verdict::Fail);
+        reasons.push("Average render time exceeded the frame interval.".to_owned());
+    } else if rollup.average_frame_time_ns / rollup.frame_interval_ns
+        > MARGINAL_RENDER_FRAME_TIME_RATIO
+    {
+        promote(&mut verdict, Verdict::Marginal);
+        reasons.push(format!(
+            "Average render time exceeded {:.0}% of the frame interval.",
+            MARGINAL_RENDER_FRAME_TIME_RATIO * 100.0
+        ));
+    }
+
+    if rollup.render_lag_percent > FAIL_RENDER_LAG_PERCENT {
+        promote(&mut verdict, Verdict::Fail);
+        reasons.push(format!(
+            "Render lag reached {:.2}% of expected frames.",
+            rollup.render_lag_percent
+        ));
+    } else if rollup.render_lag_percent > MARGINAL_RENDER_LAG_PERCENT {
+        promote(&mut verdict, Verdict::Marginal);
+        reasons.push("OBS reported lagged render frames.".to_owned());
+    }
+
+    if rollup.output_drop_percent > FAIL_OUTPUT_DROP_PERCENT {
+        promote(&mut verdict, Verdict::Fail);
+        reasons.push(format!(
+            "Output dropped {:.2}% of delivered frames.",
+            rollup.output_drop_percent
+        ));
+    } else if rollup.output_drop_percent > MARGINAL_OUTPUT_DROP_PERCENT {
+        promote(&mut verdict, Verdict::Marginal);
+        reasons.push("The output dropped frames during this window.".to_owned());
+    }
+
+    if rollup.encoder_skip_percent > FAIL_ENCODER_SKIP_PERCENT {
+        promote(&mut verdict, Verdict::Fail);
+        reasons.push(format!(
+            "The encoder skipped {:.2}% of its frames.",
+            rollup.encoder_skip_percent
+        ));
+    } else if rollup.encoder_skip_percent > MARGINAL_ENCODER_SKIP_PERCENT
+        || (rollup.encoder_frames_skipped > MIN_ENCODER_SKIPS_FOR_UI_WARNING
+            && rollup.encoder_skip_percent >= ENCODER_SKIP_UI_WARNING_PERCENT)
+    {
+        promote(&mut verdict, Verdict::Marginal);
+        reasons.push(format!(
+            "The encoder skipped {:.2}% of its frames, above OBS's warning level.",
+            rollup.encoder_skip_percent
+        ));
+    }
+
+    if rollup.congestion_percent > FAIL_CONGESTION_FRACTION * 100.0 {
+        promote(&mut verdict, Verdict::Fail);
+        reasons.push(format!(
+            "Network congestion reached {:.2}%.",
+            rollup.congestion_percent
+        ));
+    } else if rollup.congestion_percent > MARGINAL_CONGESTION_FRACTION * 100.0 {
+        promote(&mut verdict, Verdict::Marginal);
+        reasons.push(format!(
+            "Network congestion exceeded OBS's good level ({:.2}%).",
+            MARGINAL_CONGESTION_FRACTION * 100.0
+        ));
+    }
+
+    if reasons.is_empty() {
+        reasons
+            .push("The run kept render headroom and frame loss within the target limits.".into());
+    }
+
+    WindowResult {
+        rollup,
+        verdict,
+        reason: reasons.join(" "),
+    }
 }
 
-#[allow(dead_code)] // The RED stub does not call this until GREEN.
 fn promote(current: &mut Verdict, candidate: Verdict) {
     let severity = |verdict| match verdict {
         Verdict::Pass => 0,
