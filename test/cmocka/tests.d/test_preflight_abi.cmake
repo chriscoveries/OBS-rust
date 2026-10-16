@@ -47,12 +47,6 @@ if(OS_LINUX OR OS_MACOS)
     VERBATIM
   )
   add_custom_target(obs-preflight-rust DEPENDS "${_preflight_archive}")
-  if(ENABLE_RUST_LIBOBS)
-    # Corrosion builds libobs-rust through this target. Serialize the preflight
-    # Cargo invocation after it because rustup's proxies can race while
-    # resolving toolchain components.
-    add_dependencies(obs-preflight-rust libobs_rust-static)
-  endif()
 
   add_executable(test_preflight_abi test_preflight_abi.c)
   target_include_directories(test_preflight_abi PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/frontend/preflight")
