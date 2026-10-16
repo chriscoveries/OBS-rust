@@ -3,12 +3,12 @@
 
     uv run python -m unittest ci/test_oracle_standins.py
 
-Tier 3 parity is only as good as the oracle. rust/obs-c-oracle/oracle/
-test_stubs.c and *_host.c re-implement libobs functions the oracle needs,
-and when a copy drifts from libobs, parity certifies the difference
-(#77, #79, #84). Every function defined there that libobs also defines must
-be identical to one libobs definition (comments and whitespace ignored),
-or be listed in DIFFERENT with the reason it may differ.
+Tier 3 parity is only as good as the oracle. The remaining *_host.c files
+provide platform-specific oracle link helpers, and when one re-implements a
+libobs function it can drift and certify the difference (#77, #79, #84).
+Every function defined there that libobs also defines must be identical to
+one libobs definition (comments and whitespace ignored), or be listed in
+DIFFERENT with the reason it may differ.
 """
 
 from __future__ import annotations
@@ -19,18 +19,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ORACLE = ROOT / "rust" / "obs-c-oracle" / "oracle"
-STANDINS = ("test_stubs.c", *(p.name for p in sorted(ORACLE.glob("*_host.c"))))
+STANDINS = tuple(sorted(p.name for p in ORACLE.glob("*_host.c")))
 DEFINITION = re.compile(
     r"^(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w \t*]*?\b([a-z_][a-z0-9_]*)\s*\([^;{}]*\)\s*\{", re.M
 )
 
-# Stand-ins that intentionally differ from libobs, and why.
+# Windows-only forwarders in platform_host.c: the Rust crates need these plain
+# names, while the oracle's copies are the oracle_-renamed definitions from
+# platform.c. Unix oracle calls already use the oracle_ names directly.
+WINDOWS_FORWARDER = "Windows forwarder to the oracle_ copy from oracle/platform.c"
+
 DIFFERENT = {
-    "os_fread_utf8": "ftell/memcmp instead of os_ftelli64/astrcmp_n: same result below 2 GiB, "
-    "and test_stubs.c links without dstr",
-    "os_fopen": "the libobs #ifdef _WIN32 body split into one definition per platform",
-    "os_fseeki64": "the libobs #ifdef _MSC_VER body split into one definition per platform",
-    "os_ftelli64": "the libobs #ifdef _MSC_VER body split into one definition per platform",
+    "os_mbs_to_wcs": WINDOWS_FORWARDER,
+    "os_utf8_to_wcs": WINDOWS_FORWARDER,
+    "os_wcs_to_utf8": WINDOWS_FORWARDER,
+    "os_wcs_to_mbs": WINDOWS_FORWARDER,
+    "os_mbs_to_wcs_ptr": WINDOWS_FORWARDER,
+    "os_utf8_to_wcs_ptr": WINDOWS_FORWARDER,
+    "os_wcs_to_utf8_ptr": WINDOWS_FORWARDER,
+    "os_mbs_to_utf8_ptr": WINDOWS_FORWARDER,
+    "os_fopen": WINDOWS_FORWARDER,
+    "os_fseeki64": WINDOWS_FORWARDER,
+    "os_ftelli64": WINDOWS_FORWARDER,
+    "os_quick_read_utf8_file": WINDOWS_FORWARDER,
+    "os_quick_write_utf8_file": WINDOWS_FORWARDER,
+    "os_quick_write_utf8_file_safe": WINDOWS_FORWARDER,
 }
 
 

@@ -8,14 +8,17 @@
 //! binding to the original C, so `unsafe` and per-OS `cfg` are the crate's
 //! purpose. It is a dev-dependency only and never links into libobs.
 //!
-//! Also provides test-only stand-ins for libobs base/platform symbols
-//! (`os_breakpoint` and `os_oom` are weak on Unix in `oracle/test_stubs.c`,
-//! so the Rust shims win; `os_fread_utf8` is in that file too;
-//! `os_fopen` and friends from `oracle/file_serializer_host.c` (unix
-//! `os_safe_replace` is `oracle_host_os_safe_replace` there); the platform.c
-//! string conversions from `oracle/platform_conv_host.c`; `blog`/`bcrash`
-//! from `util/base-variadic.c`), so any test binary using the oracle resolves
-//! them.
+//! Also compiles the original libobs sources itself: `oracle/platform.c` and
+//! `oracle/platform_nix_posix.c` include `util/platform.c.h` and
+//! `util/platform-nix.c.h` unmodified with their exports renamed, so the platform
+//! functions the oracle needs come from libobs rather than from hand copies
+//! (they used to live in `oracle/test_stubs.c`, `oracle/platform_conv_host.c`,
+//! `oracle/config_file_host.c`, `oracle/file_serializer_host.c` and
+//! `oracle/obs_data_host.c`).
+//! `oracle/platform_host.c` holds the few that cannot be compiled here: the
+//! breakpoint pair, which aborts loudly instead of raising the platform trap;
+//! Windows forwarders to the renamed `platform.c` helpers; a weak zero-clock
+//! fallback; and an `obs_get_video_info` stub that keeps `platform.c` linkable.
 
 // Fingerprint of the native inputs build.rs feeds to `cc` (oracle/*.c, *.h,
 // the libobs/deps sources it compiles, the flag list). Reading it with

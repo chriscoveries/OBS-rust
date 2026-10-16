@@ -3,8 +3,9 @@
  * implementation. The args getter it calls and the os_process_pipe_create it
  * calls from create2 are renamed too, so the oracle never touches the Rust
  * shim. dstr and bmalloc/bfree come from the Rust ports, os_utf8_to_wcs_ptr
- * from platform_conv_host.c and blog from base-variadic.c. Windows-only. */
+ * from oracle/platform.c and blog from base-variadic.c. Windows-only. */
 #define os_process_args_get_argv oracle_os_process_args_get_argv
+#define os_utf8_to_wcs_ptr oracle_os_utf8_to_wcs_ptr
 #define os_process_pipe_create oracle_os_process_pipe_create
 #define os_process_pipe_create2 oracle_os_process_pipe_create2
 #define os_process_pipe_destroy oracle_os_process_pipe_destroy

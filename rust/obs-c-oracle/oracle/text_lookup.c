@@ -3,14 +3,16 @@
  * implementation. Every call into a function that is also ported to Rust
  * (lexer.c, dstr.c) is renamed too, so the oracle runs the original C all the
  * way down; the oracle_lexer_* / oracle_dstr_* definitions come from those
- * ports' oracle wrappers. os_fopen comes from file_serializer_host.c,
- * os_fread_utf8 from test_stubs.c. */
+ * ports' oracle wrappers. os_fopen and os_fread_utf8 are renamed below to
+ * the copies oracle/platform.c compiles from the real platform.c. */
 #define text_lookup_create oracle_text_lookup_create
 #define text_lookup_add oracle_text_lookup_add
 #define text_lookup_destroy oracle_text_lookup_destroy
 #define text_lookup_getstr oracle_text_lookup_getstr
 
 /* lexer.c */
+#define os_fopen oracle_os_fopen
+#define os_fread_utf8 oracle_os_fread_utf8
 #define lexer_getbasetoken oracle_lexer_getbasetoken
 #define strref_cmp oracle_strref_cmp
 #define strref_cmpi oracle_strref_cmpi
