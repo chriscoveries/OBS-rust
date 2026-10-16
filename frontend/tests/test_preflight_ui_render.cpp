@@ -853,20 +853,20 @@ int main(int argc, char **argv)
 					Qt::NoButton, Qt::NoButton, Qt::NoModifier);
 		QApplication::sendEvent(combined_chart, &hover_event);
 		QApplication::processEvents();
-		const QString expected_hover =
-			QStringLiteral("t −2.0 s\nCPU 70.0 %\nGPU 54.0 %\n"
-				       "Render 7.00 ms · 42 % of interval (warn 12.50 · danger 16.67 ms)\n"
-				       "Missed 0.00 % · Skipped 0.00 % (warn 1% · danger 5%)\n"
-				       "Dropped ▲ 3.33 % (warn 1% · danger 5%)\n"
-				       "Congestion ▲ 35.0 % (warn 33.33% · danger 66.67%)\n"
-				       "Encoder 60 frames\n"
-				       "Bitrate 1600 kb/s · connect 50 ms");
+		const QString expected_hover = QStringLiteral("t −2.0 s\nCPU 70.0 %\nGPU 54.0 %\n"
+							      "Render 7.00 ms · 42% (warn/danger 12.50/16.67 ms)\n"
+							      "Missed 0.00% · Skipped 0.00% (warn/danger 1/5%)\n"
+							      "Dropped ▲ 3.33% (warn/danger 1/5%)\n"
+							      "Congestion ▲ 35.0% (warn/danger 33.33/66.67%)\n"
+							      "Encoder 60 frames\n"
+							      "Bitrate 1600 kb/s · connect 50 ms");
 		require(combined_chart->property("preflightHoverText").toString() == expected_hover,
 			"chart hover content is not a deterministic sample at the nearest time point");
 		require(combined_chart->property("preflightHoveredSeriesRow").toInt() == 0,
 			"hovering the CPU series did not emphasize that line");
 		combined_chart->repaint();
 		require(combined_chart->property("preflightHoverDetailCount").toInt() == 8 &&
+				combined_chart->property("preflightHoverLinesFit").toBool() &&
 				!combined_chart->property("preflightHoverOverlay").toBool() &&
 				combined_chart->property("preflightHoverBandHeight").toDouble() == 74.0 &&
 				combined_chart->property("preflightPlotTop").toDouble() >=

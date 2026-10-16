@@ -258,6 +258,7 @@ protected:
 			    show_hover_readout
 				    ? static_cast<int>(hover_samples[static_cast<size_t>(hovered_index)].lines.size())
 				    : 0);
+		setProperty("preflightHoverLinesFit", false);
 		setProperty("preflightPlotTop", plot.top());
 		setProperty("preflightPlotWidth", qRound(plot.width()));
 		setProperty("preflightPlotHeight", qRound(plot.height()));
@@ -381,6 +382,7 @@ protected:
 			const qreal right_column = width() / 2.0 + 4;
 			const qreal row_top = metrics.height() + 5;
 			const qreal row_step = (HOVER_READOUT_HEIGHT - row_top - 1) / 4.0;
+			bool hover_lines_fit = true;
 			for (size_t index = 0; index < sample.lines.size(); ++index) {
 				const qreal column = (index % 2) == 0 ? left_column : right_column;
 				const qreal y = row_top + row_step * static_cast<qreal>(index / 2);
@@ -389,9 +391,14 @@ protected:
 				painter.drawText(line_bounds, Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("■"));
 				painter.setPen(sample.lines[index].text_color);
 				const qreal swatch_width = metrics.horizontalAdvance(QStringLiteral("■ "));
-				painter.drawText(line_bounds.adjusted(swatch_width, 0, 0, 0),
-						 Qt::AlignLeft | Qt::AlignVCenter, sample.lines[index].text);
+				const QRectF text_bounds = line_bounds.adjusted(swatch_width + 2.0, 0, -2.0, 0);
+				hover_lines_fit = hover_lines_fit &&
+						  metrics.horizontalAdvance(sample.lines[index].text) <=
+							  text_bounds.width();
+				painter.drawText(text_bounds, Qt::AlignLeft | Qt::AlignVCenter,
+						 sample.lines[index].text);
 			}
+			setProperty("preflightHoverLinesFit", hover_lines_fit);
 		}
 		if (!has_points) {
 			painter.setPen(palette().color(QPalette::Text));
@@ -3411,7 +3418,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 							dialog->palette().color(QPalette::Text)});
 			}
 			add_line(sample, QObject::tr("Render"),
-				 QStringLiteral("%1 ms · %2 % of interval (warn %3 · danger %4 ms)")
+				 QStringLiteral("%1 ms · %2% (warn/danger %3/%4 ms)")
 					 .arg(sample_point.average_frame_time_ms, 0, 'f', 2)
 					 .arg(sample_render_ratio * 100.0, 0, 'f', 0)
 					 .arg(sample_interval * OBS_RENDER_WARNING_FRACTION, 0, 'f', 2)
@@ -3429,7 +3436,7 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 				missed_skip_class = sample_skip.second;
 			}
 			const QString missed_skipped =
-				QStringLiteral("Missed %1%2 % · Skipped %3%4 % (warn %5% · danger %6%)")
+				QStringLiteral("Missed %1%2% · Skipped %3%4% (warn/danger %5/%6%)")
 					.arg(marker(missed_status.second))
 					.arg(sample_point.render_lag_percent, 0, 'f', 2)
 					.arg(marker(sample_skip.second))
@@ -3438,16 +3445,16 @@ struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 					.arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0);
 			sample.lines.push_back({missed_skipped, series_colors[3], status_color(missed_skip_class)});
 			add_line(sample, QObject::tr("Dropped"),
-				 QStringLiteral("%1 %").arg(sample_point.dropped_percent, 0, 'f', 2),
-				 QStringLiteral("warn %1% · danger %2%")
+				 QStringLiteral("%1%").arg(sample_point.dropped_percent, 0, 'f', 2),
+				 QStringLiteral("warn/danger %1/%2%")
 					 .arg(OBS_STATS_WARNING_PERCENT, 0, 'f', 0)
 					 .arg(OBS_STATS_DANGER_PERCENT, 0, 'f', 0),
 				 5,
 				 sample_band(sample_point.dropped_percent, OBS_STATS_WARNING_PERCENT,
 					     OBS_STATS_DANGER_PERCENT));
 			add_line(sample, QObject::tr("Congestion"),
-				 QStringLiteral("%1 %").arg(sample_point.congestion_percent, 0, 'f', 1),
-				 QStringLiteral("warn %1% · danger %2%")
+				 QStringLiteral("%1%").arg(sample_point.congestion_percent, 0, 'f', 1),
+				 QStringLiteral("warn/danger %1/%2%")
 					 .arg(OBS_CONGESTION_WARNING_PERCENT, 0, 'f', 2)
 					 .arg(OBS_CONGESTION_DANGER_PERCENT, 0, 'f', 2),
 				 6,
