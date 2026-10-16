@@ -11,6 +11,7 @@
 #include <util/apple/cfstring-utils.h>
 
 #include <assert.h>
+#include <stdint.h>
 
 #define VT_LOG(level, format, ...) blog(level, "[VideoToolbox encoder]: " format, ##__VA_ARGS__)
 #define VT_LOG_ENCODER(encoder, codec_type, level, format, ...)                        \
@@ -318,6 +319,9 @@ static OSStatus session_set_bitrate(VTCompressionSessionRef session, const char 
 	}
 
 	if (compressionPropertyKey != kVTCompressionPropertyKey_Quality) {
+		/* The slider is in kbps but VideoToolbox's integer property is bps. */
+		if (new_bitrate < 0 || new_bitrate > INT32_MAX / 1000)
+			return kVTParameterErr;
 		code = session_set_prop_int(session, compressionPropertyKey, new_bitrate * 1000);
 		if (code != noErr) {
 			return code;
