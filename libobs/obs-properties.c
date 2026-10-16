@@ -102,8 +102,7 @@ struct group_data {
 static inline void path_data_free(struct path_data *data)
 {
 	bfree(data->default_path);
-	if (data->type == OBS_PATH_FILE)
-		bfree(data->filter);
+	bfree(data->filter);
 }
 
 static inline void editable_list_data_free(struct editable_list_data *data)
@@ -1089,6 +1088,7 @@ void obs_property_button_set_url(obs_property_t *p, char *url)
 	if (!data)
 		return;
 
+	bfree(data->url);
 	data->url = bstrdup(url);
 }
 

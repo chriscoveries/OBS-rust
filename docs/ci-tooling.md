@@ -63,8 +63,8 @@ win.
 the toolchain pinned in `rust-toolchain.toml`. It bundles **zccache**, a
 content-addressed compiler cache shared across branches and worktrees, so the
 same crate is not rebuilt for every checkout. It also manages the
-cross-compilation SDKs that let a Linux host check the Windows and macOS
-targets.
+cross-compilation SDKs that let a Linux host check and link the Windows and
+macOS targets.
 
 What to do:
 
@@ -127,13 +127,22 @@ What to do:
 What not to do:
 
 - `docker system prune`. It destroys everyone's warm caches.
-- Install bosn or add a `bosn.toml` unasked. It's manifest-driven, and the
-  machine owner decides.
+- Install bosn unasked, or add stacks to `bosn.toml` without a reason. It's
+  manifest-driven, and the machine owner decides what runs.
 
-Current gap: this repo doesn't route its own Docker work through bosn yet.
-`rust/tools/linux-validate/run.sh` (the Tier 2 lane) calls `docker build` and
-`docker run` directly, so concurrent local gates from many agents run
-unmanaged. Moving the Tier 2 harness under bosn is the main open step.
+The repo's `bosn.toml` declares one stack so far: `appimage`, an Ubuntu 26.04
+image (`build-aux/appimage/Dockerfile`) with the AppImage build dependencies
+preinstalled. `bosn run --task appimage` builds the AppImage locally by
+running `build-aux/appimage/build.py`, the same script the AppImage workflow
+calls, with no act and no GitHub involved. The source is bind-mounted, ccache
+and cargo caches live in bosn volumes, and the AppImage lands in
+`build_appimage/` (#899). (`bosn ci run` can't run that job through act: its
+`ubuntu-26.04` label isn't supported there.)
+
+Remaining gap: `rust/tools/linux-validate/run.sh` (the Tier 2 lane) still
+calls `docker build` and `docker run` directly, so concurrent local gates
+from many agents run unmanaged. Moving the Tier 2 harness under bosn is the
+main open step.
 
 ### act2: GitHub Actions, locally
 
@@ -175,13 +184,26 @@ the paths that select them, so a change only triggers the tests it can affect.
 - **`local-gate.toml`** declares the local lanes and what they attest:
   - `lint`: formatters, clippy, dylints, the `ci/` Python tests;
   - `rust-test`: Rust Tiers 1-3;
-  - `cross`: clippy, dylint and `check` for the Windows and macOS targets,
-    cross-compiled from Linux with soldr;
+  - `cross`: clippy, dylint, and a link of every test binary
+    (`test --no-run`) for the Windows and macOS targets, cross-compiled from
+    Linux with soldr;
   - `tier2-linux`: the cmocka suite with `ENABLE_RUST_LIBOBS` OFF and ON, in
     Docker.
-- **`ci/ci_scope.py`** maps changed paths to jobs. Linux Rust tests and Tier 2
-  always run. macOS or Windows Rust tests and Tier 2 run when platform code,
-  shared build config, C++ cmocka tests or the test CMake files change.
+- **`ci/ci_scope.py`** maps changed paths to jobs, by path alone (#897). Linux
+  Rust tests and Tier 2 always run. A changed file that belongs to a platform
+  (`ci/platform_paths.py`: path tokens such as `win-capture/`,
+  `platform-osx.mm`, `rust/*/src/platform/windows/`, or extensions such as
+  `.m`, `.rc`) starts that platform's Rust tests and Tier 2. POSIX/Unix files
+  (`*-posix.c`, `unix/`, and `libobs/util/platform-nix.c`) belong to Linux
+  and macOS, so changing one starts macOS too. Core files carry no platform
+  defines (`ci/platform_ifdef_ratchet.py` enforces it), so a core change runs
+  on Linux; file contents are never read. Shared and so every platform:
+  `.github/`, `cmake/common/`, `cmake/finders/`, `libobs/cmake/`, the root
+  CMake files, `platform/mod.rs`, `test/cmocka/CMakeLists.txt` and the C++
+  cmocka tests with their `tests.d` registrations (#610). Pushes and the
+  merge queue are scoped the same way; every platform runs with the
+  `ci-full` label, on schedule, workflow_dispatch, tags, release branches and
+  in the release gate.
 
 Unchanged lanes are cached by the gate, so a re-run after a small fix is fast.
 
@@ -281,7 +303,8 @@ Each gap is a step toward the full protocol, and a good issue to pick up:
 - **Docker through bosn.** The Tier 2 Linux harness
   (`rust/tools/linux-validate/run.sh`) drives Docker directly, so concurrent
   local gates run unmanaged. Running it under bosn's bounded runner slots is
-  the biggest single relief for shared machines.
+  the biggest single relief for shared machines. (The AppImage build already
+  runs under bosn: `bosn run --task appimage`.)
 - **A real `ci.toml`.** Path selection lives in `ci/ci_scope.py`, outside
   ci.yml's checker. Moving it into a schema-3 `ci.toml` lets the protocol's
   tooling validate and evolve it.

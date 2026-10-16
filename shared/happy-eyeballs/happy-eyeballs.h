@@ -34,14 +34,9 @@
 
 #pragma once
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <sys/socket.h>
-#include <unistd.h>
-#define SOCKET int
-#endif
+/* Winsock or BSD sockets (SOCKET, sockaddr_storage): platform/<os>/, picked
+ * by CMake. */
+#include "happy-eyeballs-socket.h"
 #include <stdint.h>
 
 #ifdef __cplusplus

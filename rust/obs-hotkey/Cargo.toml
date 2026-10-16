@@ -1,0 +1,13 @@
+[package]
+name = "obs-hotkey"
+version = "0.1.0"
+description = "Rust port of libobs/obs-hotkey-name-map.c"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+obs-c-oracle = { path = "../obs-c-oracle" }
+obs-util = { path = "../obs-util" }
+proptest = "1"

@@ -15,6 +15,7 @@ doctest = false
 [dependencies]
 obs-util = { path = "../obs-util" }
 obs-graphics = { path = "../obs-graphics" }
+obs-hotkey = { path = "../obs-hotkey" }
 obs-codec = { path = "../obs-codec" }
 obs-media-io = { path = "../obs-media-io" }
 obs-data = { path = "../obs-data" }

@@ -396,6 +396,12 @@ void InstallNSApplicationSubclass()
     [OBSApplication sharedApplication];
 }
 
+void *GetGlGetStringProc()
+{
+    void *gl = dlopen("/System/Library/Frameworks/OpenGL.framework/OpenGL", RTLD_LAZY);
+    return gl ? dlsym(gl, "glGetString") : nullptr;
+}
+
 bool HighContrastEnabled()
 {
     return [[NSWorkspace sharedWorkspace] accessibilityDisplayShouldIncreaseContrast];

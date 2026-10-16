@@ -72,7 +72,16 @@ if [ "$(wc -w <<<"$ported_objs")" -lt 20 ]; then
 fi
 echo "== ported objects checked with ENABLE_RUST_LIBOBS=ON: $(wc -w <<<"$ported_objs")"
 
-for mode in OFF ON; do
+# OBS_TIER2_MODES: which ENABLE_RUST_LIBOBS builds to run (default both). CI
+# runs OFF and ON as parallel jobs and compares their exports in a third
+# (#930 A2); locally both run here and are compared below.
+modes="${OBS_TIER2_MODES:-OFF ON}"
+for mode in $modes; do
+  case "$mode" in OFF | ON) ;; *) echo "FAIL: OBS_TIER2_MODES must list OFF and/or ON, got '$modes'"; exit 1 ;; esac
+done
+has_mode() { grep -qw "$1" <<<"$modes"; }
+
+for mode in $modes; do
   build="/build/rust-$mode"
   reset_stale_build "$build" "$rustc_version"
   echo "== [$mode] configure + build"
@@ -91,17 +100,38 @@ for mode in OFF ON; do
   # -k 0: keep going after a failed target, so one run reports every compile
   # error (a warning ratchet otherwise took a round trip per file; #634).
   cmake --build "$build" --target libobs cmocka-tests decklink obs-nvenc -- -k 0 \
-    >"$build.build.log" 2>&1 || { grep -E ": (fatal )?error|FAILED:" "$build.build.log" | sort -u | head -80; exit 1; }
+    >"$build.build.log" 2>&1 || { /src/rust/tools/linux-validate/build-errors.sh "$build.build.log"; exit 1; }
   if [ -n "${OBS_EXTRA_CFLAGS:-}" ]; then
     # Measuring extra flags: show what they report (#516).
     echo "== [$mode] warnings"
     grep -E ': warning: ' "$build.build.log" | sort -u || true
   fi
 
+  # ctest starts the longest tests first only when it knows their past run
+  # times (Testing/Temporary/CTestCostData.txt). A fresh CI container has
+  # none, so the 83 s test_deinterlace_2x_field_order could start last; carry
+  # the file per mode in the ccache directory, which CI restores (#931).
+  cost_file="$build/Testing/Temporary/CTestCostData.txt"
+  cost_cache=
+  if [ -n "${CCACHE_DIR:-}" ]; then
+    cost_cache="$CCACHE_DIR/ctest-cost-$mode.txt"
+    if [ -s "$cost_cache" ]; then
+      mkdir -p "${cost_file%/*}"
+      cp "$cost_cache" "$cost_file"
+    fi
+  fi
+
   echo "== [$mode] ctest"
   # xvfb-run gives display tests an X server; the PipeWire tests start their
   # own private PipeWire daemon and D-Bus bus (#776).
-  xvfb-run -a ctest --test-dir "$build" --output-on-failure 2>&1 | tee "$build.ctest.log"
+  ctest_status=0
+  xvfb-run -a ctest --test-dir "$build" --output-on-failure -j "${OBS_CTEST_JOBS:-1}" 2>&1 | tee "$build.ctest.log" ||
+    ctest_status=$?
+  # Keep the timings even when a test failed: they are still right.
+  if [ -n "$cost_cache" ] && [ -s "$cost_file" ]; then
+    cp "$cost_file" "$cost_cache"
+  fi
+  [ "$ctest_status" -eq 0 ] || exit "$ctest_status"
   # A PipeWire test that skips for lack of a daemon is a hole, not a pass (#776).
   /src/rust/tools/linux-validate/check-skips.sh "$build.ctest.log"
 
@@ -113,6 +143,10 @@ for mode in OFF ON; do
 
   lib=$(ls "$build"/libobs/libobs.so.* | head -1)
   nm -D --defined-only "$lib" | awk '{print $3}' | sort >"/build/exports-$mode.txt"
+  # run.sh mounts OBS_TIER2_EXPORTS_DIR here so a CI job can hand the list on.
+  if [ -d /exports ]; then
+    cp "/build/exports-$mode.txt" /exports/
+  fi
 
   # Query the current Ninja build graph, not the filesystem: the /build volume
   # persists across runs, so a stale .o from an older checkout would linger.
@@ -152,6 +186,7 @@ done
 # link the release-profile staticlib even for Debug builds; a dev-profile
 # (panic=unwind) archive would let a shim panic unwind across the C ABI.
 # Configure-only check: inspect which archive the Debug link line uses.
+if has_mode ON; then
 echo "== [ON/Debug] Rust staticlib profile"
 dbg=/build/rust-ON-debug
 reset_stale_build "$dbg" "$rustc_version"
@@ -168,10 +203,13 @@ if [ -z "$rust_archives" ] || grep -qv '/release/liblibobs_rust\.a$' <<<"$rust_a
   echo "FAIL: Debug libobs links a non-release (panic=unwind) Rust staticlib"
   exit 1
 fi
+fi
 
-echo "== libobs exported symbols, OFF vs ON"
-diff /build/exports-OFF.txt /build/exports-ON.txt
-echo "IDENTICAL ($(wc -l </build/exports-ON.txt) symbols)"
+if has_mode OFF && has_mode ON; then
+  echo "== libobs exported symbols, OFF vs ON"
+  diff /build/exports-OFF.txt /build/exports-ON.txt
+  echo "IDENTICAL ($(wc -l </build/exports-ON.txt) symbols)"
+fi
 
 echo "== ccache"
 ccache -s | grep -E "Hits|Misses|Cache size" || true

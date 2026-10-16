@@ -47,6 +47,7 @@
 #if defined(_WIN32) || defined(WHATSNEW_ENABLED)
 #include <utility/WhatsNewInfoThread.hpp>
 #endif
+#include <utility/GpuStatus.hpp>
 #include <utility/profile-activate.h>
 #include <widgets/AudioMixer.hpp>
 #include <widgets/OBSProjector.hpp>
@@ -913,6 +914,8 @@ void OBSBasic::OBSInit()
 			throw UNKNOWN_ERROR;
 		}
 	}
+
+	GpuStatus::Init();
 
 	/* load audio monitoring */
 	if (obs_audio_monitoring_available()) {

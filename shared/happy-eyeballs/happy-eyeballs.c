@@ -28,22 +28,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
-#ifdef _MSC_VER
-#pragma warning(disable : 4996) /* depricated warnings */
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#define GetSockError() WSAGetLastError()
-#ifdef _MSC_VER
-#define snprintf _snprintf
-#endif
-#else /* !_WIN32 */
-#include <netdb.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#define GetSockError() errno
-#endif
+/* Winsock or BSD sockets: platform/<os>/, picked by CMake. */
+#include "happy-eyeballs-platform.h"
 
 /* ------------------------------------------------------------------------- */
 /* happy eyeballs coefficients                                               */
@@ -166,22 +152,13 @@ struct happy_connect_worker_args {
 
 static int check_comodo(struct happy_eyeballs_ctx *context)
 {
-#ifdef _WIN32
-	/* COMODO security software sandbox blocks all DNS by returning "host
-	 * not found" */
-	HOSTENT *h = gethostbyname("localhost");
-	if (!h && GetLastError() == WSAHOST_NOT_FOUND) {
-		context->error = WSAHOST_NOT_FOUND;
-		context->error_message = "happy-eyeballs: Connection test failed. "
-					 "This error is likely caused by Comodo Internet "
-					 "Security running OBS in sandbox mode. Please add "
-					 "OBS to the Comodo automatic sandbox exclusion list, "
-					 "restart OBS and try again (11001).";
+	const char *message = NULL;
+	int error = he_platform_dns_blocked(&message);
+	if (error) {
+		context->error = error;
+		context->error_message = message;
 		return STATUS_FAILURE;
 	}
-#else
-	(void)context;
-#endif
 	return STATUS_SUCCESS;
 }
 
@@ -208,8 +185,9 @@ static int build_addr_list(const char *hostname, int port, struct happy_eyeballs
 	context->name_resolution_time_ns = os_gettime_ns() - start_time;
 	dstr_free(&port_str);
 	if (err) {
-		context->error = GetSockError();
-		context->error_message = strerror(GetSockError());
+		/* getaddrinfo reports through its result, not errno */
+		context->error = err;
+		context->error_message = GetAddrInfoErrorString(err);
 		return STATUS_FAILURE;
 	}
 
@@ -340,9 +318,7 @@ static void *happy_connect_worker(void *arg)
 		goto success;
 	}
 
-#if !defined(_WIN32) && defined(SO_NOSIGPIPE)
-	setsockopt(args->sockfd, SOL_SOCKET, SO_NOSIGPIPE, &(int){1}, sizeof(int));
-#endif
+	he_platform_socket_nosigpipe(args->sockfd);
 	if (context->bind_addr.ss_family != 0 &&
 	    bind(args->sockfd, (const struct sockaddr *)&context->bind_addr, context->bind_addr_len) < 0) {
 		goto failure;
@@ -403,11 +379,7 @@ success:
 
 static int launch_worker(struct happy_eyeballs_ctx *context, struct addrinfo *addr)
 {
-#ifdef _WIN32
-	SOCKET fd = WSASocket(addr->ai_family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
-#else
-	SOCKET fd = socket(addr->ai_family, SOCK_STREAM, IPPROTO_TCP);
-#endif
+	SOCKET fd = he_platform_socket(addr->ai_family);
 	if (fd == INVALID_SOCKET) {
 		context->error = GetSockError();
 		return STATUS_FAILURE;
@@ -623,11 +595,6 @@ static void *destroy_thread(void *param)
 	struct happy_eyeballs_ctx *context = param;
 
 	os_set_thread_name("happy-eyeballs destroy thread");
-#ifdef _WIN32
-#define SHUT_RDWR SD_BOTH
-#else
-#define closesocket(s) close(s)
-#endif
 	/* We do not need to lock context->candidate_mutex here because the
 	 * candidate array is _only_ mutated in happy_eyeballs_connect. Using
 	 * this function at the same time as connect is a programmer error.

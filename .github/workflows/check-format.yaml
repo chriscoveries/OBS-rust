@@ -6,13 +6,12 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
+      # The local gate's pinned uvx tool and file set (#427): brew update,
+      # brew install zsh and the formatter took about 75 s to format in 0.3 s.
+      - name: Set Up uv 🐍
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: clang-format Check 🐉
-        id: clang-format
-        uses: ./.github/actions/run-clang-format
-        with:
-          failCondition: error
+        run: uv run ci/local_gate.py --only clang-format
 
   swift-format:
     runs-on: macos-26
@@ -30,13 +29,12 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
+      # The local gate's pinned uvx tool and file set (#427): brew update,
+      # brew install zsh and the formatter took about 75 s to format in 0.3 s.
+      - name: Set Up uv 🐍
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: gersemi Check 🎛️
-        id: gersemi
-        uses: ./.github/actions/run-gersemi
-        with:
-          failCondition: error
+        run: uv run ci/local_gate.py --only gersemi
 
   flatpak-validator:
     runs-on: ubuntu-26.04

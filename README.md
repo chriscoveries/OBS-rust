@@ -1,13 +1,21 @@
 # obs-studio-rust
 
+> [!WARNING]
+> ## **CI REFACTORING IN PROGRESS**
+> **You may see extremely long CI run times for the next six hours (until about 2026-10-16 10:00 UTC).**
+> **It will be much, much, much faster when this is done.** Progress: [#930](https://github.com/obs-rust/obs-studio/issues/930).
+
 [![Contributor leaderboard workflow status](https://github.com/obs-rust/obs-studio/actions/workflows/leaderboard.yml/badge.svg?branch=master)](https://github.com/obs-rust/obs-studio/actions/workflows/leaderboard.yml)
 [![Merge queue for master](docs/images/merge-queue.svg)](https://github.com/obs-rust/obs-studio/queue/master)
+[![Discussions: got an idea?](docs/images/discussions.svg)](https://github.com/obs-rust/obs-studio/discussions)
 
 <p align="center"><img src="docs/images/obs-rust-logo.png" alt="obs-rust logo" width="128"></p>
 
 This is an independent rewrite of the obsproject's obs-studio.
 
 Same obs studio, but without the bugs. AI generated issues and PRs welcome.
+
+Got an idea? [Start a conversation](https://github.com/obs-rust/obs-studio/discussions).
 
 # Fixing bugs with AI + Rust
 

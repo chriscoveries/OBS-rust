@@ -116,8 +116,9 @@ class ObsServer:
     """Launches obs headless under xvfb with an isolated profile/config."""
 
     def __init__(self, obs_bin, port, password=None, keep_home=None,
-                 profile=None):
+                 profile=None, extra_env=None):
         self.obs_bin = obs_bin
+        self.extra_env = extra_env or {}
         self.port = port
         self.password = password
         self.profile = profile
@@ -175,6 +176,7 @@ class ObsServer:
         # (Qt prefers it over the X display xvfb-run provides).
         env.pop("WAYLAND_DISPLAY", None)
         env["QT_QPA_PLATFORM"] = "xcb"
+        env.update(self.extra_env)
         for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
             env.pop(var, None)
         xvfb = shutil.which("xvfb-run")
@@ -1153,6 +1155,58 @@ def documented_request_types():
         return []
 
 
+def documented_response_fields(request_type):
+    try:
+        with open(PROTOCOL_JSON) as f:
+            proto = json.load(f)
+    except OSError:
+        return []
+    for r in proto.get("requests", []):
+        if r["requestType"] == request_type:
+            return [v["valueName"] for v in r.get("responseFields", [])]
+    return []
+
+
+async def test_gpu_acceleration_software(log_path):
+    """obs-rust/obs-studio#846: with OpenGL forced onto llvmpipe, GetStats'
+    gpuAcceleration must not report green, and the log must carry the
+    startup warning. The field is null when the frontend does not provide
+    the status (a build without rust/obs-gpu-status); the check then only
+    asserts the documented key is present."""
+    if "gpuAcceleration" not in documented_response_fields("GetStats"):
+        print("  (gpuAcceleration not documented; skipped)", flush=True)
+        return
+    c, _ = await new_identified_client(subscriptions=SUB_NONE)
+    data = {}
+    for _ in range(120):
+        r = await c.request("GetStats")
+        if resp_status(r).get("code") != 207:
+            data = r.get("d", {}).get("responseData", {})
+            break
+        await asyncio.sleep(0.5)
+    await c.close_conn()
+    check("stats:gpuAcceleration present", "gpuAcceleration" in data,
+          json.dumps(data)[:300])
+    gpu = data.get("gpuAcceleration")
+    if gpu is None:
+        print("  (gpuAcceleration is null: no status provider)", flush=True)
+        return
+    check("stats:gpuAcceleration shape",
+          isinstance(gpu, dict)
+          and gpu.get("state") in ("green", "yellow", "red")
+          and isinstance(gpu.get("detectedGpus"), list)
+          and isinstance(gpu.get("summary"), str)
+          and isinstance(gpu.get("causes"), list),
+          json.dumps(gpu)[:400])
+    check("stats:gpuAcceleration not green on llvmpipe",
+          gpu.get("state") in ("yellow", "red"), json.dumps(gpu)[:400])
+    with open(log_path, errors="replace") as f:
+        log = f.read()
+    check("log:GPU acceleration startup warning",
+          "GPU acceleration: YELLOW" in log or "GPU acceleration: RED" in log,
+          "no 'GPU acceleration: YELLOW/RED' line in the OBS log")
+
+
 async def test_stats_rescale_output():
     """GetStats must count the frames of a recording encoder that rescales
     the output (Settings > Output > Recording > Rescale Output). Such an
@@ -1269,6 +1323,17 @@ async def run_all(obs_bin, skip_obs, skip_auth_phase):
             await test_stats_rescale_output()
         finally:
             server_c.stop()
+
+    if not skip_obs:
+        wait_for_port_closed(PORT)
+        server_d = ObsServer(obs_bin, PORT, password=None, extra_env={
+            "LIBGL_ALWAYS_SOFTWARE": "1", "GALLIUM_DRIVER": "llvmpipe"})
+        server_d.start()
+        try:
+            print("== GPU acceleration on llvmpipe ==", flush=True)
+            await test_gpu_acceleration_software(server_d.log)
+        finally:
+            server_d.stop()
 
     total = len(RESULTS)
     passed = sum(1 for _, ok, _ in RESULTS if ok)

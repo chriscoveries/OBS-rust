@@ -30,6 +30,7 @@ jobs:
       macos: ${{ steps.native.outputs.macos }}
       windows: ${{ steps.native.outputs.windows }}
       platform_os: ${{ steps.native.outputs.platform_os }}
+      deferred: ${{ steps.native.outputs.deferred }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -108,6 +109,15 @@ jobs:
             full=true
           fi
           echo "full=${full}" >> "${GITHUB_OUTPUT}"
+          # Fast PR path (#992): a PR or merge-queue run (without ci-full)
+          # runs lint, the cross lint and the path-scoped platform jobs; the
+          # Linux Rust tests and Tier 2 run after the merge, on master.
+          deferred=false
+          if [[ "${full}" != true ]] \
+            && [[ "${GITHUB_EVENT_NAME}" == pull_request || "${GITHUB_EVENT_NAME}" == merge_group ]]; then
+            deferred=true
+          fi
+          echo "deferred=${deferred}" >> "${GITHUB_OUTPUT}"
 
           if [[ "${full}" == true ]]; then
             core=true macos=true windows=true
@@ -772,10 +782,13 @@ jobs:
       # cache and cargo registry; it saves them only outside pull_request
       # (save-cache: auto), i.e. from master pushes.
       - name: Set Up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          # soldr 0.9.31 embeds zccache 1.15.2 (zackees/zccache#1937).
-          version: 0.9.31
+          # soldr 0.9.33 embeds zccache 1.15.4 (has zackees/zccache#1937).
+          version: 0.9.33
+          # The lanes add x86_64-pc-windows-gnu mid-job; the toolchain cache
+          # would save it without its std (zackees/setup-soldr#507, #969).
+          solo-toolchain-cache: false
 
       # The lint lane pins clang-format and gersemi through uvx.
       - name: Set Up uv 🐍
@@ -789,17 +802,17 @@ jobs:
 
       # Skipped when a trusted run already passed these exact inputs.
       - name: Local Gate (rust-test) 🧪
-        if: needs.lane-proofs.outputs.rust-test_hit != 'true'
+        if: needs.check-event.outputs.deferred != 'true' && needs.lane-proofs.outputs.rust-test_hit != 'true'
         run: uv run ci/local_gate.py --lane rust-test
 
       # Publish the pass as a lane proof (ci/lane_proof.py), only for a lane
       # that ran here and passed; the name carries the lane's input key.
       - name: Mark Lane Proof 🧾
-        if: success() && needs.lane-proofs.outputs.rust-test_name != '' && needs.lane-proofs.outputs.rust-test_hit != 'true'
+        if: success() && needs.check-event.outputs.deferred != 'true' && needs.lane-proofs.outputs.rust-test_name != '' && needs.lane-proofs.outputs.rust-test_hit != 'true'
         run: touch "${{ runner.temp }}/lane-proof"
       - name: Upload Lane Proof 🧾
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: success() && needs.lane-proofs.outputs.rust-test_name != '' && needs.lane-proofs.outputs.rust-test_hit != 'true'
+        if: success() && needs.check-event.outputs.deferred != 'true' && needs.lane-proofs.outputs.rust-test_name != '' && needs.lane-proofs.outputs.rust-test_hit != 'true'
         with:
           name: ${{ needs.lane-proofs.outputs.rust-test_name }}
           path: ${{ runner.temp }}/lane-proof
@@ -821,9 +834,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set Up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          version: 0.9.31
+          version: 0.9.33
+          # The cross lane adds targets mid-job (see the Rust Tests job, #969).
+          solo-toolchain-cache: false
 
       - name: Set Up uv 🐍
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -867,10 +882,10 @@ jobs:
       # cache and cargo registry; it saves them only outside pull_request
       # (save-cache: auto), i.e. from master pushes.
       - name: Set Up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          # soldr 0.9.31 embeds zccache 1.15.2 (zackees/zccache#1937).
-          version: 0.9.31
+          # soldr 0.9.33 embeds zccache 1.15.4 (has zackees/zccache#1937).
+          version: 0.9.33
 
       - name: Run Rust Tests 🧪
         run: soldr cargo test --workspace --locked
@@ -881,11 +896,18 @@ jobs:
       - name: Check Formatting 🎨
         run: soldr cargo fmt --all --check
 
+  # ENABLE_RUST_LIBOBS=OFF and =ON build and test in parallel jobs (#930 A2);
+  # rust-linux-tier2-exports compares their libobs exports and publishes the
+  # lane proof once both pass.
   rust-linux-tier2:
-    name: Rust Tier 2 Linux 🐧
+    name: Rust Tier 2 Linux 🐧 (${{ matrix.mode }})
     runs-on: ubuntu-26.04
     needs: [check-event, ci-mode, lane-proofs]
-    if: needs.ci-mode.outputs.skip_rust-linux-tier2 != 'true' && needs.lane-proofs.outputs.tier2-linux_hit != 'true'
+    if: needs.check-event.outputs.deferred != 'true' && needs.ci-mode.outputs.skip_rust-linux-tier2 != 'true' && needs.lane-proofs.outputs.tier2-linux_hit != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [OFF, ON]
     defaults:
       run:
         shell: bash
@@ -897,23 +919,67 @@ jobs:
           fetch-depth: 0
 
       # PRs restore the compiler cache; only master pushes save it (a cache
-      # saved from a PR ref is unreachable by other PRs).
+      # saved from a PR ref is unreachable by other PRs). One cache per mode:
+      # the two jobs would otherwise race to save the same key.
       - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ github.workspace }}/.tier2-ccache
-          key: tier2-ccache-linux-${{ github.sha }}
-          restore-keys: tier2-ccache-linux-
+          key: tier2-ccache-linux-${{ matrix.mode }}-${{ github.sha }}
+          restore-keys: |
+            tier2-ccache-linux-${{ matrix.mode }}-
+            tier2-ccache-linux-
 
       - name: Set Up uv 🐍
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       # GATE-001 mirror (local-gate.toml): the local gate's tier2-linux lane,
-      # which runs rust/tools/linux-validate/run.sh.
-      - name: Validate Tier 2 (ENABLE_RUST_LIBOBS OFF vs ON) ✅
+      # which runs rust/tools/linux-validate/run.sh (both modes in one go).
+      - name: Validate Tier 2 (ENABLE_RUST_LIBOBS=${{ matrix.mode }}) ✅
         env:
           OBS_CCACHE_DIR: ${{ github.workspace }}/.tier2-ccache
+          OBS_TIER2_MODES: ${{ matrix.mode }}
+          OBS_TIER2_EXPORTS_DIR: ${{ runner.temp }}/tier2-exports
+          # ccache already hits ~99.8%; the time is the ctest run, which
+          # validate.sh orders longest-first from cached cost data (#931).
+          # More than 4 jobs is not free: CPU-heavy timing tests
+          # (test_encoder_join_keyframe's AV1 encode, test_media_gif_last_frame)
+          # failed under -j8 while passing alone (#938).
+          OBS_CTEST_JOBS: 4
         run: uv run ci/local_gate.py --lane tier2-linux
 
+      - name: Upload Exports 🧾
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tier2-exports-${{ matrix.mode }}
+          path: ${{ runner.temp }}/tier2-exports/exports-${{ matrix.mode }}.txt
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Save Tier 2 ccache 💾
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        with:
+          path: ${{ github.workspace }}/.tier2-ccache
+          key: tier2-ccache-linux-${{ matrix.mode }}-${{ github.sha }}
+
+  rust-linux-tier2-exports:
+    name: Rust Tier 2 Linux 🐧 (exports)
+    runs-on: ubuntu-26.04
+    needs: [check-event, lane-proofs, rust-linux-tier2]
+    if: needs.rust-linux-tier2.result == 'success'
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: tier2-exports-*
+          merge-multiple: true
+          path: exports
+      # libobs must export exactly the same dynamic symbols with
+      # ENABLE_RUST_LIBOBS=ON as with OFF (testing-policy.md, Tier 2).
+      - name: Compare libobs Exports, OFF vs ON 🔍
+        run: |
+          diff exports/exports-OFF.txt exports/exports-ON.txt
+          echo "IDENTICAL ($(wc -l <exports/exports-ON.txt) symbols)"
 
       # Publish the pass as a lane proof (ci/lane_proof.py), only for a lane
       # that ran here and passed; the name carries the lane's input key.
@@ -928,13 +994,6 @@ jobs:
           path: ${{ runner.temp }}/lane-proof
           retention-days: 3
           if-no-files-found: error
-
-      - name: Save Tier 2 ccache 💾
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
-        with:
-          path: ${{ github.workspace }}/.tier2-ccache
-          key: tier2-ccache-linux-${{ github.sha }}
 
   rust-tier2:
     name: Rust Tier 2 ${{ matrix.os }}
@@ -956,11 +1015,11 @@ jobs:
       # The ENABLE_RUST_LIBOBS=ON build runs cargo through Corrosion; the
       # shims route it through soldr so its compiles hit zccache.
       - name: Set Up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          # soldr 0.9.31 embeds zccache 1.15.2, which names MSVC staticlib
+          # soldr 0.9.33 embeds zccache 1.15.4, which names MSVC staticlib
           # outputs <crate>-<hash>.lib (zackees/zccache#1937).
-          version: 0.9.31
+          version: 0.9.33
           shims: true
 
       - name: Validate Tier 2 on macOS (ENABLE_RUST_LIBOBS OFF vs ON) 🍏

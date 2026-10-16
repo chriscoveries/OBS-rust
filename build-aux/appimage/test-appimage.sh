@@ -332,6 +332,16 @@ fi
 if [ "$SCENARIO" = bundle ]; then
     echo "::group::1. Bundle: runtime paths, libraries and symbols"
     "$HERE_DIR/check-appdir.sh" "$APPDIR" || fail "the AppImage lacks files that AppRun points OBS at (see above)"
+    # The packaged AppRun's host driver search paths on NixOS, on a host without
+    # a NixOS driver tree, and with the user's own choice (obs-rust/obs-studio#722).
+    # It needs user and mount namespaces; the first-start scenario checks the
+    # NixOS case against the real OBS without them.
+    if unshare -rm true 2>/dev/null; then
+        "$HERE_DIR/test-apprun-driver-env.sh" "$APPDIR/AppRun" ||
+            fail "AppRun does not hand OBS the host driver search paths (see above)"
+    else
+        echo "::notice::no user namespaces here; AppRun's driver search paths are checked in first-start only"
+    fi
     # The bundled loader resolves every bundled ELF file the way it will at runtime
     # (each file's own RPATH into the AppDir), binding every symbol now.
     # The GPU driver stack must come from the host (the AppImage excludelist): the
@@ -482,6 +492,20 @@ if [ "$SCENARIO" = first-start ]; then
     echo "::group::2. First start with a new profile"
     export HOME="$PWD/home-new"
     mkdir -p "$HOME/.config/$CONFIG_NAME" # OBS only creates one directory level at a time
+    # This host also looks like NixOS: its driver closure under /run/opengl-driver,
+    # with the NVIDIA EGL Wayland platform that went missing before
+    # obs-rust/obs-studio#722 (OBS then rendered on llvmpipe). Its directories
+    # are empty or name a library that is not there, so Mesa still renders.
+    DRIVER_ENV_CASE=none
+    if [ ! -e /run/opengl-driver ] && [ "$(id -u)" = 0 ]; then
+        mkdir -p /run/opengl-driver/lib/gbm /run/opengl-driver/lib/dri /run/opengl-driver/share/glvnd/egl_vendor.d \
+            /run/opengl-driver/share/egl/egl_external_platform.d /run/opengl-driver/share/vulkan/icd.d
+        printf '{"file_format_version":"1.0.0","ICD":{"library_path":"libnvidia-egl-wayland.so.1"}}\n' \
+            >/run/opengl-driver/share/egl/egl_external_platform.d/10_nvidia_wayland.json
+        DRIVER_ENV_CASE=nixos
+    fi
+    unset GBM_BACKENDS_PATH LIBVA_DRIVERS_PATH __EGL_VENDOR_LIBRARY_DIRS __EGL_VENDOR_LIBRARY_FILENAMES \
+        __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS __EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES VK_DRIVER_FILES VK_ICD_FILENAMES
     LD_LIBRARY_PATH="$HOSTILE_LD" dbus-run-session -- "$APPDIR/AppRun" --disable-shutdown-check --verbose >"$OUT/obs-stdout.log" 2>&1 &
     APP_PID=$!
     OWN_PIDS+=("$APP_PID")
@@ -523,6 +547,9 @@ if [ "$SCENARIO" = first-start ]; then
     xwininfo -tree -root 2>&1 | head -40 || true
     OBS_PID="$(obs_pid_of "$APP_PID")"
     if [ -n "$OBS_PID" ]; then
+        # The driver search paths the running OBS's EGL, GBM, VA-API and Vulkan loaders see.
+        "$HERE_DIR/test-apprun-driver-env.sh" --check "$OBS_PID" "$DRIVER_ENV_CASE" ||
+            fail "OBS did not get the host driver search paths (see above)"
         # Libraries actually mapped into the running process: the core stack must be bundled.
         echo "Libraries mapped from outside the AppImage:"
         grep -o '/[^ ]*\.so[^ ]*' "/proc/$OBS_PID/maps" | sort -u | grep -v "$APPDIR" | grep -v '/tmp/.obs-rust-appimage-' || true

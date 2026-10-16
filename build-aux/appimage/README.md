@@ -10,6 +10,8 @@ pre-release, a tag push attaches it to that tag's release.
 | --- | --- |
 | `assemble-appdir.sh` | Turns a `cmake --install` tree into an AppDir: bundles Qt plugins and every shared library (including all of glibc and its loader), then calls `set-runpaths.sh`. |
 | `set-runpaths.sh` | Gives every bundled ELF file a relative `DT_RPATH` pointing at `usr/lib`. |
+| `build.py` | The build: dependencies, libavutil, version, configure, build, AppDir, AppImage. Run by the workflow and by `bosn run --task appimage`. |
+| `Dockerfile` | Ubuntu 26.04 image with the build dependencies, for the `appimage` bosn task. |
 | `build_vaapi_compat.py` | Builds the pinned Ubuntu libavutil source with optional newer VA mapping support, then checks exported ABI and registered hardware backends against the original library. |
 | `AppRun` | Entry point. Installs the bundled loader, sets up the environment, runs OBS and writes a crash report if it crashes. |
 | `check-appdir.sh` | Fails when a path `AppRun` exports into the AppDir is missing or empty, or when PipeWire's `client.conf`, the modules and SPA plugins it loads, gconv or the Qt xcb plugin are not bundled. Run by `assemble-appdir.sh` (fails the build) and again by the test. |
@@ -17,6 +19,35 @@ pre-release, a tag push attaches it to that tag's release.
 | `testkit.c` | Test helper built next to the AppImage: runtime probes, a fake ScreenCast/Camera portal, the test tone. The test runs it with the AppImage's own loader and libraries. |
 | `gpu-test.c` | Physical render-node checks: GBM buffer export and EGL DMA-BUF import with pixel readback, and VAAPI decoding with downloaded frame data. Built as a separate test artifact. |
 | `verify-recording.sh` | Checks the recording the test made (outside the container, which must not have ffmpeg). |
+
+## Building locally
+
+The workflow's build steps live in `build.py`; the workflow calls it one step
+at a time. To build the AppImage on your machine, under
+[bosn](../../docs/ci-tooling.md#bosn-docker-under-supervision) in an Ubuntu
+26.04 container (`Dockerfile`, declared in the root `bosn.toml`):
+
+```sh
+bosn run --task appimage
+```
+
+The AppImage is written to `build_appimage/`. ccache and the cargo registry
+persist in bosn volumes, as does `build_ubuntu/`; the other intermediates
+(`AppDir/`, `avutil-compat/`, `squashfs-root/`, `.apt-cache/`) are written
+into the checkout, owned by the container's root.
+
+On an Ubuntu 26.04 host, run the script directly (it uses `sudo` for apt):
+
+```sh
+uv run build-aux/appimage/build.py                          # every step
+uv run build-aux/appimage/build.py --skip-deps              # packages already installed
+uv run build-aux/appimage/build.py --rust-libobs false --qsv true --rust-version 0.1.0-beta.20261013
+uv run build-aux/appimage/build.py --steps version,configure --dry-run
+```
+
+`--dry-run` prints each step's environment and script. The scripts are the
+workflow's former inline steps, unchanged; `ci/test_appimage_build_script.py`
+checks that and that the workflow calls every step with every input.
 
 ## How it works
 
@@ -157,9 +188,9 @@ the supplied render node. Each probe has a bounded timeout.
 
 ## Updating the pinned `appimagetool`
 
-The workflow downloads a tagged `appimagetool` release and verifies it with
+`build.py` downloads a tagged `appimagetool` release and verifies it with
 `sha256sum -c`. To update, change `APPIMAGETOOL_VERSION` and
-`APPIMAGETOOL_SHA256` in the workflow together; the checksum is the SHA-256 of
+`APPIMAGETOOL_SHA256` in `build.py` together; the checksum is the SHA-256 of
 `https://github.com/AppImage/appimagetool/releases/download/<tag>/appimagetool-x86_64.AppImage`.
 
 ## Release assets and updates

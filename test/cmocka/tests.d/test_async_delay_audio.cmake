@@ -16,5 +16,5 @@ if(OS_LINUX AND TARGET OBS::libobs-opengl)
   add_dependencies(cmocka-tests test_async_delay_audio)
   # libobs finds its effect files relative to the working directory.
   add_test(NAME test_async_delay_audio COMMAND test_async_delay_audio WORKING_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>")
-  set_tests_properties(test_async_delay_audio PROPERTIES TIMEOUT 180)
+  set_tests_properties(test_async_delay_audio PROPERTIES RUN_SERIAL TRUE TIMEOUT 180)
 endif()

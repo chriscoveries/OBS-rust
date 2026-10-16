@@ -7,6 +7,7 @@
 #include <QPointer>
 #include <QStatusBar>
 
+class QPushButton;
 class QTimer;
 
 class OBSBasicStatusBar : public QStatusBar {
@@ -60,6 +61,10 @@ private:
 
 	float lastCongestion = 0.0f;
 
+	QPointer<QPushButton> gpuStatusButton;
+	QPointer<QTimer> gpuStatusTimer;
+	int gpuStatusTicks = 0;
+
 	QPointer<QTimer> refreshTimer;
 	QPointer<QTimer> messageTimer;
 
@@ -90,6 +95,9 @@ private slots:
 	void UpdateStatusBar();
 	void UpdateCurrentFPS();
 	void UpdateIcons();
+	void GpuStatusTick();
+	void UpdateGpuStatus();
+	void ShowGpuStatusDialog();
 
 public:
 	OBSBasicStatusBar(QWidget *parent);

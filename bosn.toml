@@ -1,0 +1,29 @@
+# Local Docker work under bosn (docs/ci-tooling.md). `bosn run --task appimage`
+# builds the AppImage like .github/workflows/appimage.yaml does, without act or
+# GitHub: build-aux/appimage/build.py in an Ubuntu 26.04 image (#899).
+
+[stack.appimage]
+dockerfile = "build-aux/appimage/Dockerfile"
+family = "obs-appimage"
+default = true
+workdir = "/src"
+
+[stack.appimage.env]
+CCACHE_DIR = "/ccache"
+CCACHE_BASEDIR = "/src"
+CCACHE_COMPRESS = "1"
+CCACHE_MAXSIZE = "2G"
+
+[stack.appimage.mounts]
+src = { source = ".", destination = "/src" }
+
+[stack.appimage.volumes]
+ccache = { scope = "machine", destination = "/ccache" }
+cargo-registry = { scope = "machine", destination = "/usr/local/cargo/registry" }
+cargo-git = { scope = "machine", destination = "/usr/local/cargo/git" }
+build = { scope = "stack", destination = "/src/build_ubuntu" }
+
+# The AppImage lands in build_appimage/ (gitignored: /build_*/).
+[task.appimage]
+stack = "appimage"
+cmd = "uv run build-aux/appimage/build.py --skip-deps --output-dir build_appimage"

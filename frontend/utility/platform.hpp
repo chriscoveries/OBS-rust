@@ -43,6 +43,10 @@ bool SetDisplayAffinitySupported(void);
 
 bool HighContrastEnabled();
 
+/* glGetString from the GL library libobs-opengl uses (the frontend does not
+ * link GL), or nullptr. Call it only with the graphics context entered. */
+void *GetGlGetStringProc();
+
 enum TaskbarOverlayStatus {
 	TaskbarOverlayStatusInactive,
 	TaskbarOverlayStatusActive,

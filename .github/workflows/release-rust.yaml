@@ -145,9 +145,9 @@ jobs:
 
       # Corrosion runs cargo inside the CMake build; same soldr as build-project.yaml.
       - name: Set up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          version: 0.9.31
+          version: 0.9.33
           shims: true
 
       # The x86_64 leg is cross-built on an arm64 runner: Corrosion builds

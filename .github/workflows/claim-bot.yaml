@@ -1,0 +1,42 @@
+name: Claim bot
+
+# Labels and assigns issue claimants and expires stale claims
+# (docs/rust-port/coordination.md §2-3, #909). Logic and tests:
+# tools/claim-bot/claim_bot.py, ci/test_claim_bot.py.
+#
+# issue_comment and schedule always run master's copy of this file. Nothing
+# from a PR is checked out besides tools/claim-bot on master, and the comment
+# body is read from the event file, never interpolated into a shell.
+on:
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: read
+
+jobs:
+  claim:
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (!github.event.issue.pull_request && github.event.comment.user.type != 'Bot')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: claim-bot-${{ github.event.issue.number || 'sweep' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: tools/claim-bot
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: Run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ github.event_name == 'issue_comment' && 'comment' || 'sweep' }}
+        run: uv run --python 3.12 tools/claim-bot/claim_bot.py "$MODE"

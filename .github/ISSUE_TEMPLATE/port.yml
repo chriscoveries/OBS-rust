@@ -5,7 +5,7 @@ labels: [port, enhancement]
 body:
   - type: markdown
     attributes:
-      value: Check the tracking issue (#4 lists them) and open PRs first. Claim with a comment plus the `claimed` label before coding.
+      value: Check the tracking issue (#4 lists them) and open PRs first. Claim with a `Claiming: <item>` comment before coding; the claim bot adds the `claimed` label.
   - type: input
     id: unit
     attributes:

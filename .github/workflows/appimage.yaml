@@ -101,68 +101,16 @@ jobs:
           key: apt-appimage-${{ hashFiles('.github/workflows/appimage.yaml') }}-${{ github.run_id }}
           restore-keys: apt-appimage-${{ hashFiles('.github/workflows/appimage.yaml') }}-
 
-      - name: Install build dependencies 🛍️
-        timeout-minutes: 10 # a hang here must fail with logs rather than sit for hours
-        env:
-          DEBIAN_FRONTEND: noninteractive
-          NEEDRESTART_SUSPEND: '1' # never restart runner services in the middle of the install
-        run: |
-          sudo apt-get update
-          mkdir -p .apt-cache/partial
-          # Same set as .github/scripts/utils.zsh/setup_ubuntu, minus CEF/VLC/Python
-          # (not shipped in the AppImage), plus tools for packaging, plus what the
-          # bundled libpipewire loads at runtime: its modules (libpipewire-0.3-modules)
-          # and client.conf (pipewire-bin). assemble-appdir.sh fails without them
-          # (obs-rust/obs-studio#426).
-          sudo -E apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 -o Dir::Cache::archives="$PWD/.apt-cache" \
-            build-essential cmake ninja-build ccache pkg-config git curl ca-certificates \
-            patchelf desktop-file-utils file squashfs-tools zsync \
-            libglib2.0-dev extra-cmake-modules libcurl4-openssl-dev \
-            libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev \
-            libswresample-dev libswscale-dev libjansson-dev libx11-xcb-dev libgles2-mesa-dev \
-            libwayland-dev libpipewire-0.3-dev libpulse-dev libx264-dev libmbedtls-dev \
-            libpipewire-0.3-modules pipewire-bin \
-            libgl1-mesa-dev libgbm-dev ffmpeg uthash-dev libsimde-dev libluajit-5.1-dev swig libxss-dev libglvnd-dev \
-            libx11-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xinerama0-dev libxcb-composite0-dev \
-            libxinerama-dev libxcb1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libatk1.0-dev libatk-bridge2.0-dev libxcomposite-dev libxdamage-dev \
-            libasound2-dev libfdk-aac-dev libfontconfig-dev libfreetype6-dev libjack-jackd2-dev \
-            libsndio-dev libspeexdsp-dev libudev-dev libv4l-dev libva-dev libpci-dev libdrm-dev \
-            nlohmann-json3-dev libwebsocketpp-dev libasio-dev libqrcodegencpp-dev \
-            libffmpeg-nvenc-dev librist-dev libsrt-openssl-dev libvpl-dev libvpl2 \
-            qt6-base-dev qt6-base-private-dev libqt6svg6-dev qt6-svg-plugins qt6-wayland \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
-            libxcb-shape0 libxcb-xkb1 libxcb-sync1 libxcb-xinerama0
-          sudo chown -R "$(id -u):$(id -g)" .apt-cache # apt ran as root; the cache action must read it
-
+      # The build steps live in build-aux/appimage/build.py (one call per step, the
+      # same scripts), so `bosn run --task appimage` can run them locally (#899).
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
-      - name: Build libavutil with host VA compatibility
-        run: |
-          # Keep Ubuntu's complete feature configuration. Only the optional
-          # newer VA mapping API is adapted; exports/backends are audited.
-          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
-          sudo apt-get update -qq
-          sudo -E apt-get -y -qq -o DPkg::Lock::Timeout=120 -o Dir::Cache::archives="$PWD/.apt-cache" build-dep --arch-only ffmpeg=7:8.0.1-3ubuntu2
-          sudo chown -R "$(id -u):$(id -g)" .apt-cache
-          uv run --no-project build-aux/appimage/build_vaapi_compat.py avutil-compat
-          # FFmpeg's recipe replaces this with libsrt-gnutls-dev, which lacks
-          # the library name OBS's finder expects. Restore OBS's build input
-          # after the audited avutil build; keep MPEG-TS/SRT enabled.
-          sudo -E apt-get -y -qq -o DPkg::Lock::Timeout=120 -o Dir::Cache::archives="$PWD/.apt-cache" install libsrt-openssl-dev
-          sudo chown -R "$(id -u):$(id -g)" .apt-cache
+      - name: Install build dependencies 🛍️
+        timeout-minutes: 10 # a hang here must fail with logs rather than sit for hours
+        run: uv run build-aux/appimage/build.py --steps deps
 
-      - name: Determine version 🏷️
-        run: |
-          # Same tag filter as cmake/common/versionconfig.cmake: this repository also carries
-          # non-OBS tags (obs-studio-rust-v...), which must not become the OBS version.
-          # In a fork or shallow clone without OBS release tags `git describe` yields a bare
-          # commit hash, which CMake rejects as a project VERSION, so use a dev version then.
-          if desc="$(git describe --tags --match '[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)" && [[ "$desc" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "OBS_VERSION=$desc" >> "$GITHUB_ENV"
-          else
-            echo "OBS_VERSION=0.0.0-g${GITHUB_SHA::9}" >> "$GITHUB_ENV"
-          fi
+      - name: Build libavutil with host VA compatibility
+        run: uv run build-aux/appimage/build.py --steps libavutil
 
       - name: Configure 🔧
         id: configure
@@ -172,24 +120,13 @@ jobs:
           RUST_LIBOBS: ${{ format('{0}', inputs.rust_libobs) != 'false' }}
           QSV: ${{ github.event_name == 'workflow_dispatch' && inputs.qsv }}
           OBS_RUST_VERSION: ${{ inputs.rust_version }}
+        # Determine version 🏷️ + Configure: the OBS version is only used here.
         run: |
-          echo "rust=${RUST_LIBOBS^^}" >> "$GITHUB_OUTPUT" # the tests check the build really has it
-          cmake --preset ubuntu-ci \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF \
-            -DCMAKE_INSTALL_PREFIX=/usr \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DOBS_VERSION_OVERRIDE="${OBS_VERSION}" \
-            -DENABLE_RELOCATABLE=ON \
-            -DENABLE_RUST_LIBOBS="${RUST_LIBOBS^^}" \
-            -DENABLE_QSV11="${QSV^^}" \
-            -DENABLE_BROWSER=OFF -DENABLE_VLC=OFF -DENABLE_WEBRTC=OFF -DENABLE_AJA=OFF \
-            -DENABLE_SCRIPTING_PYTHON=OFF
+          uv run build-aux/appimage/build.py --steps version,configure \
+            --rust-libobs "$RUST_LIBOBS" --qsv "$QSV" --rust-version "$OBS_RUST_VERSION"
 
       - name: Build 🧱
-        run: |
-          cmake --build build_ubuntu
-          ccache -s
+        run: uv run build-aux/appimage/build.py --steps build
 
       - name: Save ccache
         if: always()
@@ -216,33 +153,12 @@ jobs:
           key: apt-appimage-${{ hashFiles('.github/workflows/appimage.yaml') }}-${{ github.run_id }}
 
       - name: Assemble AppDir 📁
-        run: |
-          DESTDIR="$PWD/AppDir" cmake --install build_ubuntu
-          build-aux/appimage/assemble-appdir.sh AppDir avutil-compat/libavutil.so.60
+        run: uv run build-aux/appimage/build.py --steps appdir
 
       - name: Create AppImage 📀
         env:
-          # A tagged release (not the rolling "continuous" build), verified by checksum. To
-          # update: change both, e.g. sha256sum of .../releases/download/<tag>/appimagetool-x86_64.AppImage
-          APPIMAGETOOL_VERSION: '1.9.1'
-          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
-        run: |
-          curl -fsSLo appimagetool "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
-          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
-          chmod +x appimagetool
-          # Runners have no /dev/fuse: extract appimagetool instead of running it.
-          ./appimagetool --appimage-extract >/dev/null
-          # A build published as the "continuous" pre-release (release job) carries
-          # update information: AppImageUpdate and friends can then fetch the next
-          # continuous build as a delta against this one (.zsync).
-          update=()
-          if [ "${{ inputs.publish_continuous }}" = true ]; then
-            update=(-u "gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|continuous|OBS-Studio-Rust-*-linux-x86_64.AppImage.zsync")
-          fi
-          version="$(AppDir/AppRun --version)"
-          asset="$(uv run --no-project build-aux/appimage/asset_metadata.py name --version "$version")"
-          ARCH=x86_64 squashfs-root/AppRun --no-appstream "${update[@]}" AppDir "$asset"
-          ls -lh OBS-Studio-*
+          PUBLISH_CONTINUOUS: ${{ inputs.publish_continuous == true }}
+        run: uv run build-aux/appimage/build.py --steps appimage --publish-continuous "$PUBLISH_CONTINUOUS"
 
       - name: Build the test helper 🧰
         # Run by test-appimage.sh next to obs, with the AppImage's own loader and

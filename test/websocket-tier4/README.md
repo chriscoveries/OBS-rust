@@ -22,6 +22,8 @@ obs-websocket port (Phase 5 item 3).
   Outputs, Stream, Record, UI, Canvases).
 - Event subscription delivery (`SceneCreated`, `CustomEvent`,
   `VendorEvent`), and `EventSubscription::None` isolation.
+- `GetStats.gpuAcceleration` with OpenGL forced onto llvmpipe: not green,
+  and the startup log warns (obs-rust/obs-studio#846).
 - Request batches: serial, `haltOnFailure`, no-halt error propagation, and
   parallel execution acceptance.
 - Error codes for malformed JSON (close 4002), unknown opcode (4006),

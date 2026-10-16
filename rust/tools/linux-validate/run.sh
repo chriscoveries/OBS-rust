@@ -46,6 +46,21 @@ if [ -n "${OBS_CCACHE_DIR:-}" ]; then
 else
   env+=(-v obs-rust-linux-validate-ccache:/ccache -e CCACHE_DIR=/ccache)
 fi
+# OBS_CTEST_JOBS: ctest parallelism (default 1). CI sets it: the 247 tests run
+# twice (OFF, ON) and serially took ~11 min each of a ~25 min job.
+if [ -n "${OBS_CTEST_JOBS:-}" ]; then
+  env+=(-e "OBS_CTEST_JOBS=$OBS_CTEST_JOBS")
+fi
+# OBS_TIER2_MODES: "OFF", "ON" or "OFF ON" (default); CI runs one per job.
+if [ -n "${OBS_TIER2_MODES:-}" ]; then
+  env+=(-e "OBS_TIER2_MODES=$OBS_TIER2_MODES")
+fi
+# OBS_TIER2_EXPORTS_DIR: host directory that receives exports-<mode>.txt, the
+# libobs.so dynamic symbols, for the CI job that compares OFF with ON.
+if [ -n "${OBS_TIER2_EXPORTS_DIR:-}" ]; then
+  mkdir -p "$OBS_TIER2_EXPORTS_DIR"
+  env+=(-v "$OBS_TIER2_EXPORTS_DIR:/exports")
+fi
 # OBS_EXTRA_CFLAGS: extra C/C++ compiler flags for the CMake builds, e.g. to
 # measure a stricter warning set (obs-rust/obs-studio#516).
 if [ -n "${OBS_EXTRA_CFLAGS:-}" ]; then

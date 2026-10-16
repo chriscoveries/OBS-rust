@@ -20,6 +20,9 @@
     wchar_to_utf8;
     /* platform-nix.c. obs-module.c calls it; the C build does not export it. */
     get_plugin_info;
+    /* obs-hotkey-name-map.c. Declared in obs-internal.h; obs.c calls it on
+     * shutdown. Not EXPORT. */
+    obs_hotkey_name_map_free;
     /* platform-windows.c. Not EXPORT. */
     get_win_release_id;
     DllMain;

@@ -465,6 +465,12 @@ void TaskbarOverlaySetStatus(TaskbarOverlayStatus status)
 	taskbarIcon->Release();
 }
 
+void *GetGlGetStringProc()
+{
+	HMODULE gl = GetModuleHandleW(L"opengl32.dll");
+	return gl ? reinterpret_cast<void *>(GetProcAddress(gl, "glGetString")) : nullptr;
+}
+
 bool HighContrastEnabled()
 {
 	HIGHCONTRAST hc = {};

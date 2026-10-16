@@ -29,5 +29,8 @@ if(TARGET OBS::pipewire)
   )
   add_dependencies(cmocka-tests test_screencast_portal_teardown)
   add_test(test_screencast_portal_teardown ${CMAKE_CURRENT_BINARY_DIR}/test_screencast_portal_teardown)
-  set_tests_properties(test_screencast_portal_teardown PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+  set_tests_properties(
+    test_screencast_portal_teardown
+    PROPERTIES RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 60
+  )
 endif()

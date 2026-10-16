@@ -13,7 +13,7 @@ Lanes:
   lint         clang-format 22.1.3 and gersemi 0.25.0 over the same files as
                build-aux/run-clang-format and run-gersemi, plus rustfmt,
                clippy -D warnings and the repo Dylints (dylints/*). Formatters are pinned through uvx, so no
-               brew/zsh install is needed.
+               brew/zsh install is needed. Also ci/platform_ifdef_ratchet.py (#847).
   rust-test    soldr cargo test --workspace --locked (Tiers 1-3), plus a
                --no-run build of the tests for x86_64-pc-windows-gnu.
 
@@ -141,6 +141,11 @@ def self_test() -> None:
     run([sys.executable, "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py"])
 
 
+def platform_ifdef_ratchet() -> None:
+    """Shared C/C++ gains no platform conditionals (#847); see ci/platform_ifdef_ratchet.py."""
+    run([sys.executable, "ci/platform_ifdef_ratchet.py"])
+
+
 def tracked_files() -> list[str]:
     out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True).stdout
     return [p for p in out.decode().split("\0") if p and (ROOT / p).is_file()]
@@ -210,6 +215,7 @@ def lane_lint(fix: bool) -> None:
     clang_format(files, fix)
     gersemi(files, fix)
     self_test()
+    platform_ifdef_ratchet()
     soldr_cargo(["fmt", "--all"] + ([] if fix else ["--check"]))
     soldr_cargo(["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"])
     # Pre-expansion Dylints (dylints/*), so host-cfg'd code is checked on
@@ -233,12 +239,10 @@ def lane_cross(fix: bool) -> None:
         run(["soldr", "rustup", "target", "add", target])
         soldr_cargo(["clippy", *scope, "--locked", "--target", target, "--", "-D", "warnings"])
         soldr_cargo(["dylint", "--all", "--", *scope, "--target", target])
-        # Every test target, C oracle included, must also compile for the
-        # target (#516): check runs the build scripts, so cc compiles all the
-        # oracle's C. Not linked: soldr's LLVM bundle links lld-link/ld64.lld
-        # against the host's libxml2.so.2, which ubuntu-26.04 doesn't have.
-        # Linking is covered for x86_64-pc-windows-gnu in rust-test.
-        soldr_cargo(["check", "--workspace", "--tests", "--locked", "--target", target])
+        # Every test binary, C oracle included, must also compile and link
+        # for the target (#516, #695): cc compiles all the oracle's C, and
+        # soldr's self-contained lld-link/ld64.lld links it on Linux.
+        soldr_cargo(["test", "--workspace", "--no-run", "--locked", "--target", target])
 
 
 def lane_rust_test(fix: bool) -> None:
@@ -264,12 +268,21 @@ def lane_tier2_linux(fix: bool) -> None:
 
 LANES = {"lint": lane_lint, "rust-test": lane_rust_test, "cross": lane_cross, "tier2-linux": lane_tier2_linux}
 
+# The lint lane's formatter checks on their own, for CI's format jobs: the
+# same pinned tools and files as `./lint`, so the two cannot disagree (#427).
+CHECKS = {"clang-format": clang_format, "gersemi": gersemi}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--lane", choices=sorted(LANES), action="append", help="run only this lane (repeatable)")
     parser.add_argument("--fix", action="store_true", help="lint: rewrite files instead of checking")
+    parser.add_argument("--only", choices=sorted(CHECKS), help="run only this formatter check (CI format jobs)")
     args = parser.parse_args()
+    if args.only:
+        CHECKS[args.only](tracked_files(), args.fix)
+        print(f"== {args.only}: ok", flush=True)
+        return 0
     for name in args.lane or list(LANES):
         start = time.monotonic()
         print(f"== lane {name}", flush=True)

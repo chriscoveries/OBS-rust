@@ -3,9 +3,24 @@ cmake_minimum_required(VERSION 3.28...3.30)
 add_library(happy-eyeballs OBJECT)
 add_library(OBS::happy-eyeballs ALIAS happy-eyeballs)
 
-target_sources(happy-eyeballs PRIVATE happy-eyeballs.c PUBLIC happy-eyeballs.h)
+target_sources(
+  happy-eyeballs
+  PRIVATE
+    happy-eyeballs.c
+    $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/platform/windows/happy-eyeballs-platform.h>
+    $<$<NOT:$<PLATFORM_ID:Windows>>:${CMAKE_CURRENT_SOURCE_DIR}/platform/posix/happy-eyeballs-platform.h>
+  PUBLIC
+    happy-eyeballs.h
+    $<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/platform/windows/happy-eyeballs-socket.h>
+    $<$<NOT:$<PLATFORM_ID:Windows>>:${CMAKE_CURRENT_SOURCE_DIR}/platform/posix/happy-eyeballs-socket.h>
+)
 
-target_include_directories(happy-eyeballs PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+# The platform layer (Winsock or BSD sockets) lives in platform/<os>/ so the
+# shared files have no platform conditionals (#847).
+target_include_directories(
+  happy-eyeballs
+  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/platform/$<IF:$<PLATFORM_ID:Windows>,windows,posix>"
+)
 
 target_link_libraries(happy-eyeballs PUBLIC OBS::libobs)
 
