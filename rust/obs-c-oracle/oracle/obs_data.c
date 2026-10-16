@@ -1,7 +1,6 @@
 /* Test-only oracle: libobs/obs-data.c with obs_data* exports renamed.
- * bmalloc, dstr, os_*, blog, and jansson stay unprefixed. The host
- * file obs_data_host.c supplies os_quick_read_utf8_file and the two
- * os_quick_write_utf8_file entry points, which still live in platform.c. */
+ * Route its platform calls to the real oracle copies compiled from platform.c
+ * and platform-nix.c/platform-windows.c. */
 
 /* obs-data.c pulls in threading.h, whose recursive-mutex helper needs the
  * POSIX/XSI pthread declarations that strict -std=c11 hides. */
@@ -164,6 +163,11 @@
 #define obs_data_unset_autoselect_value oracle_obs_data_unset_autoselect_value
 #define obs_data_unset_default_value oracle_obs_data_unset_default_value
 #define obs_data_unset_user_value oracle_obs_data_unset_user_value
+#define os_quick_read_utf8_file oracle_os_quick_read_utf8_file
+#define os_quick_write_utf8_file oracle_os_quick_write_utf8_file
+#define os_quick_write_utf8_file_safe oracle_os_quick_write_utf8_file_safe
+#define os_file_exists oracle_os_file_exists
+#define os_rename oracle_os_rename
 /* obs-data.c promotes float fields into set_double and stores
  * base_get_alignment()'s int in a size_t. Those are the original file. */
 #if defined(__GNUC__)

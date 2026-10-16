@@ -15,7 +15,7 @@
 #![deny(unsafe_code)]
 
 #[cfg(test)]
-use obs_c_oracle as _; // links the oracle test stubs (oracle/test_stubs.c)
+use obs_c_oracle as _; // links the oracle's libobs sources and platform stand-ins
 
 pub mod array_serializer;
 pub mod base;
