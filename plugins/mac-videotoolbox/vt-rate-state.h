@@ -13,9 +13,9 @@ struct vt_rate_state {
 	float quality;
 };
 
-/* The original comparison only tracked bitrate and the enable switch.
- * The RED checkpoint captures that old behaviour for the new test. */
 static inline bool vt_rate_state_changed(const struct vt_rate_state *old, const struct vt_rate_state *current)
 {
-	return old->bitrate != current->bitrate || old->limit_bitrate != current->limit_bitrate;
+	return old->bitrate != current->bitrate || old->limit_bitrate != current->limit_bitrate ||
+	       old->max_bitrate != current->max_bitrate ||
+	       old->max_bitrate_window != current->max_bitrate_window || old->quality != current->quality;
 }
