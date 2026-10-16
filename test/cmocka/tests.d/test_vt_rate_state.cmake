@@ -1,0 +1,3 @@
+add_executable(test_vt_rate_state test_vt_rate_state.c)
+add_dependencies(cmocka-tests test_vt_rate_state)
+add_test(NAME test_vt_rate_state COMMAND test_vt_rate_state)
