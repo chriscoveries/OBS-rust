@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-"""Run the existing, configured OFF/ON submit-ownership test builds."""
+"""Check dynamic bitrate snapshots and the native VideoToolbox plugin build."""
 from __future__ import annotations
 import json
 import plistlib
@@ -31,7 +31,7 @@ def cache_value(cache: str, name: str) -> str:
 
 def main() -> None:
     if sys.platform != "darwin" or len(sys.argv) != 3:
-        raise SystemExit("usage on macOS: uv run test/review/vt-live-rates/run-macos.py OFF_BUILD ON_BUILD")
+        raise SystemExit("usage on macOS: uv run test/review/vt-live-rate/run-macos.py OFF_BUILD ON_BUILD")
     logs = Path(tempfile.mkdtemp(prefix="obs-vt-rate-"))
     print(f"Logs: {logs}")
     entitlements = logs / "test-entitlements.plist"
