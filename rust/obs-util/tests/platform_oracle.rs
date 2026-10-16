@@ -35,6 +35,7 @@ enum Outcome {
 enum Op {
     BmallocZero,
     BreallocZero,
+    BmallocOom,
     Bcrash,
 }
 
@@ -46,6 +47,9 @@ fn child_body(op: &Op) {
         }
         Op::BreallocZero => {
             let _ = unsafe { oracle_brealloc(std::ptr::null_mut(), 0) };
+        }
+        Op::BmallocOom => {
+            let _ = unsafe { oracle_bmalloc(usize::MAX / 2) };
         }
         Op::Bcrash => {
             let msg = CString::new("oracle-bcrash-probe").unwrap();
@@ -146,6 +150,21 @@ fn oracle_brealloc_zero_dies_loudly() {
     assert!(
         stderr.contains("oracle: os_breakpoint"),
         "the child died but did not print the marker; stderr was:\n{stderr}"
+    );
+}
+
+/// A failed allocation must reach the oracle's `os_oom` path and stop loudly.
+#[test]
+fn oracle_bmalloc_oom_dies_loudly() {
+    let (outcome, stderr) = run_captured(&Op::BmallocOom);
+
+    assert!(
+        matches!(outcome, Outcome::Killed),
+        "oversized oracle_bmalloc returned instead of dying"
+    );
+    assert!(
+        stderr.contains("oracle: os_oom"),
+        "the child died but did not print the OOM marker; stderr was:\n{stderr}"
     );
 }
 
