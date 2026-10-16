@@ -94,4 +94,14 @@
 #pragma clang diagnostic ignored "-Wsign-conversion"
 #endif
 
+/* The Rust oracle cross-compiles for macOS 10.12, while OBS's app target is
+ * macOS 13.0. Keep the included libobs source unchanged and scope its newer
+ * API availability warning away from the oracle's strict cross-build. */
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+#endif
 #include "util/platform.c"
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
