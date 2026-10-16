@@ -48,10 +48,10 @@ if(OS_LINUX OR OS_MACOS)
   )
   add_custom_target(obs-preflight-rust DEPENDS "${_preflight_archive}")
   if(ENABLE_RUST_LIBOBS)
-    # Corrosion also runs Cargo while building libobs. Serialize this separate
-    # Cargo invocation after it: both use rustup's toolchain proxies, which can
-    # race while resolving components.
-    add_dependencies(obs-preflight-rust libobs)
+    # Corrosion builds libobs-rust through this target. Serialize the preflight
+    # Cargo invocation after it because rustup's proxies can race while
+    # resolving toolchain components.
+    add_dependencies(obs-preflight-rust libobs_rust-static)
   endif()
 
   add_executable(test_preflight_abi test_preflight_abi.c)
