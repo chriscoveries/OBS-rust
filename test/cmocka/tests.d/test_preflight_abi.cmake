@@ -5,6 +5,8 @@ if(OS_LINUX OR OS_MACOS)
   find_program(RUSTUP_EXECUTABLE rustup)
 
   set(_preflight_cargo_command)
+  set(_preflight_cargo_environment)
+  set(_preflight_rustc_executable)
   if(RUSTUP_EXECUTABLE)
     # Use the pinned toolchain's real Cargo binary instead of the Rustup proxy.
     # Corrosion uses the same toolchain from the workspace's rust-toolchain.toml.
@@ -18,6 +20,25 @@ if(OS_LINUX OR OS_MACOS)
     )
     if(_rustup_which_cargo_result EQUAL 0 AND EXISTS "${_rustup_which_cargo}")
       list(APPEND _preflight_cargo_command "${_rustup_which_cargo}")
+    endif()
+
+    execute_process(
+      COMMAND "${RUSTUP_EXECUTABLE}" which rustc
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      RESULT_VARIABLE _rustup_which_rustc_result
+      OUTPUT_VARIABLE _rustup_which_rustc
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+    if(_rustup_which_rustc_result EQUAL 0 AND EXISTS "${_rustup_which_rustc}")
+      set(_preflight_rustc_executable "${_rustup_which_rustc}")
+    endif()
+  endif()
+
+  if(NOT _preflight_rustc_executable AND Rust_CARGO_CACHED)
+    get_filename_component(_preflight_toolchain_bin "${Rust_CARGO_CACHED}" DIRECTORY)
+    if(EXISTS "${_preflight_toolchain_bin}/rustc")
+      set(_preflight_rustc_executable "${_preflight_toolchain_bin}/rustc")
     endif()
   endif()
 
@@ -38,6 +59,12 @@ if(OS_LINUX OR OS_MACOS)
 
   set(_preflight_manifest "${CMAKE_SOURCE_DIR}/rust/obs-preflight-ffi/Cargo.toml")
   set(_preflight_target_dir "${CMAKE_BINARY_DIR}/obs-preflight-cargo")
+  list(APPEND _preflight_cargo_environment "CARGO_TARGET_DIR=${_preflight_target_dir}")
+  if(_preflight_rustc_executable)
+    # Cargo otherwise finds rustc's Rustup proxy on PATH. Concurrent proxy
+    # calls can race while synchronizing components from rust-toolchain.toml.
+    list(APPEND _preflight_cargo_environment "RUSTC=${_preflight_rustc_executable}")
+  endif()
   file(
     GLOB_RECURSE _preflight_rust_sources
     CONFIGURE_DEPENDS
@@ -51,8 +78,8 @@ if(OS_LINUX OR OS_MACOS)
   add_custom_command(
     OUTPUT "${_preflight_archive}"
     COMMAND
-      "${CMAKE_COMMAND}" -E env "CARGO_TARGET_DIR=${_preflight_target_dir}" ${_preflight_cargo_command} build
-      --manifest-path "${CMAKE_SOURCE_DIR}/Cargo.toml" --package obs-preflight-ffi --lib --release --locked
+      "${CMAKE_COMMAND}" -E env ${_preflight_cargo_environment} ${_preflight_cargo_command} build --manifest-path
+      "${CMAKE_SOURCE_DIR}/Cargo.toml" --package obs-preflight-ffi --lib --release --locked
     DEPENDS
       "${_preflight_manifest}"
       "${CMAKE_SOURCE_DIR}/rust/obs-preflight/Cargo.toml"
