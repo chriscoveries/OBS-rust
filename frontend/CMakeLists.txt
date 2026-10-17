@@ -31,13 +31,13 @@ endif()
 add_executable(obs-studio)
 add_executable(OBS::studio ALIAS obs-studio)
 
-set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/unavailable/preflight-gpu-sampler.cpp)
+set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/unavailable/preflight-gpu-sampler-unavailable.cpp)
 if(OS_MACOS)
-  set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/macos/preflight-gpu-sampler.cpp)
+  set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/macos/preflight-gpu-sampler-macos.cpp)
 elseif(OS_WINDOWS)
-  set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/windows/preflight-gpu-sampler.cpp)
+  set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/windows/preflight-gpu-sampler-windows.cpp)
 elseif(OS_LINUX)
-  set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/linux/preflight-gpu-sampler.cpp)
+  set(PREFLIGHT_GPU_PLATFORM_SOURCE preflight/platform/linux/preflight-gpu-sampler-linux.cpp)
 endif()
 target_sources(obs-studio PRIVATE preflight/preflight-gpu-sampler.cpp "${PREFLIGHT_GPU_PLATFORM_SOURCE}")
 if(OS_MACOS)
@@ -83,6 +83,21 @@ if(ENABLE_UNIT_TESTS)
     target_link_libraries(test_preflight_gpu_sampler PRIVATE ${PREFLIGHT_GPU_PLATFORM_LIBS})
   endif()
   add_test(NAME test_preflight_gpu_sampler COMMAND test_preflight_gpu_sampler)
+  if(OS_MACOS)
+    add_executable(
+      test_preflight_gpu_sampler_macos
+      tests/platform/macos/preflight-gpu-sampler-test.cpp
+      preflight/preflight-gpu-sampler.cpp
+      "${PREFLIGHT_GPU_PLATFORM_SOURCE}"
+    )
+    target_include_directories(test_preflight_gpu_sampler_macos PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/preflight")
+    target_compile_definitions(
+      test_preflight_gpu_sampler_macos
+      PRIVATE PREFLIGHT_GPU_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/preflight-gpu"
+    )
+    target_link_libraries(test_preflight_gpu_sampler_macos PRIVATE ${PREFLIGHT_GPU_PLATFORM_LIBS})
+    add_test(NAME test_preflight_gpu_sampler_macos COMMAND test_preflight_gpu_sampler_macos)
+  endif()
   add_executable(
     test_preflight_cloudflare_speed_test
     tests/test_preflight_cloudflare_speed_test.cpp

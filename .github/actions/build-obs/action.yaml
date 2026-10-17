@@ -35,6 +35,14 @@ inputs:
 runs:
   using: composite
   steps:
+    # The Preflight app target builds its Rust C ABI on Linux and macOS.
+    - name: Set Up soldr 🦀
+      if: runner.os == 'Linux' || runner.os == 'macOS'
+      uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
+      with:
+        version: 0.9.35
+        solo-toolchain-cache: false
+
     - name: Run macOS Build
       if: runner.os == 'macOS'
       shell: zsh --no-rcs --errexit --pipefail {0}

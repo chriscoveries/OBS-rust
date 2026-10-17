@@ -1,6 +1,12 @@
 #include "../../preflight-gpu-sampler.hpp"
 
 #include <pdh.h>
+#include <pdhmsg.h>
+
+// The RPC headers included by PDH define this macro; do not leak it into unity builds.
+#ifdef interface
+#undef interface
+#endif
 
 #include <cstddef>
 #include <string>

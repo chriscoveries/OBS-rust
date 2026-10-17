@@ -7,12 +7,6 @@
 #include <stdexcept>
 #include <string>
 
-#if defined(__APPLE__)
-#include "../preflight/platform/macos/preflight-gpu-sampler-macos.hpp"
-
-#include <CoreFoundation/CoreFoundation.h>
-#endif
-
 namespace {
 
 void require(bool condition, const char *message)
@@ -32,35 +26,6 @@ std::string fixture(const char *name)
 	std::ostringstream contents;
 	contents << file.rdbuf();
 	return contents.str();
-}
-
-void test_iokit_recorded_dictionary()
-{
-#if defined(__APPLE__)
-	const std::string xml = fixture("iokit-performance-statistics.plist");
-	CFDataRef data = CFDataCreate(kCFAllocatorDefault, reinterpret_cast<const UInt8 *>(xml.data()),
-				      static_cast<CFIndex>(xml.size()));
-	require(data != nullptr, "could not create recorded IOKit plist data");
-	CFErrorRef error = nullptr;
-	CFPropertyListRef properties =
-		CFPropertyListCreateWithData(kCFAllocatorDefault, data, kCFPropertyListImmutable, nullptr, &error);
-	CFRelease(data);
-	if (error) {
-		CFRelease(error);
-	}
-	require(properties && CFGetTypeID(properties) == CFDictionaryGetTypeID(),
-		"recorded IOKit fixture is not a dictionary");
-	const auto sample = preflight::gpu::ParseMacPerformanceStatistics(static_cast<CFDictionaryRef>(properties));
-	CFRelease(properties);
-	require(sample.gpu_percent && *sample.gpu_percent == 37.0,
-		"IOKit Device Utilization % was not parsed from the recorded fixture");
-	require(sample.renderer_percent && *sample.renderer_percent == 21.0 && sample.tiler_percent &&
-			*sample.tiler_percent == 14.0,
-		"IOKit renderer or tiler utilization was not parsed");
-	const auto missing = preflight::gpu::ParseMacPerformanceStatistics(nullptr);
-	require(!missing.gpu_percent && !missing.renderer_percent && !missing.tiler_percent,
-		"missing IOKit keys must remain unavailable");
-#endif
 }
 
 void test_provider_fixtures()
@@ -117,7 +82,6 @@ void test_window_average_and_unavailable()
 int main()
 {
 	try {
-		test_iokit_recorded_dictionary();
 		test_provider_fixtures();
 		test_window_average_and_unavailable();
 	} catch (const std::exception &error) {
