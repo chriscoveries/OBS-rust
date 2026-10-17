@@ -167,6 +167,13 @@ static void GetGpuStatusProc(void *, calldata_t *cd)
 }
 #endif
 
+void Prefetch()
+{
+#ifdef OBS_GPU_STATUS
+	obs_gpu_status_prefetch();
+#endif
+}
+
 void Init()
 {
 #ifdef OBS_GPU_STATUS

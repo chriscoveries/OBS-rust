@@ -21,7 +21,7 @@ VARIABLES = (
 
 
 class DriverEnvironmentTest(unittest.TestCase):
-    def setup_environment(self, directories, overrides=None):
+    def setup_environment(self, directories, overrides=None, files=(), render_nodes=None):
         source = (ROOT / "build-aux/appimage/AppRun").read_text()
         # This whole production block runs in both the launcher and GPU tests.
         block = source.split(
@@ -32,7 +32,16 @@ class DriverEnvironmentTest(unittest.TestCase):
             base = Path(scratch)
             for directory in directories:
                 (base / directory.lstrip("/")).mkdir(parents=True)
-            for prefix in ("/usr/", "/etc/", "/run/"):
+            for file in files:
+                (base / file.lstrip("/")).write_text("{}\n")
+            # render_nodes: {"renderD128": "nvidia", ...}, each node's
+            # device/driver link named after its kernel driver, as in sysfs.
+            for node, driver in (render_nodes or {}).items():
+                device = base / "sys/class/drm" / node / "device"
+                device.mkdir(parents=True)
+                (base / "sys/bus/pci/drivers" / driver).mkdir(parents=True, exist_ok=True)
+                (device / "driver").symlink_to(base / "sys/bus/pci/drivers" / driver)
+            for prefix in ("/usr/", "/etc/", "/run/", "/sys/"):
                 block = block.replace(prefix, str(base) + prefix)
             script = block + "\nenv\n"
             env = {k: v for k, v in os.environ.items() if k not in VARIABLES}
@@ -86,3 +95,52 @@ class DriverEnvironmentTest(unittest.TestCase):
 
     def test_absent_host_directories_do_not_create_empty_overrides(self):
         self.assertTrue(all(not value for value in self.setup_environment([]).values()))
+
+
+class NvidiaEglVendorTest(unittest.TestCase):
+    """glvnd loads every EGL vendor it is given; on a machine whose GPUs are
+    all driven by the nvidia kernel driver, Mesa's (libgallium + LLVM, ~30 MiB
+    resident) is never used, so AppRun names NVIDIA's vendor files alone."""
+
+    setup_environment = DriverEnvironmentTest.setup_environment
+
+    VENDOR_DIR = "/usr/share/glvnd/egl_vendor.d"
+    VENDORS = (VENDOR_DIR + "/10_nvidia.json", VENDOR_DIR + "/50_mesa.json")
+
+    def test_nvidia_only_machine_gets_nvidia_vendor_alone(self):
+        actual = self.setup_environment(
+            [self.VENDOR_DIR], files=self.VENDORS,
+            render_nodes={"renderD128": "nvidia", "renderD129": "nvidia"},
+        )
+        self.assertEqual(actual["__EGL_VENDOR_LIBRARY_DIRS"], self.VENDOR_DIR)
+        self.assertEqual(actual["__EGL_VENDOR_LIBRARY_FILENAMES"], self.VENDOR_DIR + "/10_nvidia.json")
+
+    def test_hybrid_machine_keeps_every_vendor(self):
+        actual = self.setup_environment(
+            [self.VENDOR_DIR], files=self.VENDORS,
+            render_nodes={"renderD128": "i915", "renderD129": "nvidia"},
+        )
+        self.assertEqual(actual["__EGL_VENDOR_LIBRARY_DIRS"], self.VENDOR_DIR)
+        self.assertEqual(actual["__EGL_VENDOR_LIBRARY_FILENAMES"], "")
+
+    def test_nouveau_keeps_every_vendor(self):
+        actual = self.setup_environment(
+            [self.VENDOR_DIR], files=self.VENDORS, render_nodes={"renderD128": "nouveau"},
+        )
+        self.assertEqual(actual["__EGL_VENDOR_LIBRARY_FILENAMES"], "")
+
+    def test_no_nvidia_vendor_file_sets_nothing(self):
+        actual = self.setup_environment(
+            [self.VENDOR_DIR], files=(self.VENDOR_DIR + "/50_mesa.json",),
+            render_nodes={"renderD128": "nvidia"},
+        )
+        self.assertEqual(actual["__EGL_VENDOR_LIBRARY_FILENAMES"], "")
+
+    def test_user_vendor_choice_is_kept(self):
+        actual = self.setup_environment(
+            [self.VENDOR_DIR], files=self.VENDORS,
+            overrides={"__EGL_VENDOR_LIBRARY_DIRS": "/chosen/egl"},
+            render_nodes={"renderD128": "nvidia"},
+        )
+        self.assertEqual(actual["__EGL_VENDOR_LIBRARY_DIRS"], "/chosen/egl")
+        self.assertEqual(actual["__EGL_VENDOR_LIBRARY_FILENAMES"], "")

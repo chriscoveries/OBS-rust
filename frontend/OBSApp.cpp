@@ -16,6 +16,7 @@
 ******************************************************************************/
 
 #include "OBSApp.hpp"
+#include <utility/GpuStatus.hpp>
 
 #include <utility/output-filename-format.h>
 #include <utility/output-filename-reserve.h>
@@ -1147,6 +1148,8 @@ static void move_basic_to_scene_collections(void)
 void OBSApp::AppInit()
 {
 	ProfileScope("OBSApp::AppInit");
+
+	GpuStatus::Prefetch();
 
 	QAccessible::installFactory(alignmentSelectorFactory);
 

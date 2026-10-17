@@ -13,6 +13,10 @@ extern "C" {
  * frame rendered yet) is skipped. The last 15 samples are kept. */
 void obs_gpu_status_sample(uint64_t frame_ns);
 
+/* Start probing the system's GPUs (sysfs, nvidia-smi) on a thread, so the
+ * first obs_gpu_status_report finds them probed. */
+void obs_gpu_status_prefetch(void);
+
 /* Classify `adapter` (NULL when graphics init failed) against the GPUs
  * detected on the system (probed once per process) and the median of the
  * sampled frame times; with fewer than five samples, or interval_ns == 0,

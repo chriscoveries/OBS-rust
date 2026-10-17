@@ -169,14 +169,16 @@ fn plugin_cmake_builds_the_c_loader_and_a_rust_twin() {
     )
     .unwrap();
     assert!(
-        cmake.contains("target_sources(obs-nvenc PRIVATE ${_obs_nvenc_sources} cuda-load.c)"),
-        "the installed plugin must build cuda-load.c"
+        cmake.contains(
+            "target_sources(obs-nvenc PRIVATE ${_obs_nvenc_sources} build/obs-nvenc.cuda-load+.h.c)"
+        ),
+        "the installed plugin must build cuda-load.c.h"
     );
     assert!(
         cmake.contains(
-            "add_library(obs-nvenc-with-rust MODULE ${_obs_nvenc_sources} cuda-load-rust.c)"
+            "add_library(obs-nvenc-with-rust MODULE ${_obs_nvenc_sources} build/obs-nvenc.cuda-load-rust+.h.c)"
         ),
-        "the Rust twin must build cuda-load-rust.c"
+        "the Rust twin must build cuda-load-rust.c.h"
     );
     assert!(
         cmake
@@ -204,7 +206,7 @@ fn function_table(file: &str) -> String {
 #[test]
 fn rust_build_uses_the_same_function_table_as_the_c_build() {
     assert_eq!(
-        function_table("cuda-load.c"),
-        function_table("cuda-load-rust.c")
+        function_table("cuda-load.c.h"),
+        function_table("cuda-load-rust.c.h")
     );
 }

@@ -40,4 +40,8 @@ Info Query();
  * handler (out: string json) for obs-websocket. */
 void Init();
 
+/* Probe the system's GPUs on a thread now, so Init() does not wait for it
+ * (nvidia-smi takes tens of milliseconds). */
+void Prefetch();
+
 } // namespace GpuStatus

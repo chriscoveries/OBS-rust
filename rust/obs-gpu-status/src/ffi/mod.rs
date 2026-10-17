@@ -4,7 +4,7 @@
 //! does not change.
 
 use std::ffi::{CStr, CString, c_char, c_int};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use crate::report::Report;
 use crate::{FrameWindow, LogCapture};
@@ -43,6 +43,19 @@ pub extern "C" fn obs_gpu_status_sample(frame_ns: u64) {
         .push(frame_ns);
 }
 
+/// The system's GPUs, probed once per process (`nvidia-smi` is too slow to
+/// run on every refresh, or on the startup path: see
+/// [`obs_gpu_status_prefetch`]).
+static DEVICES: crate::DeviceCache = crate::DeviceCache::new();
+
+/// Start probing the system's GPUs on a thread, so that the first
+/// [`obs_gpu_status_report`] (after graphics init) finds them probed. Call
+/// once, early; later calls do nothing.
+#[unsafe(no_mangle)]
+pub extern "C" fn obs_gpu_status_prefetch() {
+    DEVICES.prefetch(crate::platform::system_devices);
+}
+
 /// Build the report for `adapter` (null when graphics init failed), the
 /// system's GPUs, probed once per process (`nvidia-smi` is too slow to run
 /// on every refresh), and the median of the sampled frame times
@@ -73,8 +86,7 @@ pub unsafe extern "C" fn obs_gpu_status_report(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .stats(interval_ns);
-    static DEVICES: OnceLock<Vec<crate::GpuDevice>> = OnceLock::new();
-    let devices = DEVICES.get_or_init(crate::platform::system_devices).clone();
+    let devices = DEVICES.get(crate::platform::system_devices);
     let log_lines = LOG.lock().unwrap_or_else(|e| e.into_inner()).lines();
     let report = Report::new(adapter.as_deref(), devices, frames).with_log_lines(log_lines);
     if !state.is_null() {

@@ -251,15 +251,16 @@ else
   # Issue #645: obs-nvenc uses cuda-load.c, its never-installed twin
   # obs-nvenc-with-rust cuda-load-rust.c (#592, #1065). Both must link.
   for target in obs-nvenc obs-nvenc-with-rust; do
-    if [ "$target" = obs-nvenc ]; then want=cuda-load.c not=cuda-load-rust.c; else want=cuda-load-rust.c not=cuda-load.c; fi
-    if ! compiles "$target" "plugins/obs-nvenc/$want" "$want.o" || compiles "$target" "plugins/obs-nvenc/$not" "$not.o"; then
+    # Each loader is a unity group of its own (BUILD.md).
+    if [ "$target" = obs-nvenc ]; then want=cuda-load not=cuda-load-rust; else want=cuda-load-rust not=cuda-load; fi
+    if ! compiles "$target" - "build/obs-nvenc.$want+.h.c.o" || compiles "$target" - "build/obs-nvenc.$not+.h.c.o"; then
       echo "FAIL: $target must compile $want and not $not"
       exit 1
     fi
   done
   [ -n "$(find "$build/plugins" -name 'obs-nvenc.so' | head -1)" ] || { echo "FAIL: obs-nvenc.so was not built"; exit 1; }
   [ -f "$build/obs-nvenc-with-rust/obs-nvenc.so" ] || { echo "FAIL: obs-nvenc-with-rust was not built"; exit 1; }
-  echo "== obs-nvenc.so built with cuda-load.c, obs-nvenc-with-rust with cuda-load-rust.c"
+  echo "== obs-nvenc.so built with cuda-load.c.h, obs-nvenc-with-rust with cuda-load-rust.c.h"
 
   # OBS_TIER2_SHARDS=<n>: plan n shards per mode by recorded test duration
   # (ctest-cost-<mode>.txt in the zccache dir, #931) into the tree (#1048).

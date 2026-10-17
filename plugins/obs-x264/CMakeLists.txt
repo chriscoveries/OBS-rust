@@ -9,7 +9,7 @@ endif()
 add_library(obs-x264 MODULE)
 add_library(OBS::x264 ALIAS obs-x264)
 
-target_sources(obs-x264 PRIVATE obs-x264.c obs-x264-plugin-main.c)
+target_sources(obs-x264 PRIVATE build/obs-x264.core+.h.c)
 target_link_libraries(obs-x264 PRIVATE OBS::opts-parser Libx264::Libx264)
 
 if(OS_WINDOWS)

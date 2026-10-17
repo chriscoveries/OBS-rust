@@ -138,7 +138,37 @@ fi
 if [ -z "${__EGL_VENDOR_LIBRARY_DIRS:-}" ] && [ -z "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" ]; then
     __EGL_VENDOR_LIBRARY_DIRS="$(host_driver_dirs /run/opengl-driver/share/glvnd/egl_vendor.d \
         /etc/glvnd/egl_vendor.d /usr/share/glvnd/egl_vendor.d)"
-    if [ -n "$__EGL_VENDOR_LIBRARY_DIRS" ]; then export __EGL_VENDOR_LIBRARY_DIRS; fi
+    if [ -n "$__EGL_VENDOR_LIBRARY_DIRS" ]; then
+        export __EGL_VENDOR_LIBRARY_DIRS
+        # glvnd loads every EGL vendor it finds, and Mesa's brings libgallium
+        # and all of LLVM (about 30 MiB resident) into a process that only
+        # renders with NVIDIA's. When every DRM render node is driven by the
+        # nvidia kernel driver, give glvnd NVIDIA's vendor files alone. Any
+        # other GPU (a laptop's Intel or AMD one, nouveau) keeps them all.
+        nvidia_only=""
+        for node in /sys/class/drm/renderD*; do
+            [ -e "$node" ] || continue
+            driver="$(readlink "$node/device/driver" 2>/dev/null)"
+            if [ "${driver##*/}" = nvidia ]; then
+                nvidia_only=1
+            else
+                nvidia_only=""
+                break
+            fi
+        done
+        if [ -n "$nvidia_only" ]; then
+            nvidia_vendors=""
+            saved_ifs="$IFS"
+            IFS=:
+            for vendor_dir in $__EGL_VENDOR_LIBRARY_DIRS; do
+                for vendor in "$vendor_dir"/*nvidia*.json; do
+                    [ -f "$vendor" ] && nvidia_vendors="${nvidia_vendors:+$nvidia_vendors:}$vendor"
+                done
+            done
+            IFS="$saved_ifs"
+            if [ -n "$nvidia_vendors" ]; then export __EGL_VENDOR_LIBRARY_FILENAMES="$nvidia_vendors"; fi
+        fi
+    fi
 fi
 if [ -z "${__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS:-}" ] && [ -z "${__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES:-}" ]; then
     __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS="$(host_driver_dirs /run/opengl-driver/share/egl/egl_external_platform.d \

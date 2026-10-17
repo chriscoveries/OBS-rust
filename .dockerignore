@@ -11,3 +11,4 @@
 !build-aux/appimage/manylinux/Dockerfile
 !build-aux/appimage/manylinux/deps.lock.json
 !rust-toolchain.toml
+!rust/tools/linux-validate/install-zccache.sh

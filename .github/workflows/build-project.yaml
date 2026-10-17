@@ -895,6 +895,8 @@ jobs:
           # or tested here (only the touched targets); that is the Qt lane's job.
           grep -v '^#' rust/tools/linux-validate/apt-packages.txt |
             xargs "${GITHUB_WORKSPACE}/.github/scripts/retry" sudo apt-get install -y --no-install-recommends
+          # The launcher below; apt-packages.txt no longer lists it (#957, #1183).
+          "${GITHUB_WORKSPACE}/.github/scripts/retry" sudo apt-get install -y --no-install-recommends ccache
           cmake -S . -B "${RUNNER_TEMP}/targets" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DENABLE_FRONTEND=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF -DENABLE_WEBSOCKET=OFF \

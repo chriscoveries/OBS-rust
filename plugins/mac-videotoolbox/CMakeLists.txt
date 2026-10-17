@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.28...3.30)
 add_library(mac-videotoolbox MODULE)
 add_library(OBS::mac-videotoolbox ALIAS mac-videotoolbox)
 
-target_sources(mac-videotoolbox PRIVATE encoder.c)
+target_sources(mac-videotoolbox PRIVATE build/mac-videotoolbox.macos+.h.c)
 
 target_link_libraries(
   mac-videotoolbox

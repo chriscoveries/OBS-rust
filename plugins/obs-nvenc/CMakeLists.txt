@@ -26,33 +26,25 @@ add_subdirectory(obs-nvenc-test)
 
 set(
   _obs_nvenc_sources
-  $<$<PLATFORM_ID:Linux>:nvenc-opengl.c>
-  $<$<PLATFORM_ID:Windows>:nvenc-d3d11.c>
-  cuda-helpers.c
+  $<$<PLATFORM_ID:Linux>:build/obs-nvenc.linux+.h.c>
+  $<$<PLATFORM_ID:Windows>:build/obs-nvenc.windows+.h.c>
+  build/obs-nvenc.core+.h.c
+  build/obs-nvenc.override+.h.c
   cuda-helpers.h
-  nvenc-compat.c
-  nvenc-cuda.c
-  nvenc-helpers.c
   nvenc-helpers.h
   nvenc-internal.h
-  nvenc-load.c
-  nvenc-opts-parser.c
-  nvenc-properties.c
-  nvenc.c
-  nvenc-override.c
   nvenc-override.h
-  obs-nvenc.c
   obs-nvenc.h
 )
 
 # obs-nvenc, the plugin that installs, uses the C CUDA driver loader
-# (cuda-load.c). obs-nvenc-with-rust is the same plugin with the Rust loader
-# (cuda-load-rust.c + rust/obs-nvenc-plugin), built whenever libobs's Rust twin
+# (cuda-load.c.h). obs-nvenc-with-rust is the same plugin with the Rust loader
+# (cuda-load-rust.c.h + rust/obs-nvenc-plugin), built whenever libobs's Rust twin
 # is (#1065) and never installed or loaded.
 set(_obs_nvenc_targets obs-nvenc)
-target_sources(obs-nvenc PRIVATE ${_obs_nvenc_sources} cuda-load.c)
+target_sources(obs-nvenc PRIVATE ${_obs_nvenc_sources} build/obs-nvenc.cuda-load+.h.c)
 if(TARGET libobs-with-rust)
-  add_library(obs-nvenc-with-rust MODULE ${_obs_nvenc_sources} cuda-load-rust.c)
+  add_library(obs-nvenc-with-rust MODULE ${_obs_nvenc_sources} build/obs-nvenc.cuda-load-rust+.h.c)
   list(APPEND _obs_nvenc_targets obs-nvenc-with-rust)
   # The CUDA driver loader (rust/obs-nvenc, via rust/obs-nvenc-plugin) is linked into the plugin, not
   # re-exported through libobs-rust: libobs links exactly one Rust staticlib
