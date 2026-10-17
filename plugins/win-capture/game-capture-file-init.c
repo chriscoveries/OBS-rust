@@ -346,3 +346,6 @@ void init_hook_files()
 		init_vulkan_registry(false);
 	}
 }
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef warn

@@ -978,3 +978,6 @@ void QSV_Encoder_Internal::ClearROI()
 	m_ctrl.NumExtParam = 0;
 	m_extbuf.clear();
 }
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef do_log

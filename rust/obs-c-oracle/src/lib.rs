@@ -46,19 +46,23 @@ pub mod format_conversion;
 pub mod frame_rate;
 pub mod graphics_math;
 pub mod hevc;
+pub mod hotkey_name_map;
 pub mod lexer;
 pub mod nal;
 pub mod obs_nvenc;
+pub mod obs_properties;
 pub mod path_extension;
 pub mod pipe;
 #[cfg(target_os = "macos")]
 pub mod platform_cocoa;
 #[cfg(unix)]
 pub mod platform_nix;
+pub mod platform_number;
 #[cfg(all(windows, target_env = "msvc"))]
 pub mod platform_windows;
 pub mod profiler;
 pub mod profiler_snapshot;
+pub mod shader_param_names;
 pub mod task;
 pub mod text_lookup;
 pub mod threading;

@@ -5,8 +5,8 @@ description: Worker-role playbook for obs-rust/obs-studio. Use whenever you act 
 
 # obs-worker: picking up and landing one issue
 
-You are a **worker** when you take one issue (port, bug fix, test or infra
-task) from claim to merged PR. This skill is the checklist. The documents it
+You are a **worker** when you take one issue (port, bug fix, feature, test
+or infra task) from claim to merged PR. This skill is the checklist. The documents it
 links are the source of truth; when this file and a document disagree, the
 document wins, and you fix this file in the same PR.
 
@@ -42,26 +42,46 @@ don't delete local branches you didn't create.
 ## 2. Choose and claim one issue
 
 1. List candidates: `gh issue list --repo obs-rust/obs-studio --state open`.
-   Skip anything labeled `claimed` with a claim under 48 hours old, and
-   anything with an open PR (`gh pr list --repo obs-rust/obs-studio --search "<topic>"`).
+   Skip anything with a fresh claim (labeled `claimed`, or a `Claiming:`
+   comment under 48 hours old, 8 on `critical` issues), and anything with
+   an open PR (`gh pr list --repo obs-rust/obs-studio --search "<topic>"`).
    For port work, follow the port order in testing-policy.md and the
    trackers on #4.
 2. Prefer, in order: issues that unblock other contributors, bugs with a
    clear failing-test sketch, then the next unit in the port order.
 3. Claim it: comment `Claiming: <item>` with a short numbered plan (one PR
-   per unit) and when you expect the first PR, then add the `claimed` label.
-   Keep at most two claims open.
-4. No issue yet? File one first using the bug or port template
+   per unit) and when you expect the first PR. The claim bot adds the
+   `claimed` label and reacts 🚀 (it replies only to refuse). Claim only what
+   you are working on now.
+4. **Feature issues** (new behavior, not a port or a bug): check that the
+   design is agreed before you code. If the issue lists open questions,
+   answer each one in the claim comment under a **Decisions:** heading
+   (the default you will build, and why), and split the work so the first
+   PR does not depend on an unresolved answer (for example, a pure Rust core
+   with Tier 1 tests first; UI, protocol fields and logging in follow-ups).
+   A question you cannot pick a safe default for goes on the issue as
+   **Decision needed:** and that part waits. An idea with no agreed design
+   belongs in Discussions, not an issue (coordination.md section 5).
+   Protocol additions (obs-websocket) are additive fields only.
+5. No issue yet? File one first using the bug or port template
    (coordination.md section 5), then claim it.
 
 ## 3. RED, then GREEN
 
 - **Characterization** test first if the unit has none.
+- New code (a feature with no C original) still starts RED: Tier 1 tests
+  against `todo!()` stubs. Tier 3 applies only to the C behavior it touches
+  (show that is unchanged); state which tiers do not apply in the PR.
 - **RED commit:** a failing test (or `todo!()` stubs) that shows the bug or
   the missing port. Run it and note how it fails.
 - **GREEN commit:** the fix or the port, until the test passes.
+- **User-facing features** (UI, protocol output, logging) are not done until
+  the real app has run once with the change, through its Tier 4 test or by
+  hand. Put the observed output in the PR. Unit tests and a compiling build
+  were green when #846 shipped with llvmpipe showing green (#929). If you
+  cannot run it, use `Refs #N`, not `Fixes #N`, and say what is missing.
 - Ports need every applicable tier: Tier 1 Rust unit, Tier 2 unchanged C
-  tests with `ENABLE_RUST_LIBOBS` ON and OFF, Tier 3 differential, Tier 4 for
+  tests against `libobs` and `libobs-with-rust`, Tier 3 differential, Tier 4 for
   protocol code.
 - Never edit an existing C test or public C header to make a port pass.
 - Host-specific code goes only in `src/platform/` or `src/ffi/`.
@@ -115,12 +135,13 @@ running, wait and retry.
 
 - Mark the PR ready when CI is green, then queue it: `gh pr merge <N>`.
   The merge queue reruns CI on the merge result; `CI Gate ✅` decides.
-  Rebase by hand only when GitHub reports a conflict. Never use
+  Rebase by hand only when GitHub reports a conflict. Workers never use
   `gh pr merge --admin` or push to master: a merge outside the queue
-  rebuilds every queued PR (coordination.md §8).
+  rebuilds every queued PR. The admin bypass is for maintainers only
+  (coordination.md §8).
 - When the issue closes, comment what fixed it, what's left, and the
   follow-up issue for the rest. Tick the tracking-issue checkbox.
-- Stopping early: comment `Releasing <item>`, link the branch, remove
-  `claimed`.
+- Stopping early: comment `Releasing <item>` and link the branch; the
+  claim bot removes `claimed`.
 
 Then return to step 1 for the next issue.

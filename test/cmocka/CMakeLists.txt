@@ -10,6 +10,24 @@ endif()
 # new test cannot go unbuilt (and show up in ctest as "Not Run").
 add_custom_target(cmocka-tests)
 
+# The display tests' add_test commands wrap themselves in xvfb-run, found as
+# XVFB_RUN, XVFB_RUN_PROGRAM or XVFB_RUN_EXECUTABLE. Point all three at
+# xvfb-run-or-display.sh, which reuses the display ctest already runs under
+# instead of every test racing to start its own server (the fragments'
+# find_program keeps a variable that is already set).
+find_program(OBS_XVFB_RUN_REAL xvfb-run)
+if(OBS_XVFB_RUN_REAL)
+  configure_file(xvfb-run-or-display.sh.in "${CMAKE_CURRENT_BINARY_DIR}/xvfb-run-or-display.sh" @ONLY)
+  file(
+    CHMOD
+    "${CMAKE_CURRENT_BINARY_DIR}/xvfb-run-or-display.sh"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+  )
+  foreach(_xvfb_var IN ITEMS XVFB_RUN XVFB_RUN_PROGRAM XVFB_RUN_EXECUTABLE)
+    set(${_xvfb_var} "${CMAKE_CURRENT_BINARY_DIR}/xvfb-run-or-display.sh" CACHE FILEPATH "" FORCE)
+  endforeach()
+endif()
+
 # Existing C tests are never edited to satisfy a new warning, and they pass
 # float to double varargs and math freely (as does the SWIG-generated code some
 # of them compile), so -Wdouble-promotion (obs-rust/obs-studio#516) covers the
@@ -86,7 +104,7 @@ add_dependencies(cmocka-tests test_product_name)
 add_test(test_product_name ${CMAKE_CURRENT_BINARY_DIR}/test_product_name)
 
 # Exercise hotkey loading with an isolated core and no platform input thread.
-add_executable(test_hotkey_load test_hotkey_load.c "${CMAKE_SOURCE_DIR}/libobs/obs-hotkey.c")
+add_executable(test_hotkey_load test_hotkey_load.c "${CMAKE_SOURCE_DIR}/libobs/obs-hotkey.c.h")
 target_compile_definitions(test_hotkey_load PRIVATE obs=hotkey_test_obs)
 target_include_directories(test_hotkey_load PRIVATE ${CMOCKA_INCLUDE_DIR})
 target_link_libraries(test_hotkey_load PRIVATE OBS::libobs OBS::caption ${CMOCKA_LIBRARIES})
@@ -170,7 +188,7 @@ add_executable(test_avc test_avc.c)
 target_include_directories(test_avc PRIVATE ${CMOCKA_INCLUDE_DIR})
 target_link_libraries(test_avc PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
 if(NOT MSVC)
-  target_sources(test_avc PRIVATE "${CMAKE_SOURCE_DIR}/libobs/obs-avc.c")
+  target_sources(test_avc PRIVATE "${CMAKE_SOURCE_DIR}/libobs/obs-avc.c.h")
   obs_test_sanitize(test_avc undefined)
 endif()
 
@@ -204,8 +222,8 @@ if(NOT MSVC)
   add_executable(
     test_formatted_filename
     test_formatted_filename.c
-    "${CMAKE_SOURCE_DIR}/libobs/util/platform.c"
-    "${CMAKE_SOURCE_DIR}/libobs/util/utf8.c"
+    "${CMAKE_SOURCE_DIR}/libobs/util/platform.c.h"
+    "${CMAKE_SOURCE_DIR}/libobs/util/utf8.c.h"
   )
   target_include_directories(test_formatted_filename PRIVATE ${CMOCKA_INCLUDE_DIR})
   target_link_libraries(test_formatted_filename PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
@@ -226,7 +244,7 @@ add_test(test_crc32 ${CMAKE_CURRENT_BINARY_DIR}/test_crc32)
 # UTF-8 test. utf8.c is not exported by libobs, so it is compiled into the test
 # (non-Windows only: the Windows implementation wraps the Win32 API).
 if(NOT MSVC)
-  add_executable(test_utf8 test_utf8.c "${CMAKE_SOURCE_DIR}/libobs/util/utf8.c")
+  add_executable(test_utf8 test_utf8.c "${CMAKE_SOURCE_DIR}/libobs/util/utf8.c.h")
   target_include_directories(test_utf8 PRIVATE ${CMOCKA_INCLUDE_DIR})
   target_link_libraries(test_utf8 PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
   obs_test_sanitize(test_utf8 address,undefined)
@@ -474,8 +492,8 @@ find_package(FFmpeg 8.0 REQUIRED avcodec avformat avutil)
 add_executable(
   test_svt_av1
   test_svt_av1.c
-  "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-video-encoders.c"
-  "${CMAKE_SOURCE_DIR}/shared/opts-parser/opts-parser.c"
+  "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-video-encoders.c.h"
+  "${CMAKE_SOURCE_DIR}/shared/opts-parser/opts-parser.c.h"
 )
 target_compile_definitions(
   test_svt_av1
@@ -548,7 +566,7 @@ if(TARGET OBS::outputs)
   add_executable(
     test_flv_mux
     test_flv_mux.c
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/flv-mux.c"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/flv-mux.c.h"
     "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/amf.c"
     "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/log.c"
   )
@@ -562,7 +580,7 @@ endif()
 
 # Load .cube LUTs through the Color Grade filter's loader.
 if(TARGET OBS::filters)
-  add_executable(test_cube_lut test_cube_lut.c "${CMAKE_SOURCE_DIR}/plugins/obs-filters/cube-lut.c")
+  add_executable(test_cube_lut test_cube_lut.c "${CMAKE_SOURCE_DIR}/plugins/obs-filters/cube-lut.c.h")
   target_include_directories(test_cube_lut PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/obs-filters")
   target_link_libraries(test_cube_lut PRIVATE OBS::libobs ${CMOCKA_LIBRARIES} $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
   add_dependencies(cmocka-tests test_cube_lut)
@@ -576,7 +594,7 @@ if(TARGET OBS::pipewire)
   add_executable(
     test_pipewire_reconnect
     test_pipewire_reconnect.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c.h"
   )
   target_include_directories(
     test_pipewire_reconnect
@@ -591,7 +609,7 @@ if(TARGET OBS::pulseaudio)
   add_executable(
     test_pulse_reconnect
     test_pulse_reconnect.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pulseaudio/pulse-reconnect.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pulseaudio/pulse-reconnect.c.h"
   )
   target_include_directories(
     test_pulse_reconnect
@@ -606,7 +624,7 @@ if(TARGET OBS::pulseaudio)
   add_executable(
     test_pulse_default_id
     test_pulse_default_id.c
-    "${CMAKE_SOURCE_DIR}/libobs/audio-monitoring/pulse/pulseaudio-wrapper.c"
+    "${CMAKE_SOURCE_DIR}/libobs/audio-monitoring/pulse/pulseaudio-wrapper.c.h"
   )
   target_include_directories(
     test_pulse_default_id

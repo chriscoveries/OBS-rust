@@ -32,4 +32,4 @@
 #define cfstr_copy_cstr oracle_cfstr_copy_cstr
 #define cfstr_copy_dstr oracle_cfstr_copy_dstr
 
-#include "util/platform-cocoa.m"
+#include "util/platform-cocoa.m.h"

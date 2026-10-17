@@ -430,12 +430,17 @@ fn cli_rejects_invalid_window_and_malformed_json_without_json_output() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("start CLI");
-    invalid_window
+    // The CLI rejects the arguments and may exit before reading stdin, so a
+    // write past the pipe buffer can fail with EPIPE; that is not an error.
+    match invalid_window
         .stdin
         .take()
         .expect("stdin")
-        .write_all(CLEAN.as_bytes())
-        .expect("write trace");
+        .write_all(CLEAN.repeat(64).as_bytes())
+    {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        r => r.expect("write trace"),
+    }
     let output = invalid_window.wait_with_output().expect("wait for CLI");
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());

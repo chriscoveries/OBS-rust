@@ -15,4 +15,4 @@
 #define base_get_alignment oracle_base_get_alignment
 #define bmemdup oracle_bmemdup
 
-#include "util/bmem.c"
+#include "util/bmem.c.h"

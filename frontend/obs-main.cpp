@@ -22,6 +22,7 @@
 #include <dialogs/OBSPermissions.hpp>
 #endif
 #include <utility/BaseLexer.hpp>
+#include <utility/GpuStatus.hpp>
 #include <utility/OBSTranslator.hpp>
 #include <utility/platform.hpp>
 
@@ -60,6 +61,7 @@ bool portable_mode = false;
 bool steam = false;
 bool safe_mode = false;
 bool disable_3p_plugins = false;
+bool disable_shutdown_check = false;
 static bool unclean_shutdown = false;
 bool multi = false;
 static bool log_verbose = false;
@@ -230,6 +232,7 @@ static void do_log(int log_level, const char *msg, va_list args, void *param)
 #endif
 
 	if (log_level <= LOG_INFO || log_verbose) {
+		GpuStatus::OnLogLine(str);
 #if !defined(_WIN32) && !defined(_DEBUG)
 		def_log_handler(log_level, msg, args2, nullptr);
 #endif
@@ -987,6 +990,9 @@ int main(int argc, char *argv[])
 		} else if (arg_is(argv[i], "--only-bundled-plugins", nullptr)) {
 			disable_3p_plugins = true;
 
+		} else if (arg_is(argv[i], "--disable-shutdown-check", nullptr)) {
+			disable_shutdown_check = true;
+
 		} else if (arg_is(argv[i], "--always-on-top", nullptr)) {
 			opt_always_on_top = true;
 
@@ -1061,7 +1067,8 @@ int main(int argc, char *argv[])
 				"--always-on-top: Start in 'always on top' mode.\n\n"
 				"--unfiltered_log: Make log unfiltered.\n\n"
 				"--disable-updater: Disable built-in updater (Windows/Mac only)\n\n"
-				"--disable-missing-files-check: Disable the missing files dialog which can appear on startup.\n\n";
+				"--disable-missing-files-check: Disable the missing files dialog which can appear on startup.\n\n"
+				"--disable-shutdown-check: Do not show the crash dialog after an unclean shutdown; log it and launch normally.\n\n";
 
 #ifdef _WIN32
 			MessageBoxA(NULL, help.c_str(), "Help", MB_OK | MB_ICONASTERISK);

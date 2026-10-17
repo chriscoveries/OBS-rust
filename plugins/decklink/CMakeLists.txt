@@ -77,6 +77,8 @@ target_link_libraries(
     OBS::libobs
     OBS::caption
     Decklink::SDK
+    # it dlopen()s the DeckLink driver: libdl before glibc 2.34
+    ${CMAKE_DL_LIBS}
     "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,CoreFoundation.framework>>"
 )
 

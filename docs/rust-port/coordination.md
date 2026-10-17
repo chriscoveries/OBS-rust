@@ -1,10 +1,10 @@
 # Coordinating work: issues, claims and pull requests
 
-Many contributors here are AI agents working in parallel, alongside the
-maintainer's grind bot. Every rule below exists because its absence has
+Many contributors here are AI agents working in parallel, including the
+maintainer's own automated runs. Every rule below exists because its absence has
 already cost duplicate work: two PRs for the same issue (#115/#119,
 #116/#118, #121/#123), five PRs superseded by a bot run porting units another
-agent had announced, and a PR merged into a `grind/*` branch instead of
+agent had announced, and a PR merged into a feature branch instead of
 master (#68). Read [testing-policy.md](testing-policy.md) for *how* to port;
 this document covers *who does what, and when*.
 
@@ -13,8 +13,7 @@ this document covers *who does what, and when*.
 1. Search for existing work:
    - open PRs: `gh pr list --repo obs-rust/obs-studio --search "<unit or topic>"`
    - the issue and its comments, including claim comments
-   - the tracking issue's checklist (#4 lists the trackers) and the latest
-     `grind:v1` status comment on #4
+   - the tracking issue's checklist (#4 lists the trackers)
 2. If someone has claimed it and the claim is fresh (see 3), pick something
    else, or comment offering help. Do not open a parallel PR.
 3. If there is no issue yet, file one first (section 5) and claim it.
@@ -23,17 +22,41 @@ this document covers *who does what, and when*.
 
 - Comment on the issue: `Claiming: <item>` followed by a short numbered plan
   (one PR per C file or unit) and when you expect to open the first PR.
-- Add the `claimed` label (or ask a maintainer to). The grind bot skips issues
-  and checklist items that are claimed or have an open PR.
+- The claim bot (`.github/workflows/claim-bot.yaml`) then adds the `claimed`
+  label and reacts 🚀 to your comment; you don't need label rights. It is
+  silent unless it refuses: a claim on an issue someone else holds, a
+  takeover of a claim that isn't stale, or a `/reassign` from a
+  non-maintainer gets a reply that mentions you. Automated runs skip issues
+  and checklist items that are claimed or have an open PR; a fresh
+  `Claiming:` comment counts even if the label is missing.
 - On a tracking issue, claim one checklist item, not the whole issue.
-- Keep at most two claims open at a time.
+- Claim only what you are working on now. There is no per-account limit
+  (several agents may share one account); stale claims expire (section 3).
+- **Feature issues with open questions:** answer each open question in the
+  claim comment under **Decisions:** (the default you will build and why),
+  and order the PRs so the first one does not depend on an unresolved
+  answer. A question with no safe default is posted as **Decision needed:**
+  on the issue, and the work that depends on it waits for an answer.
 
 ## 3. Keeping or releasing a claim
 
-- A claim expires after **48 hours** without a PR or a progress comment. Anyone
-  may then take the item after commenting `Taking over stale claim from @x`.
-- To stop, comment `Releasing <item>`, link any partial branch, and remove the
-  `claimed` label.
+- A claim goes stale after a period with no progress: no comment from the
+  claimant on the issue, and no commit, comment or review on an open PR they
+  opened that references it (a draft counts).
+
+  | Issue | Stale after |
+  |---|---|
+  | normal | **48 hours** |
+  | labeled `critical` (crash, data loss, broken release or CI-blocking; maintainers set it) | **8 hours** |
+
+  The hourly sweep then removes the label, without a comment. Anyone may take
+  a stale claim by commenting `Taking over stale claim from @x`; the bot
+  accepts it (🚀) only if the claim is stale. Commits on the old draft PR stay
+  available: carry them over with `Co-Authored-By` (section 6).
+- Maintainers (owner, member, collaborator) can move any claim with
+  `/reassign @user`. The bot leaves issues labeled `claim-locked` alone.
+- To stop, comment `Releasing <item>` and link any partial branch; the bot
+  removes the label (🚀).
 
 ## 4. Pull requests
 
@@ -74,6 +97,11 @@ this document covers *who does what, and when*.
   first-time contributors"). Once a PR of yours has merged, later fork PRs
   start CI as soon as they are opened. On a first PR, a maintainer approves
   the run; ping one in the PR if it waits more than a few hours.
+- **User-facing features need one real run.** A change to UI, protocol
+  output or logging is not complete until the real app has run once with it
+  (its Tier 4 test, or by hand), and the PR shows the observed output. #846
+  closed with every test green while the light it added called llvmpipe
+  green (#929). Without such a run, use `Refs #N`.
 - `Fixes #N` only when the PR completes the issue; otherwise `Refs #N`, and
   tick the tracking-issue checkbox when it merges.
 - **Draft status:** mark the PR ready when it is ready. If you move a PR back
@@ -121,10 +149,11 @@ this document covers *who does what, and when*.
 `master` blocks force pushes and deletion, including for administrators.
 
 Every change reaches master through GitHub's merge queue (ruleset "master
-merge queue (#692)", squash merges, no bypass). Queue a green PR with
-`gh pr merge <N>`; never `gh pr merge --admin` and never push to master.
+merge queue (#692)", squash merges). Queue a green PR with
+`gh pr merge <N>`. Agents and contributors never use `gh pr merge --admin`
+and never push to master.
 The queue reruns PR CI on the merge result with current master, and the one
-required check is `CI Gate ✅` (`pr-pull.yaml`). That job always reports: it
+required check is `CI Gate ✅` (`ci.yml`). That job always reports: it
 passes when every other job passed or was skipped (out of scope, attested by
 the local gate on the PR, or covered by a lane proof) and fails when any job
 failed or was cancelled.
@@ -136,9 +165,25 @@ from 11 administrator merges that bypassed the queue: each moved master under
 it and rebuilt every queued group (up to 5 runs for one PR, about 65 minutes
 from queueing to merge against a 16-minute run). Requiring branches to be up
 to date instead would make every agent rebase and rerun CI after every merge,
-which gets slower with each agent added. So nothing bypasses the queue, and
-lane proofs (docs/ci-tooling.md) let a rebuilt group skip the lanes whose
+which gets slower with each agent added. So the queue is the normal path,
+and lane proofs (docs/ci-tooling.md) let a rebuilt group skip the lanes whose
 inputs did not change.
+
+**Maintainer bypass.** The ruleset lets the repository admin role bypass it
+for pull requests only (`gh pr merge <N> --admin --squash`; direct pushes
+stay blocked). It is for a maintainer landing a small, low-risk PR (docs, a
+bot or CI tweak) that should not wait for a CI run. It skips CI, and it moves
+master under every queued group, which then rebuilds. So bypass only when
+the queue is empty (`gh pr list --search "is:queued"` shows nothing);
+otherwise queue the PR and, if it must go first, jump it to the front,
+keeping CI (#930 E2):
+`gh api graphql -f query='mutation{enqueuePullRequest(input:{pullRequestId:"<node id>",jump:true}){mergeQueueEntry{position}}}'`
+(the PR's own `CI Gate ✅` must already be green; GitHub refuses a PR whose
+checks are pending or failing).
+
+Each queue run's `CI Gate ✅` job summary shows its wall time, runner time
+and attempt number (`ci/queue_report.py`); an attempt 2 or later is a
+rebuild. If rebuilds after bypasses show up there, tighten this rule.
 
 In an emergency an administrator may set the ruleset's enforcement to
 "disabled", land the fix, and enable it again, saying so in the PR.
@@ -146,5 +191,5 @@ In an emergency an administrator may set the ruleset's enforcement to
 Do not require linear history while the project uses merge commits for PRs.
 Review this policy again if direct pushes are retired or the gate's CI
 reporting changes. Every PR still targets `master` as section 4 requires;
-GitHub branch protection cannot prevent an author from choosing a `grind/*`
+GitHub branch protection cannot prevent an author from choosing another
 base, so check the base before merging.

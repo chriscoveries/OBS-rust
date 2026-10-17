@@ -7,9 +7,9 @@ if(TARGET OBS::outputs)
   add_executable(
     test_mp4_mux_multichannel
     test_mp4_mux_multichannel.c
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/mp4-mux.c"
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/rtmp-av1.c"
-    $<$<BOOL:${ENABLE_HEVC}>:${CMAKE_SOURCE_DIR}/plugins/obs-outputs/rtmp-hevc.c>
+    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/mp4-mux.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/rtmp-av1.c.h"
+    $<$<BOOL:${ENABLE_HEVC}>:${CMAKE_SOURCE_DIR}/plugins/obs-outputs/rtmp-hevc.c.h>
   )
   target_include_directories(
     test_mp4_mux_multichannel

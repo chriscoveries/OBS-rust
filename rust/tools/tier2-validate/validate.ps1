@@ -1,7 +1,8 @@
-# Tier 2 validation (docs/rust-port/testing-policy.md) on Windows. Builds libobs
-# and the cmocka tests with ENABLE_RUST_LIBOBS=OFF and =ON, runs the unchanged
-# C tests in both, and fails unless both builds export exactly the same
-# symbols from obs.dll. Mirrors rust/tools/linux-validate/validate.sh.
+# Tier 2 validation (docs/rust-port/testing-policy.md) on Windows. One build
+# makes the cmocka tests and both obs.dll files, libobs (C) and
+# libobs-with-rust (#1065); it runs the unchanged C tests against each and
+# fails unless both export exactly the same symbols. Mirrors
+# rust/tools/linux-validate/validate.sh.
 #
 # Prerequisites: cmake, Visual Studio, and cmocka (vcpkg install
 # cmocka:x64-windows). The windows-ci-x64 preset downloads the pre-built
@@ -69,36 +70,69 @@ function Find-Dumpbin {
   return $found
 }
 
+function Get-Exports($dll) {
+  $dumpbin = Find-Dumpbin
+  $out = & $dumpbin /exports $dll.FullName
+  if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
+  # Export rows: ordinal, hint, RVA, name (optionally followed by "= ...").
+  $names = $out |
+    ForEach-Object { if ($_ -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]{8}\s+(\S+)') { $Matches[1] } } |
+    Sort-Object
+  if (-not $names) { throw "no exports parsed from $($dll.FullName)" }
+  return $names
+}
+
+$build = 'build_rust'
+Write-Host '== configure + build (libobs and libobs-with-rust)'
+cmake --preset windows-ci-x64 -B $build `
+  -DENABLE_UNIT_TESTS=ON `
+  -DENABLE_FRONTEND=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF `
+  -DENABLE_WEBSOCKET=OFF `
+  "-DCMAKE_PREFIX_PATH=$CMockaPrefix"
+if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }
+
+cmake --build $build --config RelWithDebInfo `
+  --target libobs libobs-with-rust cmocka-tests
+if ($LASTEXITCODE -ne 0) { throw "cmake build failed ($LASTEXITCODE)" }
+
+# obs.dll twice: libobs (C, what the tests link) and its Rust twin in
+# $build/libobs-with-rust (#1065), same name.
+$rustDir = (Resolve-Path (Join-Path $build 'libobs-with-rust')).Path
+$cDll = Get-ChildItem -Path $build -Recurse -Filter obs.dll |
+  Where-Object { $_.FullName -match 'libobs' -and -not $_.FullName.StartsWith($rustDir) } | Select-Object -First 1
+$rustDll = Get-ChildItem -Path $rustDir -Recurse -Filter obs.dll | Select-Object -First 1
+if (-not $cDll) { throw "obs.dll (C) not found under $build" }
+if (-not $rustDll) { throw "obs.dll (with Rust) not found under $rustDir" }
+
+Write-Host '== libobs exported symbols, C vs Rust'
+$off = Get-Exports $cDll
+$on = Get-Exports $rustDll
+$off | Set-Content exports-OFF.txt
+$on | Set-Content exports-ON.txt
+$diff = Compare-Object $off $on
+if ($diff) {
+  $diff | Format-Table | Out-String | Write-Host
+  throw 'FAIL: exported symbols differ between libobs and libobs-with-rust'
+}
+Write-Host "IDENTICAL ($($on.Count) symbols)"
+
+# The test executables sit apart from obs.dll and its runtime DLLs
+# (w32-pthreads, pre-built obs-deps FFmpeg), so PATH decides which obs.dll
+# they load. A copy beside a test would win over PATH and hide the Rust one.
+$besideTests = Get-ChildItem -Path (Join-Path $build 'test') -Recurse -Filter obs.dll -ErrorAction SilentlyContinue
+if ($besideTests) { throw "obs.dll next to the tests would shadow PATH: $($besideTests.FullName -join ', ')" }
+$pthreads = Get-ChildItem -Path $build -Recurse -Filter w32-pthreads.dll | Select-Object -First 1
+if (-not $pthreads) { throw "w32-pthreads.dll not found under $build" }
+$avcodec = Get-ChildItem -Path (Join-Path $RepoRoot '.deps') -Recurse -Filter 'avcodec-*.dll' |
+  Select-Object -First 1
+if (-not $avcodec) { throw 'obs-deps avcodec DLL not found under .deps' }
+
 foreach ($mode in 'OFF', 'ON') {
-  $build = "build_rust_$mode"
-  Write-Host "== [$mode] configure + build"
-  cmake --preset windows-ci-x64 -B $build `
-    -DENABLE_UNIT_TESTS=ON `
-    "-DENABLE_RUST_LIBOBS=$mode" `
-    -DENABLE_FRONTEND=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF `
-    -DENABLE_WEBSOCKET=OFF `
-    "-DCMAKE_PREFIX_PATH=$CMockaPrefix"
-  if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }
-
-  cmake --build $build --config RelWithDebInfo `
-    --target libobs cmocka-tests
-  if ($LASTEXITCODE -ne 0) { throw "cmake build failed ($LASTEXITCODE)" }
-
-  $dll = Get-ChildItem -Path $build -Recurse -Filter obs.dll |
-    Where-Object { $_.FullName -match 'libobs' } | Select-Object -First 1
-  if (-not $dll) { throw "obs.dll not found under $build" }
-
-  # The test executables sit apart from obs.dll and its runtime DLLs
-  # (w32-pthreads, pre-built obs-deps FFmpeg), so put those on PATH.
-  $pthreads = Get-ChildItem -Path $build -Recurse -Filter w32-pthreads.dll | Select-Object -First 1
-  if (-not $pthreads) { throw "w32-pthreads.dll not found under $build" }
-  $avcodec = Get-ChildItem -Path (Join-Path $RepoRoot '.deps') -Recurse -Filter 'avcodec-*.dll' |
-    Select-Object -First 1
-  if (-not $avcodec) { throw 'obs-deps avcodec DLL not found under .deps' }
+  $dll = if ($mode -eq 'ON') { $rustDll } else { $cDll }
   $savedPath = $env:PATH
   $env:PATH = "$($dll.DirectoryName);$($pthreads.DirectoryName);$($avcodec.DirectoryName);$env:PATH"
 
-  Write-Host "== [$mode] ctest"
+  Write-Host "== [$mode] ctest against $($dll.FullName)"
   ctest --test-dir $build -C RelWithDebInfo --output-on-failure
   $ctestExit = $LASTEXITCODE
 
@@ -113,25 +147,4 @@ foreach ($mode in 'OFF', 'ON') {
   if ($ctestExit -ne 0) { Show-CrashStacks $build }
   $env:PATH = $savedPath
   if ($ctestExit -ne 0) { throw "ctest failed ($ctestExit)" }
-
-  $dumpbin = Find-Dumpbin
-  $out = & $dumpbin /exports $dll.FullName
-  if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
-
-  # Export rows: ordinal, hint, RVA, name (optionally followed by "= ...").
-  $names = $out |
-    ForEach-Object { if ($_ -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]{8}\s+(\S+)') { $Matches[1] } } |
-    Sort-Object
-  if (-not $names) { throw "no exports parsed from $($dll.FullName)" }
-  $names | Set-Content "exports-$mode.txt"
 }
-
-Write-Host '== libobs exported symbols, OFF vs ON'
-$off = Get-Content exports-OFF.txt
-$on = Get-Content exports-ON.txt
-$diff = Compare-Object $off $on
-if ($diff) {
-  $diff | Format-Table | Out-String | Write-Host
-  throw 'FAIL: exported symbols differ between OFF and ON'
-}
-Write-Host "IDENTICAL ($($on.Count) symbols)"

@@ -1,0 +1,257 @@
+//! What the status light and its dialog show, and what obs-websocket's
+//! `GetStats` returns as `gpuAcceleration` (obs-rust/obs-studio#846).
+
+use std::fmt::Write as _;
+
+use crate::{FrameStats, GpuDevice, State, Vendor, classify};
+
+/// The classified state plus the plain-words text the dialog shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    pub state: State,
+    /// The active adapter, `None` when graphics initialization failed.
+    pub adapter: Option<String>,
+    pub devices: Vec<GpuDevice>,
+    /// One or two sentences: what is happening and what it means.
+    pub summary: String,
+    /// Likely causes to check, empty when there is nothing to fix.
+    pub causes: Vec<String>,
+    /// OBS log lines that explain the state (#944).
+    pub log_lines: Vec<String>,
+    /// Locale key of `summary` (frontend/data/locale), filled with
+    /// `summary_args` as %1, %2, ... (#945).
+    pub summary_key: &'static str,
+    pub summary_args: Vec<String>,
+    /// Locale keys of `causes`, in order.
+    pub cause_keys: Vec<&'static str>,
+}
+
+/// Locale keys of [`SOFTWARE_CAUSES`], in the same order (#945).
+const SOFTWARE_CAUSE_KEYS: [&str; 3] = [
+    "Basic.StatusBar.GpuStatus.Cause.Sandbox",
+    "Basic.StatusBar.GpuStatus.Cause.Driver",
+    "Basic.StatusBar.GpuStatus.Cause.RenderNode",
+];
+
+const SOFTWARE_CAUSES: [&str; 3] = [
+    "OBS runs in a sandbox or container (Flatpak, AppImage, a Nix FHS wrapper) \
+     that is missing the vendor's EGL/GLX libraries or the egl-wayland \
+     external platform config (__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS).",
+    "The GPU driver is missing, or its user-space libraries do not match the \
+     loaded kernel driver.",
+    "The /dev/dri render node is missing or not accessible to OBS \
+     (log: \"Unable to open DRM render node.\").",
+];
+
+impl Report {
+    pub fn new(adapter: Option<&str>, devices: Vec<GpuDevice>, frames: Option<FrameStats>) -> Self {
+        let state = classify(adapter, &devices, frames);
+        let mut causes = Vec::new();
+        let mut cause_keys = Vec::new();
+        let (summary_key, summary_args): (&'static str, Vec<String>);
+        let summary = match adapter {
+            None => {
+                (summary_key, summary_args) =
+                    ("Basic.StatusBar.GpuStatus.Summary.InitFailed", vec![]);
+                "Graphics initialization failed, so OBS cannot render video. \
+                 Check the log for the graphics error."
+                    .to_owned()
+            }
+            Some(a) if frames.is_some_and(|f| f.median_frame_ns > f.interval_ns) => {
+                let f = frames.unwrap_or(FrameStats {
+                    median_frame_ns: 0,
+                    interval_ns: 0,
+                });
+                let (frame, budget) = (
+                    format!("{:.1}", ms(f.median_frame_ns)),
+                    format!("{:.1}", ms(f.interval_ns)),
+                );
+                (summary_key, summary_args) = (
+                    "Basic.StatusBar.GpuStatus.Summary.OverBudget",
+                    vec![frame.clone(), budget.clone(), a.to_owned()],
+                );
+                format!(
+                    "Frames take {frame} ms to render against a {budget} ms budget on {a}; expect choppy video."
+                )
+            }
+            Some(a) => match state {
+                State::Green => {
+                    (summary_key, summary_args) = (
+                        "Basic.StatusBar.GpuStatus.Summary.Green",
+                        vec![a.to_owned()],
+                    );
+                    format!("Rendering on {a}.")
+                }
+                // Software rendering: the text follows the situation (a GPU
+                // OBS can't use, or no GPU at all), the color follows #1005.
+                _ if !devices.is_empty() => {
+                    causes = SOFTWARE_CAUSES.iter().map(|c| (*c).to_owned()).collect();
+                    cause_keys = SOFTWARE_CAUSE_KEYS.to_vec();
+                    let gpu = devices
+                        .iter()
+                        .find_map(|d| d.name.clone())
+                        .unwrap_or_else(|| devices[0].vendor.display().to_owned());
+                    (summary_key, summary_args) = (
+                        "Basic.StatusBar.GpuStatus.Summary.Unused",
+                        vec![gpu.clone(), a.to_owned()],
+                    );
+                    format!(
+                        "Your GPU ({gpu}) was detected, but OBS is not using its driver. \
+                         Rendering on the CPU ({a}); expect choppy video."
+                    )
+                }
+                _ => {
+                    causes = SOFTWARE_CAUSES[1..]
+                        .iter()
+                        .map(|c| (*c).to_owned())
+                        .collect();
+                    cause_keys = SOFTWARE_CAUSE_KEYS[1..].to_vec();
+                    (summary_key, summary_args) = (
+                        "Basic.StatusBar.GpuStatus.Summary.NoGpu",
+                        vec![a.to_owned()],
+                    );
+                    format!(
+                        "No GPU was detected and OBS is rendering on the CPU ({a}); \
+                         expect choppy video."
+                    )
+                }
+            },
+        };
+        Self {
+            state,
+            adapter: adapter.map(str::to_owned),
+            devices,
+            summary,
+            causes,
+            log_lines: Vec::new(),
+            summary_key,
+            summary_args,
+            cause_keys,
+        }
+    }
+
+    /// Attach the log lines that explain the state ([`crate::LogCapture`]).
+    pub fn with_log_lines(self, log_lines: Vec<String>) -> Self {
+        Self { log_lines, ..self }
+    }
+
+    /// The `gpuAcceleration` JSON object:
+    /// `{"state","adapter","detectedGpus":[{"vendor","deviceId","name","renderNode"}],"summary","causes"}`.
+    pub fn to_json(&self) -> String {
+        let mut j = String::from("{\"state\":");
+        string(&mut j, Some(self.state.as_str()));
+        j.push_str(",\"adapter\":");
+        string(&mut j, self.adapter.as_deref());
+        let _ = write!(
+            j,
+            ",\"adapterIsApiName\":{}",
+            self.adapter
+                .as_deref()
+                .is_some_and(crate::is_graphics_api_name)
+        );
+        j.push_str(",\"detectedGpus\":[");
+        for (i, d) in self.devices.iter().enumerate() {
+            if i > 0 {
+                j.push(',');
+            }
+            j.push_str("{\"vendor\":");
+            string(&mut j, Some(d.vendor.as_str()));
+            j.push_str(",\"deviceId\":");
+            string(&mut j, d.device_id.as_deref());
+            j.push_str(",\"name\":");
+            string(&mut j, d.name.as_deref());
+            let _ = write!(j, ",\"renderNode\":{}}}", d.render_node);
+        }
+        j.push_str("],\"summary\":");
+        string(&mut j, Some(&self.summary));
+        j.push_str(",\"causes\":[");
+        for (i, c) in self.causes.iter().enumerate() {
+            if i > 0 {
+                j.push(',');
+            }
+            string(&mut j, Some(c));
+        }
+        j.push_str("],\"summaryKey\":");
+        string(&mut j, Some(self.summary_key));
+        j.push_str(",\"summaryArgs\":[");
+        for (i, a) in self.summary_args.iter().enumerate() {
+            if i > 0 {
+                j.push(',');
+            }
+            string(&mut j, Some(a));
+        }
+        j.push_str("],\"causeKeys\":[");
+        for (i, k) in self.cause_keys.iter().enumerate() {
+            if i > 0 {
+                j.push(',');
+            }
+            string(&mut j, Some(k));
+        }
+        j.push_str("],\"logLines\":[");
+        for (i, line) in self.log_lines.iter().enumerate() {
+            if i > 0 {
+                j.push(',');
+            }
+            string(&mut j, Some(line));
+        }
+        j.push_str("]}");
+        j
+    }
+}
+
+fn ms(ns: u64) -> f64 {
+    ns as f64 / 1_000_000.0
+}
+
+/// Append `s` as a JSON string, or `null`.
+fn string(out: &mut String, s: Option<&str>) {
+    let Some(s) = s else {
+        out.push_str("null");
+        return;
+    };
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < ' ' => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+impl State {
+    /// `"green"`, `"yellow"` or `"red"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Green => "green",
+            Self::Yellow => "yellow",
+            Self::Red => "red",
+        }
+    }
+}
+
+impl Vendor {
+    /// `"nvidia"`, `"amd"` or `"intel"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nvidia => "nvidia",
+            Self::Amd => "amd",
+            Self::Intel => "intel",
+        }
+    }
+
+    fn display(self) -> &'static str {
+        match self {
+            Self::Nvidia => "NVIDIA",
+            Self::Amd => "AMD",
+            Self::Intel => "Intel",
+        }
+    }
+}

@@ -3,7 +3,7 @@ if(OS_LINUX OR OS_FREEBSD OR OS_OPENBSD)
   add_executable(
     test_vaapi_device_select
     test_vaapi_device_select.c
-    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/vaapi-device-select.c"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/vaapi-device-select.c.h"
   )
   target_include_directories(
     test_vaapi_device_select

@@ -47,7 +47,7 @@
 #define video_output_create_with_frame_rate_divisor oracle_video_output_create_with_frame_rate_divisor
 #define video_output_free_frame_rate_divisor oracle_video_output_free_frame_rate_divisor
 
-#include "media-io/video-io.c"
+#include "media-io/video-io.c.h"
 
 #undef profile_start
 #undef profile_end

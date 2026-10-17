@@ -566,7 +566,7 @@ static bool content_settings_changed(void *data, obs_properties_t *props, obs_pr
 }
 
 API_AVAILABLE(macos(12.5))
-static bool reactivate_capture(obs_properties_t *props __unused, obs_property_t *property, void *data)
+static bool sck_video_reactivate_capture(obs_properties_t *props __unused, obs_property_t *property, void *data)
 {
     struct screen_capture *sc = data;
     if (!sc->capture_failed) {
@@ -614,8 +614,8 @@ API_AVAILABLE(macos(12.5)) static obs_properties_t *sck_video_capture_properties
     obs_properties_add_bool(props, "show_cursor", obs_module_text("DisplayCapture.ShowCursor"));
 
     obs_property_t *hide_obs = obs_properties_add_bool(props, "hide_obs", obs_module_text("DisplayCapture.HideOBS"));
-    obs_property_t *reactivate =
-        obs_properties_add_button2(props, "reactivate_capture", obs_module_text("SCK.Restart"), reactivate_capture, sc);
+    obs_property_t *reactivate = obs_properties_add_button2(props, "reactivate_capture", obs_module_text("SCK.Restart"),
+                                                            sck_video_reactivate_capture, sc);
     obs_property_set_enabled(reactivate, sc->capture_failed);
 
     if (sc) {

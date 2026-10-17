@@ -19,6 +19,10 @@
 
 #include <OBSApp.hpp>
 
+#include <QApplication>
+#include <QIcon>
+
+#include <util/dstr.h>
 #include <util/windows/ComPtr.hpp>
 #include <util/windows/WinHandle.hpp>
 #include <util/windows/win-version.h>
@@ -465,6 +469,12 @@ void TaskbarOverlaySetStatus(TaskbarOverlayStatus status)
 	taskbarIcon->Release();
 }
 
+void *GetGlGetStringProc()
+{
+	HMODULE gl = GetModuleHandleW(L"opengl32.dll");
+	return gl ? reinterpret_cast<void *>(GetProcAddress(gl, "glGetString")) : nullptr;
+}
+
 bool HighContrastEnabled()
 {
 	HIGHCONTRAST hc = {};
@@ -475,4 +485,111 @@ bool HighContrastEnabled()
 	}
 
 	return false;
+}
+
+/* OBSApp platform facade (#849) */
+
+// GPU hint exports for AMD/NVIDIA laptops
+#ifdef _MSC_VER
+extern "C" __declspec(dllexport) DWORD NvOptimusEnablement = 1;
+extern "C" __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+#endif
+
+void InitPlatformConfigDefaults(config_t *appConfig)
+{
+	config_set_default_string(appConfig, "Video", "Renderer", "Direct3D 11");
+	config_set_default_bool(appConfig, "Audio", "DisableAudioDucking", true);
+	config_set_default_bool(appConfig, "General", "BrowserHWAccel", true);
+}
+
+void ApplyPlatformAppSettings(config_t *appConfig)
+{
+	bool disableAudioDucking = config_get_bool(appConfig, "Audio", "DisableAudioDucking");
+	if (disableAudioDucking) {
+		DisableAudioDucking(true);
+	}
+}
+
+void RevertPlatformAppSettings(config_t *appConfig)
+{
+	bool disableAudioDucking = config_get_bool(appConfig, "Audio", "DisableAudioDucking");
+	if (disableAudioDucking) {
+		DisableAudioDucking(false);
+	}
+}
+
+void LogPlatformSettings(config_t *userConfig)
+{
+	bool hideFromCapture = config_get_bool(userConfig, "BasicWindow", "HideOBSWindowsFromCapture");
+	blog(LOG_INFO, "Hide OBS windows from screen capture: %s", hideFromCapture ? "true" : "false");
+}
+
+bool PlatformSupportsBrowserHWAccel()
+{
+	return true;
+}
+
+std::vector<std::string> GetPlatformExtraConfigDirs()
+{
+	return {"obs-studio/crashes"};
+}
+
+void SetApplicationIcon()
+{
+	QApplication::setWindowIcon(QIcon::fromTheme("obs", QIcon(":/res/images/obs.png")));
+}
+
+void InitPlatformDisplay() {}
+
+bool GetPlatformHotkeyOverride(int, obs_key_t &, bool &)
+{
+	return false;
+}
+
+void PlatformLocalTime(const time_t *now, struct tm *out)
+{
+	localtime_s(out, now);
+}
+
+const char *GetPlatformRenderModule(const char *renderer)
+{
+	return (astrcmpi(renderer, "Direct3D 11") == 0) ? DL_D3D11 : DL_OPENGL;
+}
+
+std::string GetPlatformVersionName()
+{
+	if (sizeof(void *) == 8) {
+		return "64-bit, windows";
+	}
+	return "32-bit, windows";
+}
+
+const char *GetPlatformInputAudioSource()
+{
+	return "wasapi_input_capture";
+}
+
+const char *GetPlatformOutputAudioSource()
+{
+	return "wasapi_output_capture";
+}
+
+bool IsPortableModeAllowed()
+{
+	return true;
+}
+
+const char *GetPortableConfigBasePath()
+{
+	return "../..";
+}
+
+bool IsUpdateBranchSupported(bool windows, bool)
+{
+	return windows;
+}
+
+bool PlatformSavesBeforeSignalQuit()
+{
+	return true;
 }

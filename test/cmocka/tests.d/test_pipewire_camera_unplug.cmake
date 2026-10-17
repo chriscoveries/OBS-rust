@@ -15,13 +15,13 @@ if(OS_LINUX AND TARGET OBS::pipewire AND PipeWire_FOUND)
   add_executable(
     test_pipewire_camera_unplug
     test_pipewire_camera_unplug.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/camera-portal.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/camera-portal.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c.h"
   )
   target_include_directories(
     test_pipewire_camera_unplug

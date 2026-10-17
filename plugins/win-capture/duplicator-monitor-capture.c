@@ -247,8 +247,8 @@ static void log_settings(struct duplicator_capture *capture, const char *monitor
 	     capture->id, capture->alt_id, capture->monitor_id, capture->force_sdr ? "true" : "false");
 }
 
-static enum display_capture_method choose_method(enum display_capture_method method, bool wgc_supported,
-						 HMONITOR monitor)
+static enum display_capture_method duplicator_choose_method(enum display_capture_method method, bool wgc_supported,
+							    HMONITOR monitor)
 {
 	if (!wgc_supported)
 		method = METHOD_DXGI;
@@ -291,13 +291,14 @@ static struct duplicator_monitor_info find_monitor(const char *monitor_id)
 	return monitor;
 }
 
-static inline void update_settings(struct duplicator_capture *capture, obs_data_t *settings)
+static inline void duplicator_update_settings(struct duplicator_capture *capture, obs_data_t *settings)
 {
 	pthread_mutex_lock(&capture->update_mutex);
 
 	struct duplicator_monitor_info monitor = find_monitor(obs_data_get_string(settings, "monitor_id"));
 
-	capture->method = choose_method((int)obs_data_get_int(settings, "method"), wgc_supported, monitor.handle);
+	capture->method =
+		duplicator_choose_method((int)obs_data_get_int(settings, "method"), wgc_supported, monitor.handle);
 
 	strcpy_s(capture->monitor_id, _countof(capture->monitor_id), monitor.device_id);
 	strcpy_s(capture->id, _countof(capture->id), monitor.id);
@@ -385,7 +386,7 @@ static void duplicator_capture_defaults(obs_data_t *settings)
 static void duplicator_capture_update(void *data, obs_data_t *settings)
 {
 	struct duplicator_capture *mc = data;
-	update_settings(mc, settings);
+	duplicator_update_settings(mc, settings);
 	log_settings(mc, mc->monitor_name, mc->logged_width, mc->logged_height);
 
 	mc->reset_wgc = true;
@@ -439,7 +440,7 @@ static void *duplicator_capture_create(obs_data_t *settings, obs_source_t *sourc
 		}
 	}
 
-	update_settings(capture, settings);
+	duplicator_update_settings(capture, settings);
 	log_settings(capture, capture->monitor_name, capture->logged_width, capture->logged_height);
 
 	return capture;
@@ -615,7 +616,7 @@ static uint32_t duplicator_capture_height(void *data)
 					       : (capture->rot % 180 == 0 ? capture->height : capture->width);
 }
 
-static void draw_cursor(struct duplicator_capture *capture)
+static void duplicator_draw_cursor(struct duplicator_capture *capture)
 {
 	cursor_draw(&capture->cursor_data, -capture->x, -capture->y,
 		    capture->rot % 180 == 0 ? capture->width : capture->height,
@@ -718,7 +719,7 @@ static void duplicator_capture_render(void *data, gs_effect_t *unused)
 			gs_effect_t *const default_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 
 			while (gs_effect_loop(default_effect, "Draw")) {
-				draw_cursor(capture);
+				duplicator_draw_cursor(capture);
 			}
 		}
 	}
@@ -785,7 +786,7 @@ static bool display_capture_method_changed(obs_properties_t *props, obs_property
 	if (!capture)
 		return false;
 
-	update_settings(capture, settings);
+	duplicator_update_settings(capture, settings);
 
 	update_settings_visibility(props, capture);
 
@@ -865,3 +866,9 @@ struct obs_source_info duplicator_capture_info = {
 	.icon_type = OBS_ICON_TYPE_DESKTOP_CAPTURE,
 	.video_get_color_space = duplicator_capture_get_color_space,
 };
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef TEXT_METHOD
+#undef TEXT_METHOD_WGC
+#undef do_log
+#undef warn

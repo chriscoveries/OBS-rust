@@ -13,14 +13,14 @@ Lanes:
   lint         clang-format 22.1.3 and gersemi 0.25.0 over the same files as
                build-aux/run-clang-format and run-gersemi, plus rustfmt,
                clippy -D warnings and the repo Dylints (dylints/*). Formatters are pinned through uvx, so no
-               brew/zsh install is needed.
+               brew/zsh install is needed. Also ci/platform_ifdef_ratchet.py (#847).
   rust-test    soldr cargo test --workspace --locked (Tiers 1-3), plus a
                --no-run build of the tests for x86_64-pc-windows-gnu.
 
 Cargo runs with SOLDR_RUSTC_WRAPPER=none (soldr's zccache has replayed stale
 rustc output; #134). Set OBS_GATE_ZCCACHE=1 to keep the cache locally.
   tier2-linux  rust/tools/linux-validate/run.sh: libobs + cmocka with
-               ENABLE_RUST_LIBOBS OFF and ON in Docker, exported-symbol diff.
+               libobs and libobs-with-rust in Docker, exported-symbol diff.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import re
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -136,9 +136,78 @@ def toolchain_gcc_ld() -> str:
     return os.path.join(sysroot, "lib", "rustlib", host, "bin", "gcc-ld")
 
 
+# ci/ tests that need soldr on PATH (they skip without it).
+SOLDR_SELF_TESTS = "test_local_gate_probe.py"
+
+SELF_TEST_MAX_WORKERS = 8
+SELF_TEST_TIMEOUT = 600
+
+
+def self_test_workers() -> int:
+    """CPUs this process may use (cgroup and affinity aware), at most 8."""
+    usable = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+    return max(1, min(SELF_TEST_MAX_WORKERS, usable))
+
+
 def self_test() -> None:
-    """The gate's and the repo layout's unit tests: every ci/test_*.py."""
-    run([sys.executable, "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py"])
+    """The gate's and the repo layout's unit tests: every ci/test_*.py.
+
+    CI runs them in the Checks job (check-format.yaml) and sets
+    OBS_GATE_SKIP_SELF_TEST=1 for the lint step on the scarce ubuntu-26.04
+    runner (#427); locally they always run.
+
+    One process per file, run in parallel: run serially they took about
+    164 s of ./lint (#949). Each file's result prints as it finishes;
+    failures are repeated with their full output at the end.
+    """
+    if os.environ.get("OBS_GATE_SKIP_SELF_TEST") == "1":
+        # Only the tests that need this runner's soldr; the rest run in ci-self-test.
+        print("+ ci/ self-tests: soldr-dependent only (OBS_GATE_SKIP_SELF_TEST=1; the Checks job runs the rest)", flush=True)
+        run([sys.executable, "-m", "unittest", "discover", "-s", "ci", "-p", SOLDR_SELF_TESTS])
+        return
+    files = sorted((ROOT / "ci").glob("test_*.py"))
+
+    def one(path: Path) -> tuple[str, int, str, float]:
+        start = time.monotonic()
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "unittest", "discover", "-s", "ci", "-p", path.name],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=SELF_TEST_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as e:
+            output = (e.stdout or "") + (e.stderr or "")
+            if isinstance(output, bytes):
+                output = output.decode(errors="replace")
+            return path.name, 1, f"{output}\ntimed out after {SELF_TEST_TIMEOUT} s", time.monotonic() - start
+        # 5: the file has no tests (as the old single discover allowed).
+        code = 0 if result.returncode == 5 else result.returncode
+        return path.name, code, result.stdout + result.stderr, time.monotonic() - start
+
+    workers = self_test_workers()
+    print(f"+ unittest: {len(files)} ci/test_*.py files, {workers} at a time", flush=True)
+    failed = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in as_completed([pool.submit(one, path) for path in files]):
+            name, code, output, secs = future.result()
+            print(f"  {'ok  ' if code == 0 else 'FAIL'} {secs:6.1f}s {name}", flush=True)
+            if code:
+                failed.append((name, output))
+    for name, output in failed:
+        print(f"==== {name}", flush=True)
+        print(output, flush=True)
+        for hint in hints_for(output):
+            print(hint, flush=True)
+    if failed:
+        raise subprocess.CalledProcessError(1, ["unittest", *(name for name, _ in failed)])
+
+
+def platform_ifdef_ratchet() -> None:
+    """Shared C/C++ gains no platform conditionals (#847); see ci/platform_ifdef_ratchet.py."""
+    run([sys.executable, "ci/platform_ifdef_ratchet.py"])
 
 
 def tracked_files() -> list[str]:
@@ -205,11 +274,64 @@ def gersemi(files: list[str], fix: bool) -> None:
     subprocess.run([exe, "-i" if fix else "-c", "--no-cache", *sources], cwd=ROOT, check=True)
 
 
+# A change to these can reformat files the change did not touch.
+FORMAT_CONFIG_NAMES = (".clang-format", ".gersemirc")
+FORMAT_CONFIG_PATHS = ("ci/local_gate.py",)  # pins CLANG_FORMAT and GERSEMI
+
+
+def format_scope(files: list[str], changed: list[str] | None, ci: bool) -> list[str]:
+    """Files clang-format and gersemi check (#1050).
+
+    CI checks every file: on a PR this lane is the only format check. Locally
+    only the files changed since origin/master: the rest is already formatted
+    on master, where every push checks every file. Every file again when the
+    changes are unknown or touch the formatter configuration.
+    """
+    if ci or changed is None:
+        return files
+    if any(Path(c).name in FORMAT_CONFIG_NAMES or c in FORMAT_CONFIG_PATHS for c in changed):
+        return files
+    wanted = set(changed)
+    return [f for f in files if f in wanted]
+
+
+def changed_since_master() -> list[str] | None:
+    """Committed, staged, unstaged and untracked changes since the merge-base
+    with origin/master, plus formatter configuration changed on master since
+    then; None when there is no merge-base."""
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+
+    base = git("merge-base", "HEAD", "origin/master")
+    sha = (base.stdout or "").strip()
+    if base.returncode or not sha:
+        return None
+    names: set[str] = set()
+    for args in (
+        ("diff", "--name-only", sha),
+        ("ls-files", "--others", "--exclude-standard"),
+        # Formatter configuration master changed after the branch point: an
+        # unrebased branch must not pass against the old rules.
+        ("diff", "--name-only", sha, "origin/master", "--", *FORMAT_CONFIG_PATHS,
+         *(f":(glob)**/{n}" for n in FORMAT_CONFIG_NAMES)),
+    ):
+        out = git(*args)
+        if out.returncode:
+            return None
+        names.update(line for line in (out.stdout or "").splitlines() if line)
+    return sorted(names)
+
+
 def lane_lint(fix: bool) -> None:
     files = tracked_files()
-    clang_format(files, fix)
-    gersemi(files, fix)
+    in_ci = bool(os.environ.get("GITHUB_ACTIONS"))
+    fmt_files = format_scope(files, None if in_ci else changed_since_master(), in_ci)
+    if len(fmt_files) != len(files):
+        print(f"+ formatting {len(fmt_files)} files changed since origin/master (CI checks all)", flush=True)
+    clang_format(fmt_files, fix)
+    gersemi(fmt_files, fix)
     self_test()
+    platform_ifdef_ratchet()
     soldr_cargo(["fmt", "--all"] + ([] if fix else ["--check"]))
     soldr_cargo(["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"])
     # Pre-expansion Dylints (dylints/*), so host-cfg'd code is checked on
@@ -220,25 +342,36 @@ def lane_lint(fix: bool) -> None:
     soldr_cargo(["dylint", "--all", "--", "--workspace", "--lib", "--bins"])
 
 
-# Every shipped Rust target, linted from this host (#472): soldr provides
-# the Windows SDK (xwin) and the macOS SDK for cross-compiling.
-CROSS_TARGETS = ("x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin")
+# Cross targets linted from this host (#472, #955): soldr provides the
+# Windows SDK (xwin) and the macOS SDK. The PR gate covers win-x64 and
+# mac-arm64 here (linux-x64 is the host, linted by the lint lane); the release
+# gate adds win-arm64, mac-x64 and linux-arm64.
+CROSS_TARGETS = ("x86_64-pc-windows-msvc", "aarch64-apple-darwin")
+RELEASE_CROSS_TARGETS = ("aarch64-pc-windows-msvc", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu")
 
 
-def lane_cross(fix: bool) -> None:
+def cross_lint(targets: tuple[str, ...], link: bool) -> None:
     # obs-c-oracle is a dev-only crate of C built for the host's tests; it
     # never ships and its C doesn't cross-compile to every target.
     scope = ["--workspace", "--exclude", "obs-c-oracle", "--lib", "--bins"]
-    for target in CROSS_TARGETS:
+    for target in targets:
         run(["soldr", "rustup", "target", "add", target])
         soldr_cargo(["clippy", *scope, "--locked", "--target", target, "--", "-D", "warnings"])
         soldr_cargo(["dylint", "--all", "--", *scope, "--target", target])
-        # Every test target, C oracle included, must also compile for the
-        # target (#516): check runs the build scripts, so cc compiles all the
-        # oracle's C. Not linked: soldr's LLVM bundle links lld-link/ld64.lld
-        # against the host's libxml2.so.2, which ubuntu-26.04 doesn't have.
-        # Linking is covered for x86_64-pc-windows-gnu in rust-test.
-        soldr_cargo(["check", "--workspace", "--tests", "--locked", "--target", target])
+        if link:
+            # Every test binary, C oracle included, must also compile and link
+            # for the target (#516, #695): cc compiles all the oracle's C, and
+            # soldr's self-contained lld-link/ld64.lld links it on Linux.
+            soldr_cargo(["test", "--workspace", "--no-run", "--locked", "--target", target])
+
+
+def lane_cross(fix: bool) -> None:
+    cross_lint(CROSS_TARGETS, link=True)
+
+
+def lane_cross_release(fix: bool) -> None:
+    # Release gate only (#955): lints, not links, for the extra targets.
+    cross_lint(RELEASE_CROSS_TARGETS, link=False)
 
 
 def lane_rust_test(fix: bool) -> None:
@@ -258,19 +391,60 @@ def lane_rust_test(fix: bool) -> None:
     )
 
 
+def test_diff(base: str) -> None:
+    """Unit tests for the crates a PR touches (ci/rust_scope.py), the fast
+    gate's PR-path test step (#992). The full lane runs on master."""
+    import json
+
+    from rust_scope import affected
+
+    files = subprocess.run(["git", "diff", "--name-only", base, "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.split()
+    meta = json.loads(
+        subprocess.run(["soldr", "cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    )
+    crates = {
+        p["name"]: (str(Path(p["manifest_path"]).parent.relative_to(ROOT)), {d["name"] for d in p["dependencies"]})
+        for p in meta["packages"]
+    }
+    mode, names = affected(files, crates)
+    print(f"== test scope: {mode} {names}", flush=True)
+    if mode == "skip":
+        return
+    pkgs = ["--workspace"] if mode == "workspace" else [a for n in names for a in ("-p", n)]
+    soldr_cargo(["test", *pkgs, "--locked"])
+
+
 def lane_tier2_linux(fix: bool) -> None:
     run(["bash", "rust/tools/linux-validate/run.sh"])
 
 
-LANES = {"lint": lane_lint, "rust-test": lane_rust_test, "cross": lane_cross, "tier2-linux": lane_tier2_linux}
+LANES = {"lint": lane_lint, "rust-test": lane_rust_test, "cross": lane_cross, "cross-release": lane_cross_release, "tier2-linux": lane_tier2_linux}
+
+# The lint lane's formatter checks on their own, for CI's format jobs: the
+# same pinned tools and files as `./lint`, so the two cannot disagree (#427).
+CHECKS = {"clang-format": clang_format, "gersemi": gersemi}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--lane", choices=sorted(LANES), action="append", help="run only this lane (repeatable)")
     parser.add_argument("--fix", action="store_true", help="lint: rewrite files instead of checking")
+    parser.add_argument("--test-diff", metavar="BASE", help="run unit tests only for crates changed since BASE (fast gate)")
+    parser.add_argument("--only", choices=sorted(CHECKS), help="run only this formatter check (CI format jobs)")
     args = parser.parse_args()
-    for name in args.lane or list(LANES):
+    if args.test_diff:
+        try:
+            test_diff(args.test_diff)
+        except subprocess.CalledProcessError as e:
+            print(f"== test-diff: FAILED ({e.returncode})", flush=True)
+            return 1
+        return 0
+    if args.only:
+        CHECKS[args.only](tracked_files(), args.fix)
+        print(f"== {args.only}: ok", flush=True)
+        return 0
+    # cross-release runs only in the release gate (#955).
+    for name in args.lane or [n for n in LANES if n != "cross-release"]:
         start = time.monotonic()
         print(f"== lane {name}", flush=True)
         try:

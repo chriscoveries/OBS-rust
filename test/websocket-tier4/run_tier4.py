@@ -116,8 +116,9 @@ class ObsServer:
     """Launches obs headless under xvfb with an isolated profile/config."""
 
     def __init__(self, obs_bin, port, password=None, keep_home=None,
-                 profile=None):
+                 profile=None, extra_env=None):
         self.obs_bin = obs_bin
+        self.extra_env = extra_env or {}
         self.port = port
         self.password = password
         self.profile = profile
@@ -175,6 +176,7 @@ class ObsServer:
         # (Qt prefers it over the X display xvfb-run provides).
         env.pop("WAYLAND_DISPLAY", None)
         env["QT_QPA_PLATFORM"] = "xcb"
+        env.update(self.extra_env)
         for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
             env.pop(var, None)
         xvfb = shutil.which("xvfb-run")
@@ -205,6 +207,20 @@ class ObsServer:
                              "--- end obs log ---\n")
         except OSError:
             pass
+
+    def report_failure(self):
+        """A test failed: say whether OBS is still running (a refused
+        connection mid-suite usually means it died) and show its log."""
+        if self.proc is None:
+            return
+        code = self.proc.poll()
+        if code is None:
+            print("--- obs is still running ---", flush=True)
+        elif code < 0:
+            print(f"--- obs died from signal {-code} ({signal.Signals(-code).name}) ---", flush=True)
+        else:
+            print(f"--- obs exited with code {code} ---", flush=True)
+        self.dump_log(200)
 
     def stop(self):
         if self.proc is not None:
@@ -685,7 +701,9 @@ def coverage_matrix(ctx):
          {"inputName": media,
           "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP"}, statey),
         # outputs (status/settings reads; lifecycle actuators run in the tail)
-        ("GetVirtualCamStatus", {}, [S]),
+        # 604 when the host has no virtual camera output (no v4l2loopback on
+        # CI): the documented "VirtualCam is not available." answer.
+        ("GetVirtualCamStatus", {}, [S, STATUS_INVALID_RESOURCE_STATE]),
         ("GetReplayBufferStatus", {},
          [S, STATUS_INVALID_RESOURCE_STATE]),
         ("GetLastReplayBufferReplay", {}, [S,
@@ -1153,6 +1171,106 @@ def documented_request_types():
         return []
 
 
+def documented_response_fields(request_type):
+    try:
+        with open(PROTOCOL_JSON) as f:
+            proto = json.load(f)
+    except OSError:
+        return []
+    for r in proto.get("requests", []):
+        if r["requestType"] == request_type:
+            return [v["valueName"] for v in r.get("responseFields", [])]
+    return []
+
+
+async def test_gpu_acceleration_software(log_path):
+    """obs-rust/obs-studio#846: with OpenGL forced onto llvmpipe, GetStats'
+    gpuAcceleration must not report green, and the log must carry the
+    startup warning. The field is null when the frontend does not provide
+    the status (a build without rust/obs-gpu-status); the check then only
+    asserts the documented key is present."""
+    if "gpuAcceleration" not in documented_response_fields("GetStats"):
+        print("  (gpuAcceleration not documented; skipped)", flush=True)
+        return
+    c, _ = await new_identified_client(subscriptions=SUB_NONE)
+    data = {}
+    for _ in range(120):
+        r = await c.request("GetStats")
+        if resp_status(r).get("code") != 207:
+            data = r.get("d", {}).get("responseData", {})
+            break
+        await asyncio.sleep(0.5)
+    await c.close_conn()
+    check("stats:gpuAcceleration present", "gpuAcceleration" in data,
+          json.dumps(data)[:300])
+    gpu = data.get("gpuAcceleration")
+    if gpu is None:
+        print("  (gpuAcceleration is null: no status provider)", flush=True)
+        return
+    check("stats:gpuAcceleration shape",
+          isinstance(gpu, dict)
+          and gpu.get("state") in ("green", "yellow", "red")
+          and isinstance(gpu.get("detectedGpus"), list)
+          and isinstance(gpu.get("summary"), str)
+          and isinstance(gpu.get("causes"), list)
+          # The frontend read a real adapter, not gs_get_device_name()'s
+          # API name (#929, #943).
+          and gpu.get("adapterIsApiName") is False,
+          json.dumps(gpu)[:400])
+    check("stats:gpuAcceleration quotes the adapter log line",
+          any("Loading up OpenGL on adapter" in line
+              for line in gpu.get("logLines") or []),
+          json.dumps(gpu.get("logLines"))[:400])
+    check("stats:gpuAcceleration not green on llvmpipe",
+          gpu.get("state") in ("yellow", "red"), json.dumps(gpu)[:400])
+    with open(log_path, errors="replace") as f:
+        log = f.read()
+    check("log:GPU acceleration startup warning",
+          "GPU acceleration: YELLOW" in log or "GPU acceleration: RED" in log,
+          "no 'GPU acceleration: YELLOW/RED' line in the OBS log")
+
+
+def obs_pids(server):
+    """PIDs of the OBS binary in the server's process group (xvfb-run's child)."""
+    want = os.path.realpath(shutil.which(server.obs_bin) or server.obs_bin)
+    pids = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            if os.getpgid(int(d)) != server.proc.pid:
+                continue
+            if os.path.realpath(f"/proc/{d}/exe") == want:
+                pids.append(int(d))
+        except OSError:
+            continue
+    return pids
+
+
+def test_one_libsrt_mapped(server):
+    """One libsrt in the OBS process. obs-ffmpeg's SRT output links libsrt,
+    and FFmpeg's libavformat (srt:// Media Sources) links it too. If they
+    are two builds (Ubuntu's libsrt.so.1.5, OpenSSL, and
+    libsrt-gnutls.so.1.5, which Ubuntu's FFmpeg uses), both copies are
+    loaded: their C++ globals resolve to one copy, both copies' destructors
+    free them, and OBS aborts on quit after any SRT use."""
+    if not os.path.exists("/proc/self/maps"):
+        print("  (no /proc: libsrt check skipped)", flush=True)
+        return
+    pids = obs_pids(server)
+    check("libs:OBS process found", bool(pids), f"no {server.obs_bin} process")
+    libs = set()
+    for pid in pids:
+        with open(f"/proc/{pid}/maps") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 6 and os.path.basename(parts[5]).startswith("libsrt"):
+                    libs.add(os.path.realpath(parts[5]))
+    print(f"  libsrt mapped into OBS: {' '.join(sorted(libs)) or 'none'}", flush=True)
+    check("libs:exactly one libsrt mapped into OBS", len(libs) == 1,
+          f"{len(libs)} mapped: {' '.join(sorted(libs)) or 'none'}")
+
+
 async def test_stats_rescale_output():
     """GetStats must count the frames of a recording encoder that rescales
     the output (Settings > Output > Recording > Rescale Output). Such an
@@ -1210,6 +1328,37 @@ RESCALE_PROFILE = {
 }
 
 
+async def run_gpu_phase(obs_bin):
+    """OBS forced onto llvmpipe: GetStats.gpuAcceleration and the startup
+    warning (obs-rust/obs-studio#846, #940); and one libsrt in the
+    process."""
+    server = ObsServer(obs_bin, PORT, password=None, extra_env={
+        "LIBGL_ALWAYS_SOFTWARE": "1", "GALLIUM_DRIVER": "llvmpipe"})
+    server.start()
+    try:
+        print("== packaged libraries ==", flush=True)
+        test_one_libsrt_mapped(server)
+        print("== GPU acceleration on llvmpipe ==", flush=True)
+        await test_gpu_acceleration_software(server.log)
+    finally:
+        server.stop()
+
+
+async def run_gpu_only(obs_bin):
+    await run_gpu_phase(obs_bin)
+    failed = [n for n, ok, _ in RESULTS if not ok]
+    print("=" * 60)
+    print(f"checks: {len(RESULTS) - len(failed)}/{len(RESULTS)} passed")
+    for n, _, detail in (r for r in RESULTS if not r[1]):
+        print(f"  - {n}: {detail}")
+    # A build without the status provider reports null and skips the
+    # state checks; that is not a pass for CI, which builds the provider.
+    if not any(n == "stats:gpuAcceleration not green on llvmpipe" for n, _, _ in RESULTS):
+        print("gpuAcceleration was null or undocumented: the state was not checked")
+        return 1
+    return 1 if failed else 0
+
+
 async def run_all(obs_bin, skip_obs, skip_auth_phase):
     server_a = server_b = None
     if not skip_obs:
@@ -1238,6 +1387,10 @@ async def run_all(obs_bin, skip_obs, skip_auth_phase):
 
         print("== request coverage ==", flush=True)
         covered, seen = await test_full_coverage()
+    except BaseException:
+        if server_a is not None:
+            server_a.report_failure()
+        raise
     finally:
         if server_a is not None:
             server_a.stop()
@@ -1270,6 +1423,10 @@ async def run_all(obs_bin, skip_obs, skip_auth_phase):
         finally:
             server_c.stop()
 
+    if not skip_obs:
+        wait_for_port_closed(PORT)
+        await run_gpu_phase(obs_bin)
+
     total = len(RESULTS)
     passed = sum(1 for _, ok, _ in RESULTS if ok)
     failed = [n for n, ok, _ in RESULTS if not ok]
@@ -1300,7 +1457,12 @@ def main():
                          "mainly for debugging)")
     ap.add_argument("--skip-auth-phase", action="store_true",
                     help="with --no-spawn only: skip the auth-required phase")
+    ap.add_argument("--only", choices=["gpu"],
+                    help="run one group: gpu = GetStats.gpuAcceleration and the "
+                         "startup warning with OpenGL forced onto llvmpipe")
     args = ap.parse_args()
+    if args.only == "gpu":
+        sys.exit(asyncio.run(run_gpu_only(args.obs)))
     sys.exit(asyncio.run(
         run_all(args.obs, args.no_spawn, args.skip_auth_phase)))
 

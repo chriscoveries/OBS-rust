@@ -15,11 +15,6 @@
 
 #include "moc_AutoConfigStreamPage.cpp"
 
-enum class ListOpt : int {
-	ShowAll = 1,
-	Custom,
-};
-
 struct QCef;
 extern QCef *cef;
 
@@ -392,12 +387,12 @@ void AutoConfigStreamPage::on_preferHardware_clicked()
 	ui->useMultitrackVideo->setChecked(ui->preferHardware->isChecked() && multitrackVideoEnabled);
 }
 
-static inline bool is_auth_service(const std::string &service)
+static inline bool autoconfig_is_auth_service(const std::string &service)
 {
 	return Auth::AuthType(service) != Auth::Type::None;
 }
 
-static inline bool is_external_oauth(const std::string &service)
+static inline bool autoconfig_is_external_oauth(const std::string &service)
 {
 	return Auth::External(service);
 }
@@ -416,7 +411,7 @@ void AutoConfigStreamPage::reset_service_ui_fields(std::string &service)
 	}
 #endif
 
-	bool external_oauth = is_external_oauth(service);
+	bool external_oauth = autoconfig_is_external_oauth(service);
 	if (external_oauth) {
 		ui->streamKeyWidget->setVisible(false);
 		ui->streamKeyLabel->setVisible(false);
@@ -427,7 +422,7 @@ void AutoConfigStreamPage::reset_service_ui_fields(std::string &service)
 
 	} else if (cef) {
 		QString key = ui->key->text();
-		bool can_auth = is_auth_service(service);
+		bool can_auth = autoconfig_is_auth_service(service);
 		int page = can_auth && key.isEmpty() ? (int)Section::Connect : (int)Section::StreamKey;
 
 		ui->stackedWidget->setCurrentIndex(page);

@@ -373,6 +373,32 @@ def validate_profile(
         raise RuntimeError(f"saved profile was not selected: {profile}")
 
 
+# gs_get_device_name() values: an API, not an adapter (obs-rust/obs-studio#929).
+GRAPHICS_API_NAMES = {"OpenGL", "Direct3D 11", "Metal"}
+
+
+def validate_gpu_status(status) -> None:
+    """GetStats.gpuAcceleration from the GPU status light (#846, #941). Any
+    state is fine on a hosted runner; the adapter must be a real one."""
+    if not isinstance(status, dict):
+        raise RuntimeError(f"GetStats.gpuAcceleration is missing: {status!r}")
+    if status.get("state") not in ("green", "yellow", "red"):
+        raise RuntimeError(f"gpuAcceleration has an unknown state: {status!r}")
+    if not isinstance(status.get("detectedGpus"), list):
+        raise RuntimeError(f"gpuAcceleration.detectedGpus is not a list: {status!r}")
+    adapter = status.get("adapter")
+    if not adapter or adapter in GRAPHICS_API_NAMES:
+        raise RuntimeError(
+            f"gpuAcceleration.adapter is a graphics API name, not an adapter: {adapter!r}"
+        )
+
+
+def require_gpu_log(log: str) -> None:
+    """The frontend logs the GPU state at startup (#846)."""
+    if "GPU acceleration: " not in log:
+        raise RuntimeError("startup log has no 'GPU acceleration:' line")
+
+
 async def wait_until_ready(client, proc: subprocess.Popen, deadline: float) -> dict:
     # Identification confirms the transport, not OBS_FRONTEND_EVENT_FINISHED_LOADING.
     # Only the protocol's explicit NotReady response is a startup condition.
@@ -452,6 +478,9 @@ async def inspect_running_app(
         validate_profile(
             platform, kinds["inputKinds"], inputs["inputs"], scene, profile
         )
+        stats = await request("GetStats")
+        validate_gpu_status(stats.get("gpuAcceleration"))
+        print(f"GPU status: {json.dumps(stats['gpuAcceleration'])}")
         items = await request("GetSceneItemList", {"sceneName": SCENE})
         if set(NAMES) - {item["sourceName"] for item in items["sceneItems"]}:
             raise RuntimeError("saved scene lost its capture source items")
@@ -600,11 +629,14 @@ def main() -> None:
         asyncio.run(inspect_running_app(proc, port, password, args.platform))
         close_frontend(proc, args.platform)
         fixture.verify()
+        logs = sorted((config / "logs").glob("*.txt"), key=lambda log: log.stat().st_mtime)
+        current_logs = [
+            log.read_text(encoding="utf-8-sig", errors="replace") for log in logs
+        ]
+        if not current_logs:
+            raise RuntimeError("packaged frontend wrote no log")
+        require_gpu_log(current_logs[-1])
         if args.platform == "windows":
-            logs = list((config / "logs").glob("*.txt"))
-            current_logs = [
-                log.read_text(encoding="utf-8-sig", errors="replace") for log in logs
-            ]
             identity_logs = [
                 log
                 for log in current_logs

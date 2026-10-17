@@ -10,7 +10,7 @@ find_package(Sndio REQUIRED)
 add_library(sndio MODULE)
 add_library(OBS::sndio ALIAS sndio)
 
-target_sources(sndio PRIVATE sndio.c sndio-input.c)
+target_sources(sndio PRIVATE build/sndio.nix+.h.c)
 
 target_compile_options(sndio PRIVATE -Wno-error=vla)
 

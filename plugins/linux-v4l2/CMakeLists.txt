@@ -24,21 +24,7 @@ endif()
 add_library(linux-v4l2 MODULE)
 add_library(OBS::v4l2 ALIAS linux-v4l2)
 
-target_sources(
-  linux-v4l2
-  PRIVATE
-    linux-v4l2.c
-    v4l2-busy.c
-    v4l2-controls.c
-    v4l2-decoder.c
-    v4l2-frame-action.c
-    v4l2-framerate.c
-    v4l2-helpers.c
-    v4l2-input-caps.c
-    v4l2-input.c
-    v4l2-output.c
-    vcam-format.c
-)
+target_sources(linux-v4l2 PRIVATE build/linux-v4l2.nix+.h.c build/linux-v4l2.nix-output+.h.c)
 
 target_link_libraries(
   linux-v4l2
@@ -47,7 +33,7 @@ target_link_libraries(
 
 if(ENABLE_UDEV)
   find_package(Libudev REQUIRED)
-  target_sources(linux-v4l2 PRIVATE v4l2-udev.c)
+  target_sources(linux-v4l2 PRIVATE build/linux-v4l2.nix-udev+.h.c)
 
   target_link_libraries(linux-v4l2 PRIVATE Libudev::Libudev)
   target_compile_definitions(linux-v4l2 PRIVATE HAVE_UDEV)

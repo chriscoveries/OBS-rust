@@ -7,8 +7,8 @@ if(OS_LINUX AND TARGET OBS::pipewire)
   add_executable(
     test_pipewire_frame_layout
     test_pipewire_frame_layout.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c.h"
   )
   target_include_directories(
     test_pipewire_frame_layout

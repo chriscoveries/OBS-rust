@@ -17,25 +17,29 @@ endif()
 add_library(text-freetype2 MODULE)
 add_library(OBS::text-freetype2 ALIAS text-freetype2)
 
+# Unity groups (BUILD.md), listed plainly per platform: groups.cmake doesn't
+# read sources behind generator expressions.
 target_sources(
   text-freetype2
   PRIVATE
-    $<$<PLATFORM_ID:Darwin>:find-font-cocoa.m>
-    $<$<PLATFORM_ID:Darwin>:find-font-iconv.c>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:find-font-unix.c>
-    $<$<PLATFORM_ID:Windows,Darwin>:find-font.c>
-    $<$<PLATFORM_ID:Windows>:find-font-windows.c>
+    build/text-freetype2.core+.h.c
     find-font.h
-    glyph-atlas.c
     glyph-atlas.h
-    obs-convenience.c
     obs-convenience.h
-    text-freetype2.c
-    text-file.c
     text-file.h
+    text-freetype2-host.h
     text-freetype2.h
-    text-functionality.c
 )
+if(OS_WINDOWS)
+  target_sources(text-freetype2 PRIVATE build/text-freetype2.find-font+.h.c build/text-freetype2.windows+.h.c)
+elseif(OS_MACOS)
+  target_sources(
+    text-freetype2
+    PRIVATE build/text-freetype2.find-font+.h.c build/text-freetype2.macos+.h.c build/text-freetype2.macos-objc+.h.m
+  )
+else()
+  target_sources(text-freetype2 PRIVATE build/text-freetype2.nix+.h.c)
+endif()
 
 target_link_libraries(
   text-freetype2

@@ -62,16 +62,48 @@ class SoldrCacheTest(unittest.TestCase):
 
 
 class SelfTestTest(unittest.TestCase):
-    def test_runs_every_ci_test_module(self):
+    """Every ci/test_*.py runs, one process per file, in parallel (#949)."""
+
+    def fake_run(self, failing=()):
+        calls = []
+
+        def fake(cmd, **kw):
+            calls.append(cmd)
+            name = cmd[cmd.index("-p") + 1]
+            code = 1 if name in failing else 0
+            return subprocess.CompletedProcess(cmd, code, f"output of {name}\n", "")
+
+        return calls, fake
+
+    def test_runs_every_ci_test_module_in_its_own_process(self):
         # Every ci/test_*.py, not just this file, so new checks (tier 2
         # volume, toolchain pin, registration fragments) run in the gate.
-        calls = []
-        with mock.patch.object(local_gate, "run", side_effect=lambda cmd, **kw: calls.append(cmd)):
+        calls, fake = self.fake_run()
+        with mock.patch.object(local_gate.subprocess, "run", side_effect=fake):
             local_gate.self_test()
-        self.assertEqual(len(calls), 1)
-        cmd = calls[0]
-        self.assertIn("discover", cmd)
-        self.assertIn("test_*.py", cmd)
+        names = sorted(cmd[cmd.index("-p") + 1] for cmd in calls)
+        expected = sorted(p.name for p in (local_gate.ROOT / "ci").glob("test_*.py"))
+        self.assertEqual(names, expected)
+        self.assertGreater(len(names), 1)
+        self.assertTrue(all("discover" in cmd for cmd in calls))
+
+    def test_a_failing_module_fails_the_step_and_prints_its_output(self):
+        calls, fake = self.fake_run(failing={"test_local_gate.py"})
+        printed = []
+        with (
+            mock.patch.object(local_gate.subprocess, "run", side_effect=fake),
+            mock.patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(map(str, a)))),
+            self.assertRaises(subprocess.CalledProcessError),
+        ):
+            local_gate.self_test()
+        self.assertTrue(any("output of test_local_gate.py" in line for line in printed), printed)
+
+    def test_workers_follow_usable_cpus_capped(self):
+        # 164 s of serial self-tests made ./lint slow (#949); a CPU-limited
+        # container must not start every file at once.
+        for usable, want in ((None, 1), (1, 1), (4, 4), (64, local_gate.SELF_TEST_MAX_WORKERS)):
+            with mock.patch.object(local_gate.os, "process_cpu_count", create=True, return_value=usable):
+                self.assertEqual(local_gate.self_test_workers(), want, usable)
 
 
 class EnvironmentHintTest(unittest.TestCase):
@@ -124,6 +156,21 @@ class EnvironmentHintTest(unittest.TestCase):
         self.assertIn("hint:", text)
 
 
+class CrossTargetsTest(unittest.TestCase):
+    """PR gate lints win-x64, mac-arm64 and linux-x64 (the host); the release
+    gate adds win-arm64, mac-x64 and linux-arm64 (obs-rust/obs-studio#955)."""
+
+    def test_pr_gate_targets(self):
+        self.assertEqual(local_gate.CROSS_TARGETS, ("x86_64-pc-windows-msvc", "aarch64-apple-darwin"))
+
+    def test_release_gate_targets(self):
+        self.assertEqual(
+            local_gate.RELEASE_CROSS_TARGETS,
+            ("aarch64-pc-windows-msvc", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu"),
+        )
+        self.assertIn("cross-release", local_gate.LANES)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -139,7 +186,7 @@ class ClangFormatScopeTest(unittest.TestCase):
         files = [
             "rust/obs-util/src/platform/windows/plugin_seh.c",
             "rust/obs-c-oracle/oracle/platform_windows.c",
-            "libobs/obs.c",
+            "libobs/obs.c.h",
         ]
         checked = [
             f
@@ -149,3 +196,49 @@ class ClangFormatScopeTest(unittest.TestCase):
             and not local_gate.excluded(f, local_gate.CLANG_EXCLUDE)
         ]
         self.assertEqual(checked, files)
+
+
+class FormatScopeTest(unittest.TestCase):
+    """./lint formats only changed files locally; CI checks every file (#1050)."""
+
+    FILES = ["libobs/obs.c.h", "frontend/a.cpp", "frontend/b.cpp", "CMakeLists.txt"]
+
+    def test_ci_checks_every_file(self):
+        self.assertEqual(local_gate.format_scope(self.FILES, ["frontend/a.cpp"], ci=True), self.FILES)
+
+    def test_local_checks_only_changed_files(self):
+        self.assertEqual(
+            local_gate.format_scope(self.FILES, ["frontend/a.cpp", "docs/x.md"], ci=False), ["frontend/a.cpp"]
+        )
+
+    def test_unknown_changes_check_every_file(self):
+        # No merge-base with origin/master: nothing to compare against.
+        self.assertEqual(local_gate.format_scope(self.FILES, None, ci=False), self.FILES)
+
+    def test_formatter_config_change_checks_every_file(self):
+        for config in (".clang-format", "libobs/.clang-format", ".gersemirc", "ci/local_gate.py"):
+            with self.subTest(config=config):
+                self.assertEqual(local_gate.format_scope(self.FILES, [config], ci=False), self.FILES)
+
+
+class FormatScopeUpstreamConfigTest(unittest.TestCase):
+    """A formatter change that landed on master after the branch point must
+    widen the local check too (#1050 review)."""
+
+    def test_upstream_config_change_counts_as_changed(self):
+        outputs = {
+            ("merge-base", "HEAD", "origin/master"): "base\n",
+            ("diff", "--name-only", "base"): "frontend/a.cpp\n",
+            ("ls-files", "--others", "--exclude-standard"): "",
+            ("diff", "--name-only", "base", "origin/master", "--", *local_gate.FORMAT_CONFIG_PATHS,
+             *(f":(glob)**/{n}" for n in local_gate.FORMAT_CONFIG_NAMES)): "ci/local_gate.py\n",
+        }
+
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, outputs.get(tuple(cmd[1:]), ""), "")
+
+        with mock.patch.object(local_gate.subprocess, "run", side_effect=fake):
+            changed = local_gate.changed_since_master()
+        self.assertIn("ci/local_gate.py", changed)
+        files = ["frontend/a.cpp", "frontend/b.cpp"]
+        self.assertEqual(local_gate.format_scope(files, changed, ci=False), files)

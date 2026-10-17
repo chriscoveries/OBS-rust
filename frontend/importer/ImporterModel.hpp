@@ -19,6 +19,9 @@
 
 #include <QAbstractTableModel>
 
+/* Enumerators stay out of the global scope: a unity build puts this header
+ * next to other models' Count/State/EntryStateRole. */
+namespace importer_model {
 enum ImporterColumn {
 	Selected,
 	Name,
@@ -29,6 +32,9 @@ enum ImporterColumn {
 };
 
 enum ImporterEntryRole { EntryStateRole = Qt::UserRole, NewPath, AutoPath, CheckEmpty };
+} // namespace importer_model
+using importer_model::ImporterColumn;
+using importer_model::ImporterEntryRole;
 
 class ImporterModel : public QAbstractTableModel {
 	Q_OBJECT

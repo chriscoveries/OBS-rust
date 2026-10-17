@@ -2352,3 +2352,7 @@ struct obs_source_info game_capture_info = {
 	.icon_type = OBS_ICON_TYPE_GAME_CAPTURE,
 	.video_get_color_space = game_capture_get_color_space,
 };
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef do_log
+#undef warn

@@ -17,19 +17,15 @@
 
 #include "moc_AutoConfig.cpp"
 
-constexpr std::string_view OBSServiceFileName = "service.json";
-
-enum class ListOpt : int {
-	ShowAll = 1,
-	Custom,
-};
+constexpr std::string_view AutoConfigServiceFileName = "service.json";
 
 static OBSData OpenServiceSettings(std::string &type)
 {
 	const OBSBasic *basic = OBSBasic::Get();
 	const OBSProfile &currentProfile = basic->GetCurrentProfile();
 
-	const std::filesystem::path jsonFilePath = currentProfile.path / std::filesystem::u8path(OBSServiceFileName);
+	const std::filesystem::path jsonFilePath =
+		currentProfile.path / std::filesystem::u8path(AutoConfigServiceFileName);
 
 	if (!std::filesystem::exists(jsonFilePath)) {
 		return OBSData();

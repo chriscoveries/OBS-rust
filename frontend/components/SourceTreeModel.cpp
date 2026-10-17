@@ -6,7 +6,7 @@
 
 #include "moc_SourceTreeModel.cpp"
 
-static inline OBSScene GetCurrentScene()
+static inline OBSScene ModelCurrentScene()
 {
 	OBSBasic *main = OBSBasic::Get();
 	return main->GetCurrentScene();
@@ -67,7 +67,7 @@ static bool enumItem(obs_scene_t *, obs_sceneitem_t *item, void *ptr)
 
 void SourceTreeModel::SceneChanged()
 {
-	OBSScene scene = GetCurrentScene();
+	OBSScene scene = ModelCurrentScene();
 
 	beginResetModel();
 	items.clear();
@@ -87,7 +87,7 @@ void SourceTreeModel::SceneChanged()
 }
 
 /* moves a scene item index (blame linux distros for using older Qt builds) */
-static inline void MoveItem(QVector<OBSSceneItem> &items, int oldIdx, int newIdx)
+static inline void ModelMoveItem(QVector<OBSSceneItem> &items, int oldIdx, int newIdx)
 {
 	OBSSceneItem item = items[oldIdx];
 	items.remove(oldIdx);
@@ -97,7 +97,7 @@ static inline void MoveItem(QVector<OBSSceneItem> &items, int oldIdx, int newIdx
 /* reorders list optimally with model reorder funcs */
 void SourceTreeModel::ReorderItems()
 {
-	OBSScene scene = GetCurrentScene();
+	OBSScene scene = ModelCurrentScene();
 
 	QVector<OBSSceneItem> newitems;
 	obs_scene_enum_items(scene, enumItem, &newitems);
@@ -166,7 +166,7 @@ void SourceTreeModel::ReorderItems()
 			if (to > idx1Old) {
 				to--;
 			}
-			MoveItem(items, idx1Old, to);
+			ModelMoveItem(items, idx1Old, to);
 		}
 		endMoveRows();
 	}
@@ -278,7 +278,7 @@ Qt::DropActions SourceTreeModel::supportedDropActions() const
 
 QString SourceTreeModel::GetNewGroupName()
 {
-	OBSScene scene = GetCurrentScene();
+	OBSScene scene = ModelCurrentScene();
 	QString name = QTStr("Group");
 
 	int i = 2;
@@ -296,7 +296,7 @@ QString SourceTreeModel::GetNewGroupName()
 void SourceTreeModel::AddGroup()
 {
 	QString name = GetNewGroupName();
-	obs_sceneitem_t *group = obs_scene_add_group(GetCurrentScene(), QT_TO_UTF8(name));
+	obs_sceneitem_t *group = obs_scene_add_group(ModelCurrentScene(), QT_TO_UTF8(name));
 	if (!group) {
 		return;
 	}
@@ -318,7 +318,7 @@ void SourceTreeModel::GroupSelectedItems(QModelIndexList &indices)
 	}
 
 	OBSBasic *main = OBSBasic::Get();
-	OBSScene scene = GetCurrentScene();
+	OBSScene scene = ModelCurrentScene();
 	QString name = GetNewGroupName();
 
 	QVector<obs_sceneitem_t *> item_order;

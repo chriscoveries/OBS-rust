@@ -5,7 +5,7 @@ add_library(OBS::text ALIAS obs-text)
 
 configure_file(cmake/windows/obs-module.rc.in obs-text.rc)
 
-target_sources(obs-text PRIVATE gdiplus/obs-text.cpp obs-text.rc)
+target_sources(obs-text PRIVATE build/obs-text.windows+.hpp.cpp obs-text.rc)
 
 target_link_libraries(obs-text PRIVATE OBS::libobs gdiplus)
 

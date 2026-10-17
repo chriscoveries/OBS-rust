@@ -134,6 +134,7 @@
                 "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
                 "-DCMAKE_INCLUDE_PATH=/app/include;/usr/include",
                 "-DENABLE_FLATPAK=ON",
+                "-DENABLE_GPU_STATUS=OFF",
                 "-DENABLE_WAYLAND=ON",
                 "-DENABLE_BROWSER=ON",
                 "-DCEF_ROOT_DIR=/app/cef",

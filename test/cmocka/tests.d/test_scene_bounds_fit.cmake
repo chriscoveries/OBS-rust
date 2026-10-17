@@ -1,7 +1,7 @@
 # A source with no size must get a finite bounding box scale
-# (obsproject/obs-studio#4245). Builds libobs/obs-scene-bounds.c on its own:
+# (obsproject/obs-studio#4245). Builds libobs/obs-scene-bounds.c.h on its own:
 # no display and no libobs core, so it runs on every platform.
-add_executable(test_scene_bounds_fit test_scene_bounds_fit.c "${CMAKE_SOURCE_DIR}/libobs/obs-scene-bounds.c")
+add_executable(test_scene_bounds_fit test_scene_bounds_fit.c "${CMAKE_SOURCE_DIR}/libobs/obs-scene-bounds.c.h")
 target_include_directories(test_scene_bounds_fit PRIVATE ${CMOCKA_INCLUDE_DIR})
 target_link_libraries(test_scene_bounds_fit PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
 if(NOT MSVC)

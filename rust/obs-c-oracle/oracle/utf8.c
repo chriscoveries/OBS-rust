@@ -4,4 +4,4 @@
 #define utf8_to_wchar oracle_utf8_to_wchar
 #define wchar_to_utf8 oracle_wchar_to_utf8
 
-#include "util/utf8.c"
+#include "util/utf8.c.h"

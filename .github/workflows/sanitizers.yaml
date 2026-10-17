@@ -21,7 +21,7 @@ on:
         type: number
         default: 45
       rust_libobs:
-        description: Build with ENABLE_RUST_LIBOBS=ON
+        description: Run the tests and app against libobs-with-rust instead of the C libobs
         type: boolean
         default: false
       fail_on_findings:
@@ -69,10 +69,7 @@ jobs:
         shell: bash
     env:
       SAN_OUT: ${{ github.workspace }}/.sanitize
-      CCACHE_DIR: ${{ github.workspace }}/.sanitize-ccache
-      CCACHE_MAXSIZE: 2G
-      CCACHE_COMPRESS: '1'
-      CCACHE_SLOPPINESS: time_macros,include_file_mtime,include_file_ctime
+      ZCCACHE_CACHE_DIR: ${{ github.workspace }}/.sanitize-zccache
       RUST_LIBOBS: ${{ inputs.rust_libobs && 'ON' || 'OFF' }}
     steps:
       # fetch-depth 0: versionconfig.cmake derives the OBS version from tags.
@@ -92,21 +89,21 @@ jobs:
       # its own cache. Only master saves, so PRs can restore it.
       - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: ${{ github.workspace }}/.sanitize-ccache
-          key: sanitize-ccache-${{ matrix.tool }}-${{ env.RUST_LIBOBS }}-${{ github.sha }}
-          restore-keys: sanitize-ccache-${{ matrix.tool }}-${{ env.RUST_LIBOBS }}-
+          path: ${{ github.workspace }}/.sanitize-zccache
+          key: zccache-sanitize-${{ matrix.tool }}-${{ env.RUST_LIBOBS }}-${{ github.sha }}
+          restore-keys: zccache-sanitize-${{ matrix.tool }}-${{ env.RUST_LIBOBS }}-
 
       - name: Build, test and launch under ${{ matrix.tool }} 🔬
         env:
           LAUNCH_SECONDS: ${{ inputs.launch_seconds || 45 }}
         run: rust/tools/sanitize/sanitize.sh "${{ matrix.tool }}" "$LAUNCH_SECONDS"
 
-      - name: Save ccache 💾
+      - name: Save zccache 💾
         if: always() && github.ref == 'refs/heads/master'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: ${{ github.workspace }}/.sanitize-ccache
-          key: sanitize-ccache-${{ matrix.tool }}-${{ env.RUST_LIBOBS }}-${{ github.sha }}
+          path: ${{ github.workspace }}/.sanitize-zccache
+          key: zccache-sanitize-${{ matrix.tool }}-${{ env.RUST_LIBOBS }}-${{ github.sha }}
 
       - name: Triage 🩺
         if: always()

@@ -6,14 +6,22 @@ scripting APIs) while its internals are rewritten in Rust. Every port follows
 
 ## Layout
 
+Which crate a C component's port goes in, and the repository layout policy,
+are in [docs/rust-port/naming.md](../docs/rust-port/naming.md#repository-layout-1051).
+
 | Path | What |
 |---|---|
 | `obs-util/` | Ports of `libobs/util/*`: safe cores at the crate root, C ABI shims in `src/ffi/` |
 | `obs-graphics/` | Ports of `libobs/graphics/*` |
 | `obs-codec/` | Ports of the libobs codec bitstream helpers (`obs-nal.c`, `obs-avc.c`, `obs-hevc.c`, `obs-av1.c`) |
 | `obs-media-io/` | Ports of `libobs/media-io/*` |
+| `obs-data/` | Port of `libobs/obs-data.c` |
+| `obs-properties/` | Port of `libobs/obs-properties.c` |
+| `obs-hotkey/` | Port of `libobs/obs-hotkey-name-map.c` |
+| `obs-nvenc/`, `obs-nvenc-plugin/` | Port of the `plugins/obs-nvenc` CUDA/NVENC loader, and the staticlib that plugin links |
+| `obs-gpu-status/`, `obs-gpu-status-frontend/` | GPU acceleration status (#846), and the staticlib the frontend links |
 | `obs-c-oracle/` | Test-only: original C sources compiled with `oracle_` symbols for layout and differential tests |
-| `libobs-rust/` | The single staticlib linked into libobs when `ENABLE_RUST_LIBOBS=ON` |
+| `libobs-rust/` | The single staticlib linked into `libobs-with-rust`, libobs's never-installed twin that every build makes (#1065) |
 | `obs-studio-rust/` | Standalone CLI that starts, stops and inspects OBS streaming over obs-websocket v5. Named after the product, with no release tags of its own (`docs/rust-port/naming.md`) |
 | `tools/linux-validate/` | Docker harness that builds libobs with the Rust ports OFF and ON |
 | `tools/tier2-validate/` | macOS/Windows Tier 2 (C tests plus exported symbols, OFF vs ON), used by CI |
@@ -43,9 +51,12 @@ rust/tools/linux-validate/run.sh --repeat 100 --tests 'test_threading|test_task'
 CI runs these in `.github/workflows/build-project.yaml` (jobs `rust-tests`,
 `rust-linux-tier2`, `rust-tier2`).
 
-To build OBS itself with the Rust ports, configure with
-`-DENABLE_RUST_LIBOBS=ON`; add `-DENABLE_UNIT_TESTS=ON` to build the cmocka
-tests and run them with `ctest`.
+Every OBS build also builds `libobs-with-rust` (the Rust ports in place of
+the ported C, in `<build>/libobs-with-rust/`), but links, installs and packages
+the C `libobs` (#1065). To run the cmocka tests (`-DENABLE_UNIT_TESTS=ON`)
+against the Rust ports, put that directory first on `LD_LIBRARY_PATH`
+(macOS: `DYLD_FRAMEWORK_PATH`; Windows: `PATH`), as Tier 2 does.
+`ENABLE_RUST_LIBOBS` now only names the app OBS-Studio-Rust.
 
 ## Ported so far
 
@@ -90,14 +101,15 @@ tests and run them with `ctest`.
 | `libobs/media-io/video-io.h` and `frame-rate.h` (header-inline, not swapped) | `obs-media-io::video_io`, `obs-media-io::frame_rate` | No intentional differences. Layout and parity only; the `struct video_data`, `struct video_output_info`, `struct video_scale_info` and `struct media_frames_per_second` layouts are the contract. `ffi::video_io` gives enum values outside the enums the C's result. |
 | `libobs/media-io/video-io.c` | `obs-media-io::video_output` | Frames are zeroed; C's `bmalloc` leaves them uninitialized. `close` on a divisor child stops the root and frees only the child; C also frees the parent's cache and mutexes. The stop flag is atomic; C uses a plain `bool`. `connect(NULL)` returns false; C crashes in `get_root`. A null `get_skipped_frames` or `get_total_frames` returns 0; C dereferences the handle. A null `info` or out-pointer to `open` returns `VIDEO_OUTPUT_INVALIDPARAM`; C crashes. A null frame pointer to `lock_frame` returns true and writes nothing; C crashes in `memcpy`. `video_scaler_*` stays the FFmpeg C file. |
 | `libobs/media-io/audio-io.h` inlines (header-inline, not swapped) | `obs-media-io::audio_io` | No intentional differences. Layout and parity only; the `struct audio_data`, `struct audio_output_data`, `struct audio_output_info` and `struct audio_convert_info` layouts are the contract. `ffi::audio_io` gives enum values outside the enums the C's result (`enum speaker_layout` skips 7). `audio_frames_to_ns` and `ns_to_audio_frames` call `obs-util::util_uint64::mul_div64` and panic where it does: a sample rate of 0 to `audio_frames_to_ns`, and on MSVC x64 a result past 64 bits. |
-| `libobs/media-io/audio-io.c` | `obs-media-io::audio_io` | Swapped on Unix and Windows when `ENABLE_RUST_LIBOBS` is on. A null input callback is treated as a failed tick; C calls it. A null output callback connects and is skipped at dispatch; C faults on the next dispatch. A removal that shrinks the input list below the loop index is skipped; C reads the stale darray tail. The stop flag is atomic; C uses `os_event_try`. The worker is a Rust thread. Windows locks with a `CRITICAL_SECTION` and registers the MMCSS "Audio" task. The resampler and FFmpeg wrapper stay C. |
+| `libobs/media-io/audio-io.c` | `obs-media-io::audio_io` | Swapped on Unix and Windows in `libobs-with-rust`. A null input callback is treated as a failed tick; C calls it. A null output callback connects and is skipped at dispatch; C faults on the next dispatch. A removal that shrinks the input list below the loop index is skipped; C reads the stale darray tail. The stop flag is atomic; C uses `os_event_try`. The worker is a Rust thread. Windows locks with a `CRITICAL_SECTION` and registers the MMCSS "Audio" task. The resampler and FFmpeg wrapper stay C. |
 | `libobs/util/util_uint64.h` (header-inline, not swapped) | `obs-util::util_uint64` | No intentional differences. Like the header, `mul_div64` does exact 128-bit math on MSVC x64 and `(num / div) * mul + (rem * mul) / div` in wrapping u64 elsewhere, so the two differ once `rem * mul` overflows. Panics where the C is UB or faults: `div == 0`, and on MSVC x64 a quotient past 64 bits; parity excludes those. |
 | `libobs/media-io/audio-math.h` (header-inline, not swapped) | `obs-media-io::audio_math` | No intentional differences. `mul_to_db` and `db_to_mul` call the platform `log10f`/`powf` like the header, so parity is exact bit equality on each platform. |
 | `libobs/media-io/video-frame.c` (+ `video-frame.h` inlines, not swapped) | `obs-media-io::video_frame` | No intentional differences. Only `video_frame_init` and `video_frame_copy` are swapped; `video_frame_get_linesizes` / `_get_plane_heights` have no C symbol. V210 keeps the C's `ALIGN` to 48, which only rounds to a power of two (width 1280 gives linesize 3424, not 3456). The `u32` math wraps as in C. `VIDEO_FORMAT_NONE`, an unknown format and a zero width or height still reach `bmalloc(0)`, which crashes. `enum video_format` crosses the C ABI as a `c_int`. |
 | `libobs/media-io/format-conversion.c` | `obs-media-io::format_conversion` | No intentional differences. The C's SSE2 is integer only, so the port is scalar and parity is byte-exact. The planes are `Source`/`Sink` traits: byte slices panic where the C reads or writes out of bounds, and the shims read the caller's raw pointers at the C's offsets. Quirks kept: `decompress_422` reads and writes twice each row's width, so rows spill into the next. |
-| `libobs/util/platform-windows.c` | `obs-util::platform::windows::host` | Swapped on Windows when `ENABLE_RUST_LIBOBS` is on. `os_dir`, `os_cpu_usage_info`, and `os_inhibit_t` are `Box` values, freed by the close and destroy shims. Returned path strings are `bmalloc`. A null `os_glob` out-pointer returns -1 and writes nothing. Null `os_dlsym`, `os_dlclose`, `os_readdir`, and `os_closedir` do not crash. Version, core-count, and total-memory caches take a mutex; the stored values match the C statics. `DllMain` sets the timer period only. libobs does not define `PTW32_STATIC_LIB`, so the pthread static-lib hooks stay out. A short plugin image is caught with MSVC `__try` in `plugin_seh.c`; MinGW runs the same checks without that handler. `get_win_release_id` and `DllMain` stay hidden. |
+| `libobs/util/platform-windows.c` | `obs-util::platform::windows::host` | Swapped on Windows in `libobs-with-rust`. `os_dir`, `os_cpu_usage_info`, and `os_inhibit_t` are `Box` values, freed by the close and destroy shims. Returned path strings are `bmalloc`. A null `os_glob` out-pointer returns -1 and writes nothing. Null `os_dlsym`, `os_dlclose`, `os_readdir`, and `os_closedir` do not crash. Version, core-count, and total-memory caches take a mutex; the stored values match the C statics. `DllMain` sets the timer period only. libobs does not define `PTW32_STATIC_LIB`, so the pthread static-lib hooks stay out. A short plugin image is caught with MSVC `__try` in `plugin_seh.c`; MinGW runs the same checks without that handler. `get_win_release_id` and `DllMain` stay hidden. |
 | `libobs/util/platform-nix.c` | `obs-util::platform::unix::nix` | Swapped on macOS, Linux, and FreeBSD. The Apple clock, paths, CPU, memory, and inhibit live in the Cocoa platform module. `os_inhibit_sleep_*` on Linux and FreeBSD stays C in `util/platform-nix-inhibit.c`, built with the option ON too, so it still uses the portal and session D-Bus inhibitors (`platform-nix-portal.c`, `platform-nix-dbus.c`) and falls back to `xdg-screensaver reset`. `os_opendir` copies the path (C keeps the caller's pointer). Null pointers that would crash return an error or null. Glob paths are copies freed by `os_globfree`. `os_dir` and `os_cpu_usage_info` are `Box` values, not `bmalloc`. Core-count and total-memory caches take a mutex. A missing `$HOME` still `bcrash`es in the shim. FreeBSD total memory reads `hw.physmem`. |
-| `libobs/util/platform-cocoa.m` | `obs-util::platform::unix::cocoa` | Swapped on macOS when `ENABLE_RUST_LIBOBS` is on. `os_cpu_usage_info` and `os_inhibit_t` are `Box` values. Core-count and total-memory caches take a mutex. A null `os_get_proc_memory_usage` returns false. A null `cfstr_copy_dstr` dstr pointer returns false. The `cfstr_copy_dstr` slow path zeros the gap past the first NUL, and the `cfstr_copy_cstr` slow path is sized to the C string. An empty inhibit reason is `CFStringCreateWithCString("")`. A null `UTF8String` becomes an empty base path. |
+| `libobs/util/platform-cocoa.m` | `obs-util::platform::unix::cocoa` | Swapped on macOS in `libobs-with-rust`. `os_cpu_usage_info` and `os_inhibit_t` are `Box` values. Core-count and total-memory caches take a mutex. A null `os_get_proc_memory_usage` returns false. A null `cfstr_copy_dstr` dstr pointer returns false. The `cfstr_copy_dstr` slow path zeros the gap past the first NUL, and the `cfstr_copy_cstr` slow path is sized to the C string. An empty inhibit reason is `CFStringCreateWithCString("")`. A null `UTF8String` becomes an empty base path. |
+| `libobs/obs-data.c` | `obs-data` | Swapped in `libobs-with-rust`. JSON text comes from jansson 2.14, same flags as the C file. Item pointers stay stable across set; C may realloc the item. A user value left in place when `set_autoselect` changes the type is not read back as the new type; those getters return the empty value. The safe core replaces a file by removing the destination and renaming, and it does not log; the C shim calls `os_quick_write_utf8_file` and `os_quick_write_utf8_file_safe`. A null name, or a null vec out-pointer, does nothing. `obs_data_newref` stays inline in the header. |
 
 ## obs-studio-rust
 

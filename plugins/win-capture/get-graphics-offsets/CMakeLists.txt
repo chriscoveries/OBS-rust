@@ -9,6 +9,10 @@ if(NOT TARGET OBS::hook-config)
 endif()
 
 add_executable(get-graphics-offsets)
+# Its sources each use a different Direct3D version (d3d8.h, d3d9.h, d3d10,
+# d3d11, d3d12), whose headers can't share a translation unit: no unity
+# batches (cmake/common/unity.cmake).
+set_property(TARGET get-graphics-offsets PROPERTY OBS_DISABLE_UNITY_BUILD ON)
 target_sources(
   get-graphics-offsets
   PRIVATE d3d8-offsets.cpp d3d9-offsets.cpp dxgi-offsets.cpp get-graphics-offsets.c get-graphics-offsets.h

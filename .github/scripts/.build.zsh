@@ -100,8 +100,8 @@ build() {
   check_${host_os}
 
   if [[ ${host_os} == ubuntu ]] {
-    autoload -Uz setup_ubuntu setup_ccache
-    setup_ccache
+    autoload -Uz setup_ubuntu setup_zccache
+    setup_zccache
     setup_ubuntu
   }
 

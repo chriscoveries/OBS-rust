@@ -39,8 +39,25 @@ if [ -f "$APPDIR/usr/bin/obs-studio-rust-gui" ]; then
         ln -s "obs-studio-rust/$(basename "$library")" "$LIBDIR/$(basename "$library")"
     done
 fi
-MULTIARCH="$(gcc -print-multiarch)"
-SYSLIB="/usr/lib/$MULTIARCH"
+MULTIARCH="$(gcc -print-multiarch 2>/dev/null || true)"
+if [ -n "$MULTIARCH" ] && [ -d "/usr/lib/$MULTIARCH" ]; then
+    SYSLIB="/usr/lib/$MULTIARCH" # Debian/Ubuntu
+else
+    SYSLIB=/usr/lib64 # AlmaLinux (manylinux_2_28)
+fi
+# The oldest glibc the AppImage runs on (check-glibc-floor.sh, #926). A build
+# host at or below it means every supported host has a newer glibc than the
+# one OBS was linked against, so glibc and the C++ runtime come from the host
+# and nothing of glibc is bundled (no loader, no interpreter patching, no
+# gconv). Above it (the Ubuntu 26.04 build), glibc is bundled as before.
+GLIBC_FLOOR=2.28
+build_glibc="$(getconf GNU_LIBC_VERSION | sed 's/^glibc //')"
+if [ "$(printf '%s\n%s\n' "$build_glibc" "$GLIBC_FLOOR" | sort -V | tail -1)" = "$GLIBC_FLOOR" ]; then
+    BUNDLE_GLIBC=0
+else
+    BUNDLE_GLIBC=1
+fi
+echo "build glibc $build_glibc, floor $GLIBC_FLOOR: bundle glibc=$BUNDLE_GLIBC"
 
 # Libraries that must come from the host because they are the GPU driver stack
 # (the AppImage excludelist): the host's Mesa/NVIDIA/VA-API drivers are built
@@ -48,15 +65,34 @@ SYSLIB="/usr/lib/$MULTIARCH"
 # directories, so a bundled copy would shadow them through the relative RPATH
 # (obs-rust/obs-studio#625). Everything else is bundled.
 EXCLUDE='^(linux-vdso|libcuda|libnvidia|libnvcuvid|libGL\.so|libGLX|libEGL|libOpenGL|libGLdispatch|libGLESv|libglapi|libgbm|libdrm|libvulkan|libva(\.so|-)|libwayland-(client|egl|server)|libgallium|libLLVM)'
+if [ "$BUNDLE_GLIBC" = 0 ]; then
+    # glibc and the C++ runtime are the host's. gcc-toolset links the parts of
+    # libstdc++ newer than the system's 3.4.25 statically, so the host's
+    # libstdc++ is enough (check-glibc-floor.sh checks GLIBCXX too).
+    EXCLUDE="${EXCLUDE%)}|ld-linux|libc\.so|libm\.so|libmvec|libpthread|libdl\.so|librt\.so|libresolv|libnss_|libutil\.so|libanl|libBrokenLocale|libthread_db|libstdc\+\+|libgcc_s)"
+fi
 
-mkdir -p "$LIBDIR" "$APPDIR/lib64"
+mkdir -p "$LIBDIR"
 
 # --- Qt plugins -------------------------------------------------------------
 # Qt must load plugins from the bundle only (qt.conf below). A plugin that is not
 # bundled is not "found on the host instead": it is silently missing, or - worse, when
 # the host's Qt differs - loaded from the host and crashing (QIcon -> libqsvgicon.so).
-QT_PLUGINS="$SYSLIB/qt6/plugins"
-[ -d "$QT_PLUGINS" ] || QT_PLUGINS="$(dirname "$(find /usr/lib /usr/lib64 -path '*/qt6/plugins/platforms/libqxcb.so' 2>/dev/null | head -1)")/.."
+OBS_DEPS="${OBS_DEPS:-/opt/obs-deps}" # the manylinux base's source-built libraries
+# Ask the Qt we built against where its plugins are; never search the file
+# system for them (a system Qt 5 in /usr/lib64/qt5/plugins matched first once,
+# and Qt 5 plugins next to Qt 6 libraries would crash at load).
+QT_PLUGINS=""
+for qtpaths in "$OBS_DEPS/qt6/bin/qtpaths6" "$OBS_DEPS/qt6/bin/qtpaths" qtpaths6; do
+    if command -v "$qtpaths" >/dev/null 2>&1; then
+        QT_PLUGINS="$("$qtpaths" --query QT_INSTALL_PLUGINS 2>/dev/null)" && break
+    fi
+done
+[ -d "$QT_PLUGINS" ] || QT_PLUGINS="$SYSLIB/qt6/plugins"
+[ -f "$QT_PLUGINS/platforms/libqxcb.so" ] || {
+    echo "::error::no Qt 6 plugins (looked at $QT_PLUGINS)" >&2
+    exit 1
+}
 echo "Qt plugins from: $(realpath "$QT_PLUGINS")"
 mkdir -p "$LIBDIR/qt6/plugins"
 for d in platforms platforminputcontexts platformthemes imageformats iconengines styles generic \
@@ -68,7 +104,7 @@ done
 # the package put them somewhere unexpected, and fail the build if they do not exist.
 for need in platforms/libqxcb.so imageformats/libqsvg.so iconengines/libqsvgicon.so; do
     if [ ! -e "$LIBDIR/qt6/plugins/$need" ]; then
-        found="$(find /usr/lib /usr/lib64 -path "*/$need" 2>/dev/null | head -1)"
+        found="$(find "$QT_PLUGINS/.." /usr/lib/*/qt6 /usr/lib64/qt6 -path "*/$need" 2>/dev/null | head -1)"
         if [ -n "$found" ]; then
             mkdir -p "$LIBDIR/qt6/plugins/$(dirname "$need")"
             cp -aL "$found" "$LIBDIR/qt6/plugins/$need"
@@ -79,6 +115,9 @@ for need in platforms/libqxcb.so imageformats/libqsvg.so iconengines/libqsvgicon
         fi
     fi
 done
+# Qt's GTK 3 platform theme would pull GTK 3 into the bundle; OBS brings its own
+# themes and Qt keeps the xdg-desktop-portal one. (The Ubuntu Qt never had it.)
+rm -f "$LIBDIR/qt6/plugins/platformthemes/libqgtk3.so"
 find "$LIBDIR/qt6/plugins" -name '*.so' | sed "s|$LIBDIR/||" | sort
 
 # Qt must only ever look at the bundled plugins (see AppRun).
@@ -87,26 +126,33 @@ printf '[Paths]\nPrefix = ..\nPlugins = lib/qt6/plugins\n' >"$APPDIR/usr/bin/qt.
 mkdir -p "$LIBDIR/gio/modules"
 
 # --- dlopen()ed runtime pieces that ldd cannot see ---------------------------
-mkdir -p "$LIBDIR/gconv"
-cp -a "$SYSLIB"/gconv/. "$LIBDIR/gconv/"
-for so in libnss_files.so.2 libnss_dns.so.2 libresolv.so.2 libxkbcommon-x11.so.0; do
-    [ -e "$SYSLIB/$so" ] && cp -aL "$SYSLIB/$so" "$LIBDIR/"
-done
+if [ "$BUNDLE_GLIBC" = 1 ]; then
+    mkdir -p "$LIBDIR/gconv"
+    cp -a "$SYSLIB"/gconv/. "$LIBDIR/gconv/"
+    for so in libnss_files.so.2 libnss_dns.so.2 libresolv.so.2; do
+        [ -e "$SYSLIB/$so" ] && cp -aL "$SYSLIB/$so" "$LIBDIR/"
+    done
+fi
+[ -e "$SYSLIB/libxkbcommon-x11.so.0" ] && cp -aL "$SYSLIB/libxkbcommon-x11.so.0" "$LIBDIR/"
 # The bundled libpipewire loads its modules, SPA plugins and client.conf from
 # the directories AppRun points it at. Without them pw_context_new() returns
 # NULL and OBS crashes as soon as a PipeWire capture starts
 # (obs-rust/obs-studio#426), so a build host that lacks them must fail here.
-for need in "$SYSLIB/spa-0.2/support/libspa-support.so:libspa-0.2-modules" \
-    "$SYSLIB/pipewire-0.3/libpipewire-module-protocol-native.so:libpipewire-0.3-modules" \
-    "/usr/share/pipewire/client.conf:pipewire-bin"; do
+SPA_DIR="$(pkg-config --variable=plugindir libspa-0.2 2>/dev/null || echo "$SYSLIB/spa-0.2")"
+PW_MODULES="$(pkg-config --variable=moduledir libpipewire-0.3 2>/dev/null || echo "$SYSLIB/pipewire-0.3")"
+PW_SHARE="$(pkg-config --variable=prefix libpipewire-0.3 2>/dev/null || echo /usr)/share/pipewire"
+for need in "$SPA_DIR/support/libspa-support.so:libspa-0.2-modules" \
+    "$PW_MODULES/libpipewire-module-protocol-native.so:libpipewire-0.3-modules" \
+    "$PW_SHARE/client.conf:pipewire-bin"; do
     if [ ! -e "${need%%:*}" ]; then
         echo "::error::${need%%:*} not found; install ${need##*:} on the build host" >&2
         exit 1
     fi
 done
-cp -a "$SYSLIB/spa-0.2" "$SYSLIB/pipewire-0.3" "$LIBDIR/"
+mkdir -p "$LIBDIR/spa-0.2" && cp -a "$SPA_DIR/." "$LIBDIR/spa-0.2/"
+mkdir -p "$LIBDIR/pipewire-0.3" && cp -a "$PW_MODULES/." "$LIBDIR/pipewire-0.3/"
 mkdir -p "$APPDIR/usr/share/pipewire"
-cp -a /usr/share/pipewire/. "$APPDIR/usr/share/pipewire/"
+cp -a "$PW_SHARE/." "$APPDIR/usr/share/pipewire/"
 
 # --- the modules the build installed, for test-appimage.sh -------------------
 mkdir -p "$DATA_ROOT"
@@ -116,7 +162,9 @@ find "$MODULE_ROOT" -name '*.so' -printf '%f\n' | sort >"$DATA_ROOT/appimage-mod
 # Install the source-built version first, so closure discovery uses it and
 # cannot replace it with the build host's library requiring a newer VA API.
 install -m 644 "$COMPAT_LIB" "$LIBDIR/libavutil.so.60"
-export LD_LIBRARY_PATH="$LIBDIR"
+# Prepend: on the glibc 2.28 base the prebuilt libraries (/opt/obs-deps/<tool>/lib)
+# are only on the image's LD_LIBRARY_PATH, and the closure must find them to bundle them.
+export LD_LIBRARY_PATH="$LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 is_elf() { [ "$(head -c4 "$1" 2>/dev/null | od -An -c | tr -d ' ')" = '177ELF' ]; }
 
@@ -146,6 +194,12 @@ while [ -n "$queue" ]; do
     queue="$(echo "$next" | sed '/^$/d')"
 done
 
+# --- host libraries: shims for optional ones, the preflight for required ones (#959)
+# After the closure (the shims replace DT_NEEDED entries it found) and before the
+# RPATHs are set (set-runpaths.sh then covers the shims and obs-hostlib-check).
+uv run --no-project "$HERE/hostlib/build.py" "$APPDIR"
+
+if [ "$BUNDLE_GLIBC" = 1 ]; then
 # --- the rest of glibc ------------------------------------------------------
 # The closure holds only the parts of glibc that OBS links. The host's GPU drivers
 # run on the bundled loader and libc too and link more of it (the NVIDIA driver's
@@ -197,6 +251,7 @@ fi
 echo "bundled glibc $(cat "$GLIBC_DIR/GLIBC_VERSION"), GLIBCXX_3.4.$(cat "$GLIBC_DIR/GLIBCXX_MINOR")"
 
 # --- the dynamic loader (see AppRun) ---------------------------------------
+mkdir -p "$APPDIR/lib64"
 cp -aL "$SYSLIB/ld-linux-x86-64.so.2" "$APPDIR/lib64/ld-linux-x86-64.so.2"
 rm -f "$LIBDIR/ld-linux-x86-64.so.2"
 # The directory name identifies this exact C/C++ runtime, so that a rebuild with
@@ -213,12 +268,19 @@ find "$APPDIR/usr" -type f -perm -u+x ! -name '*.so' ! -name '*.so.*' | while re
     echo "interpreter patched: ${f#"$APPDIR"/}"
 done
 
+else
+    # Every ELF keeps the system interpreter and finds glibc and the C++
+    # runtime on the host; AppRun has nothing to install.
+    LOADER=""
+    LOADER_DIR=""
+fi
+
 # --- relative RPATHs instead of an exported LD_LIBRARY_PATH (see set-runpaths.sh) ---
 unset LD_LIBRARY_PATH # patchelf and friends are host programs
-"$HERE/set-runpaths.sh" "$APPDIR" "$LOADER_DIR/lib"
+"$HERE/set-runpaths.sh" "$APPDIR" ${LOADER_DIR:+"$LOADER_DIR/lib"}
 
 # --- desktop integration -----------------------------------------------------
-sed -e "s|@LOADER@|$LOADER|" -e "s|@OBS_GUI_NAME@|$GUI_NAME|" "$HERE/AppRun" >"$APPDIR/AppRun"
+sed -e "s|@LOADER@|$LOADER|" -e "s|@BUNDLE_GLIBC@|$BUNDLE_GLIBC|" -e "s|@OBS_GUI_NAME@|$GUI_NAME|" "$HERE/AppRun" >"$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 cp "$APPDIR/usr/share/applications/$APP_ID.desktop" "$APPDIR/"
 cp "$APPDIR/usr/share/icons/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/"
@@ -227,10 +289,17 @@ ln -sf "$APP_ID.png" "$APPDIR/.DirIcon"
 # --- everything AppRun points OBS at at runtime must be in the AppDir --------
 "$HERE/check-appdir.sh" "$APPDIR"
 
+# --- nothing in the AppDir may need a glibc newer than the floor (#926) -------
+"$HERE/check-glibc-floor.sh" "$APPDIR" 2.28
+
 # --- sanity: nothing may resolve outside the AppDir except the excluded host libs
 echo "::group::Libraries still resolved from the host"
 # (the binary's interpreter now points at the not-yet-installed loader, so ask the bundled one)
-"$APPDIR/lib64/ld-linux-x86-64.so.2" --library-path "$GLIBC_DIR:$LIBDIR" --list "$APPDIR/usr/bin/$GUI_NAME" |
-    grep -v "$APPDIR" | grep '=> /' || true
+if [ "$BUNDLE_GLIBC" = 1 ]; then
+    "$APPDIR/lib64/ld-linux-x86-64.so.2" --library-path "$GLIBC_DIR:$LIBDIR" --list "$APPDIR/usr/bin/$GUI_NAME" |
+        grep -v "$APPDIR" | grep '=> /' || true
+else
+    ldd "$APPDIR/usr/bin/$GUI_NAME" | grep -v "$APPDIR" | grep '=> /' || true
+fi
 echo "::endgroup::"
 du -sh "$APPDIR"

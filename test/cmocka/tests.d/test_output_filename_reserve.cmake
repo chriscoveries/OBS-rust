@@ -16,7 +16,7 @@ target_include_directories(
 target_link_libraries(test_output_filename_reserve PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
 
 if(OS_LINUX AND TARGET OBS::libobs-opengl)
-  target_sources(test_output_filename_reserve PRIVATE "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-mux.c")
+  target_sources(test_output_filename_reserve PRIVATE "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-mux.c.h")
   target_compile_definitions(
     test_output_filename_reserve
     PRIVATE TEST_FFMPEG_MUX GRAPHICS_MODULE_PATH="$<TARGET_FILE:OBS::libobs-opengl>"

@@ -16,7 +16,7 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #endif
-#include "media-io/video-matrices.c"
+#include "media-io/video-matrices.c.h"
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif

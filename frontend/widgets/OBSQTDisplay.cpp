@@ -19,7 +19,7 @@
 
 #include "moc_OBSQTDisplay.cpp"
 
-static inline long long color_to_int(const QColor &color)
+static inline long long display_color_to_int(const QColor &color)
 {
 	auto shift = [&](unsigned val, int shift) {
 		return ((val & 0xff) << shift);
@@ -107,7 +107,7 @@ QColor OBSQTDisplay::GetDisplayBackgroundColor() const
 
 void OBSQTDisplay::SetDisplayBackgroundColor(const QColor &color)
 {
-	uint32_t newBackgroundColor = (uint32_t)color_to_int(color);
+	uint32_t newBackgroundColor = (uint32_t)display_color_to_int(color);
 
 	if (newBackgroundColor != backgroundColor) {
 		backgroundColor = newBackgroundColor;

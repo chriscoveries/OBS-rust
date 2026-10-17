@@ -14,4 +14,4 @@
 #define bitstream_reader_init oracle_bitstream_reader_init
 #define bitstream_reader_read_bits oracle_bitstream_reader_read_bits
 
-#include "obs-avc.c"
+#include "obs-avc.c.h"

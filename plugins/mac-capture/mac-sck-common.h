@@ -1,3 +1,5 @@
+#pragma once
+
 #include <AvailabilityMacros.h>
 #include <Cocoa/Cocoa.h>
 

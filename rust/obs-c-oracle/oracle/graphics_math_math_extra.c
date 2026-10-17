@@ -3,4 +3,4 @@
  * The Rust shim provides the unrenamed rand_float that vec3_rand calls. */
 #include "graphics_math_names.h"
 
-#include "graphics/math-extra.c"
+#include "graphics/math-extra.c.h"

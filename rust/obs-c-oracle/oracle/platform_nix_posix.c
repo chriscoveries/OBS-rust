@@ -68,7 +68,7 @@
  * The rename above still rewrites the calls in this file.
  */
 
-#include "util/platform-nix.c"
+#include "util/platform-nix.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 size_t oracle_os_dirent_size(void);

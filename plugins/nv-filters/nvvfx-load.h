@@ -558,7 +558,7 @@ static inline bool load_nv_vfx_libs(unsigned int version)
 	return true;
 }
 
-static unsigned int get_lib_version(void)
+static unsigned int get_vfx_lib_version(void)
 {
 	static unsigned int version = 0;
 	static bool version_checked = false;

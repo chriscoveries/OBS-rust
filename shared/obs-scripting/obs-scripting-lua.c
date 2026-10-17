@@ -1376,3 +1376,8 @@ void obs_lua_unload(void)
 	pthread_mutex_destroy(&timer_mutex);
 	pthread_mutex_destroy(&lua_source_def_mutex);
 }
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef call_func
+#undef ls_get_libobs_obj
+#undef ls_push_libobs_obj

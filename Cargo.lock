@@ -375,8 +375,11 @@ name = "libobs-rust"
 version = "0.1.0"
 dependencies = [
  "obs-codec",
+ "obs-data",
  "obs-graphics",
+ "obs-hotkey",
  "obs-media-io",
+ "obs-properties",
  "obs-util",
 ]
 
@@ -428,11 +431,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "obs-data"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libc",
+ "obs-c-oracle",
+ "obs-util",
+ "proptest",
+]
+
+[[package]]
+name = "obs-gpu-status"
+version = "0.1.0"
+
+[[package]]
+name = "obs-gpu-status-frontend"
+version = "0.1.0"
+dependencies = [
+ "obs-gpu-status",
+]
+
+[[package]]
 name = "obs-graphics"
 version = "0.1.0"
 dependencies = [
  "libc",
  "obs-c-oracle",
+ "obs-util",
+ "proptest",
+]
+
+[[package]]
+name = "obs-hotkey"
+version = "0.1.0"
+dependencies = [
+ "obs-c-oracle",
+ "obs-util",
  "proptest",
 ]
 
@@ -476,6 +511,16 @@ name = "obs-preflight-ffi"
 version = "0.1.0"
 dependencies = [
  "obs-preflight",
+]
+
+[[package]]
+name = "obs-properties"
+version = "0.1.0"
+dependencies = [
+ "obs-c-oracle",
+ "obs-data",
+ "obs-util",
+ "proptest",
 ]
 
 [[package]]

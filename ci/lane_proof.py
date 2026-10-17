@@ -24,7 +24,7 @@ every lane. A proof is keyed by the lane's *inputs* instead:
   and passed uploads an empty artifact named `lane-proof-v1-<lane>-<key>`
   as its last step, so the name exists only after a pass.
 - **Trust**: a proof counts only if the run that uploaded it is this
-  repository's pr-pull workflow on a branch in this repository (only
+  repository's ci.yml workflow on a branch in this repository (only
   people with write access can push one) or a merge-queue run, it is not
   expired, and it is younger than MAX_AGE_HOURS. Fork PR runs execute the
   fork's workflow file, so their proofs are never trusted; fork PRs still
@@ -56,7 +56,7 @@ ROOT = Path(os.environ.get("LANE_PROOF_REPO") or Path(__file__).resolve().parent
 PROOF_VERSION = 1
 PREFIX = f"lane-proof-v{PROOF_VERSION}-"
 MAX_AGE_HOURS = 72
-TRUSTED_WORKFLOW = ".github/workflows/pr-pull.yaml"
+TRUSTED_WORKFLOW = ".github/workflows/ci.yml"
 # A change to any of these decides how lanes run or how proofs are keyed,
 # so a head that touches one gets no key and runs everything.
 SURFACES = (

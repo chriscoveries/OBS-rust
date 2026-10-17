@@ -3,13 +3,16 @@
 This is the decision for #141. A port is **complete** when the applicable
 four testing tiers in [testing-policy.md](testing-policy.md) pass. It is
 **shipped** when a release artifact uses that Rust implementation by default.
+Today every build makes `libobs-with-rust` (the Rust ports linked in place of
+the ported C) beside the C `libobs`, but links and ships the C one (#1065).
 Passing a unit test or building a Rust static library alone does not ship it.
 
-## Flip `ENABLE_RUST_LIBOBS` to ON by default
+## Ship `libobs-with-rust` by default
 
-The default changes in a separate PR only after all of these gates pass on a
-release candidate. Keep an explicit OFF option for rollback during the first
-ON-default release.
+Linking and packaging `libobs-with-rust` instead of `libobs` changes in a
+separate PR only after all of these gates pass on a release candidate. Keep
+an explicit way back to the C `libobs` for rollback during the first such
+release.
 
 1. **Compatibility:** Tier 2 passes with OFF and ON on Linux, macOS, and
    Windows, on both x64 and arm64 wherever this project ships that platform.
@@ -114,7 +117,7 @@ cmake -S . -B build-lto -G Ninja \
   -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld-22 \
   -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld-22 \
   -DRust_CARGO=/tmp/obs-cargo-soldr \
-  -DENABLE_RUST_LIBOBS=ON -DENABLE_FRONTEND=OFF -DENABLE_UNIT_TESTS=ON \
+  -DENABLE_FRONTEND=OFF -DENABLE_UNIT_TESTS=ON \
   -DENABLE_BROWSER=OFF -DENABLE_WEBSOCKET=OFF -DENABLE_AJA=OFF \
   -DENABLE_WEBRTC=OFF -DENABLE_NVENC=OFF -DENABLE_FFMPEG_NVENC=OFF \
   -DENABLE_QSV11=OFF -DENABLE_VST=OFF -DENABLE_SCRIPTING=OFF \

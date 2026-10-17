@@ -15,9 +15,7 @@ gates:
   rust/x86_64-pc-windows-msvc/dylint: {lane: cross}
   rust/aarch64-apple-darwin/clippy: {lane: cross}
   rust/aarch64-apple-darwin/dylint: {lane: cross}
-  rust/x86_64-apple-darwin/clippy: {lane: cross}
-  rust/x86_64-apple-darwin/dylint: {lane: cross}
 jobs:
   build-project.yaml:rust-tests-linux: [rust/all/fmt, rust/x86_64-unknown-linux-gnu/clippy, rust/x86_64-unknown-linux-gnu/test]
   build-project.yaml:rust-linux-tier2: [cpp/linux-x64/tier2]
-  build-project.yaml:rust-cross-lint: [rust/x86_64-pc-windows-msvc/clippy, rust/x86_64-pc-windows-msvc/dylint, rust/aarch64-apple-darwin/clippy, rust/aarch64-apple-darwin/dylint, rust/x86_64-apple-darwin/clippy, rust/x86_64-apple-darwin/dylint]
+  build-project.yaml:rust-cross-lint: [rust/x86_64-pc-windows-msvc/clippy, rust/x86_64-pc-windows-msvc/dylint, rust/aarch64-apple-darwin/clippy, rust/aarch64-apple-darwin/dylint]

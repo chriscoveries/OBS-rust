@@ -108,7 +108,7 @@ static string translate_hotkey(const Json &hotkey, const string &source)
 #undef add_translation
 }
 
-static bool source_name_exists(const Json::array &sources, const string &name)
+static bool sl_source_name_exists(const Json::array &sources, const string &name)
 {
 	for (size_t i = 0; i < sources.size(); i++) {
 		Json item = sources[i];
@@ -145,7 +145,7 @@ static string get_source_name_from_id(const Json &root, const Json::array &sourc
 			int copy = 1;
 			string out_name = name;
 
-			while (source_name_exists(sources, out_name)) {
+			while (sl_source_name_exists(sources, out_name)) {
 				out_name = name + "(" + to_string(copy++) + ")";
 			}
 
@@ -289,7 +289,7 @@ static int attempt_import(const Json &root, const string &name, Json &res)
 
 		int copy = 1;
 		string out_name = name;
-		while (source_name_exists(out_sources, out_name)) {
+		while (sl_source_name_exists(out_sources, out_name)) {
 			out_name = name + "(" + to_string(copy++) + ")";
 		}
 
@@ -341,7 +341,7 @@ static int attempt_import(const Json &root, const string &name, Json &res)
 
 		int copy = 1;
 		string out_name = name;
-		while (source_name_exists(out_sources, out_name)) {
+		while (sl_source_name_exists(out_sources, out_name)) {
 			out_name = name + "(" + to_string(copy++) + ")";
 		}
 

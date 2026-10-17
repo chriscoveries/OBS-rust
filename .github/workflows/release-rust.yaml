@@ -1,6 +1,7 @@
 name: Release OBS-Studio-Rust
 run-name: Daily OBS-Studio-Rust beta 🦀
-# Daily beta: builds OBS-Studio-Rust (ENABLE_RUST_LIBOBS=ON) for Linux, macOS
+# Daily beta: builds OBS-Studio-Rust (ENABLE_RUST_LIBOBS=ON: the identity; libobs
+# is the C build, the Rust ports are built and tested but not shipped, #1065) for Linux, macOS
 # and Windows from master, plus the Linux AppImage (appimage.yaml), and
 # publishes a GitHub pre-release (macOS signed/notarized when credentials exist) tagged
 # obs-studio-rust-v<rust/libobs-rust version>-beta.<YYYYMMDD>.
@@ -128,6 +129,52 @@ jobs:
           mkdir -p "$cas"
           echo "XCODE_CAS_PATH=$cas" >>"$GITHUB_ENV"
 
+      # Restore, read-only, the compiler caches build-project.yaml's app builds
+      # save on master (same target, RelWithDebInfo): the release compiled
+      # every C file cold, Windows x64 15m34s at 0/716 ccache hits against
+      # 3m08s in the scheduled build (#782). Never saved here, so the release's
+      # Rust-libobs objects cannot grow or skew the app builds' caches.
+      - name: Restore Xcode Cache 🗄️
+        if: matrix.os == 'macos'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.XCODE_CAS_PATH }}
+          key: macOS-xcode-${{ matrix.target }}-RelWithDebInfo-${{ needs.check.outputs.sha }}
+          restore-keys: macOS-xcode-${{ matrix.target }}-RelWithDebInfo-
+      - name: Restore ccache 🗄️
+        if: matrix.os == 'windows'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: windows-ccache-${{ matrix.target }}-RelWithDebInfo-${{ needs.check.outputs.sha }}
+          restore-keys: windows-ccache-${{ matrix.target }}-RelWithDebInfo-
+      # The windows-ci presets enable ccache (ENABLE_CCACHE) when it is on PATH;
+      # same pinned build as build-project.yaml's windows-build.
+      - name: Set Up ccache 🗄️
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          # Set Up ccache 🗄️
+          $Version = '4.14.1'
+          $Hash = '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4'
+          $Name = "ccache-${Version}-windows-x86_64"
+          $Zip = "${env:RUNNER_TEMP}/${Name}.zip"
+
+          Invoke-WebRequest -Uri "https://github.com/ccache/ccache/releases/download/v${Version}/${Name}.zip" -OutFile $Zip
+          if ( (Get-FileHash -Algorithm SHA256 -Path $Zip).Hash -ne $Hash ) { throw "${Name}.zip checksum mismatch" }
+          Expand-Archive -Path $Zip -DestinationPath $env:RUNNER_TEMP
+
+          $CcacheHome = Join-Path $env:RUNNER_TEMP $Name
+          $env:CCACHE_DIR = Join-Path $env:GITHUB_WORKSPACE '.ccache'
+          $CcacheHome >> $env:GITHUB_PATH
+          @(
+            "CCACHE_DIR=${env:CCACHE_DIR}"
+            'CCACHE_MAXSIZE=2G'
+            'CCACHE_COMPILERCHECK=content'
+            'CCACHE_SLOPPINESS=include_file_mtime,include_file_ctime'
+          ) >> $env:GITHUB_ENV
+          & (Join-Path $CcacheHome 'ccache.exe') --zero-stats
+
       - name: Set Up Code Signing 🔑
         if: matrix.os == 'macos'
         id: codesign
@@ -145,9 +192,9 @@ jobs:
 
       # Corrosion runs cargo inside the CMake build; same soldr as build-project.yaml.
       - name: Set up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          version: 0.9.31
+          version: 0.9.35
           shims: true
 
       # The x86_64 leg is cross-built on an arm64 runner: Corrosion builds
@@ -173,6 +220,11 @@ jobs:
           codesignIdent: ${{ steps.codesign.outputs.codesignIdent || '-' }}
           codesignTeam: ${{ steps.codesign.outputs.codesignTeam }}
           provisioningProfileUUID: ${{ steps.codesign.outputs.provisioningProfileUUID }}
+
+      - name: ccache Stats 🗄️
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: ccache --show-stats
 
       - name: Package OBS-Studio-Rust 📀
         uses: ./.github/actions/package-obs
@@ -279,6 +331,9 @@ jobs:
       publish_continuous: true
       rust_version: ${{ needs.check.outputs.version }}
       rust_libobs: true
+      # The release gate: the AppImage built once, run on AlmaLinux 8, Ubuntu
+      # 22.04, Arch Linux and NixOS before anything is published (#926).
+      platform_tests: true
     # A called workflow may not ask for more than its caller grants, and
     # appimage.yaml's release job asks for contents: write (it only runs on a
     # push, never from here). Granting less made GitHub refuse to start this
@@ -501,7 +556,7 @@ jobs:
           sha256sum "${files[@]}" >SHA256SUMS
           cat SHA256SUMS
           cat >notes.md <<EOF
-          Daily beta of OBS-Studio-Rust $VERSION: OBS Studio built with \`ENABLE_RUST_LIBOBS=ON\`, so the ported libobs internals run from Rust. Built from [\`${SHA:0:9}\`](https://github.com/$GITHUB_REPOSITORY/commit/$SHA).
+          Daily beta of OBS-Studio-Rust $VERSION. It ships the C libobs; the Rust ports of its internals are built and tested on every build but not shipped yet (#1065). Built from [\`${SHA:0:9}\`](https://github.com/$GITHUB_REPOSITORY/commit/$SHA).
 
           **Daily beta.** macOS packages are signed and notarized when the project's release credentials are configured. For an unnotarized download, copy OBS-Studio-Rust.app to Applications and try opening it, then choose **System Settings → Privacy & Security → Open Anyway**. For a download you trust, the Terminal alternative is \`xattr -dr com.apple.quarantine /Applications/OBS-Studio-Rust.app\`; it removes quarantine from that app only. See [Apple's guidance](https://support.apple.com/102445).
 

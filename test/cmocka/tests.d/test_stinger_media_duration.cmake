@@ -8,7 +8,7 @@ if(OS_LINUX AND TARGET obs-transitions AND TARGET OBS::libobs-opengl AND TARGET 
   add_executable(
     test_stinger_media_duration
     test_stinger_media_duration.c
-    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-source.c"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-source.c.h"
   )
   target_compile_definitions(
     test_stinger_media_duration

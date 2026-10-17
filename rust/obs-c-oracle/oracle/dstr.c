@@ -31,7 +31,7 @@
 #define dstr_mid oracle_dstr_mid
 #define dstr_right oracle_dstr_right
 
-#include "util/dstr.c"
+#include "util/dstr.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 size_t oracle_sizeof_dstr(void);

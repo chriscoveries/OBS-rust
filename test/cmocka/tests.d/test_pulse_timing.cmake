@@ -1,6 +1,6 @@
 # linux-pulseaudio record stream timestamps (obsproject/obs-studio#12835)
 if(TARGET OBS::pulseaudio)
-  add_executable(test_pulse_timing test_pulse_timing.c "${CMAKE_SOURCE_DIR}/plugins/linux-pulseaudio/pulse-timing.c")
+  add_executable(test_pulse_timing test_pulse_timing.c "${CMAKE_SOURCE_DIR}/plugins/linux-pulseaudio/pulse-timing.c.h")
   target_include_directories(
     test_pulse_timing
     PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/linux-pulseaudio"

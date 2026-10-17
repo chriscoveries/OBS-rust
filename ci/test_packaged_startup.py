@@ -315,3 +315,45 @@ class MigrationFixtureTest(unittest.TestCase):
                     fixture.verify()
             finally:
                 fixture.cleanup()
+
+
+class GpuStatusTest(unittest.TestCase):
+    """obs-rust/obs-studio#941: the packaged app reports a real adapter in
+    GetStats.gpuAcceleration and logs its GPU state at startup."""
+
+    def status(self, **overrides):
+        status = {
+            "state": "yellow",
+            "adapter": "Microsoft Basic Render Driver",
+            "detectedGpus": [],
+            "summary": "Rendering on the CPU.",
+            "causes": [],
+        }
+        status.update(overrides)
+        return status
+
+    def test_a_real_adapter_in_any_state_passes(self):
+        for state in ("green", "yellow", "red"):
+            smoke.validate_gpu_status(self.status(state=state))
+        smoke.validate_gpu_status(self.status(adapter="Apple M1 (Virtual)"))
+
+    def test_a_missing_status_fails(self):
+        with self.assertRaisesRegex(RuntimeError, "gpuAcceleration is missing"):
+            smoke.validate_gpu_status(None)
+
+    def test_a_bare_api_name_is_not_an_adapter(self):
+        for api in ("OpenGL", "Direct3D 11", "Metal"):
+            with self.assertRaisesRegex(RuntimeError, "API name"):
+                smoke.validate_gpu_status(self.status(adapter=api))
+
+    def test_unknown_state_or_shape_fails(self):
+        with self.assertRaisesRegex(RuntimeError, "state"):
+            smoke.validate_gpu_status(self.status(state="blue"))
+        with self.assertRaisesRegex(RuntimeError, "detectedGpus"):
+            smoke.validate_gpu_status(self.status(detectedGpus=None))
+
+    def test_startup_log_reports_the_gpu_state(self):
+        smoke.require_gpu_log("info: GPU acceleration: green: Rendering on X.\n")
+        smoke.require_gpu_log("warning: ==== GPU acceleration: YELLOW ====\n")
+        with self.assertRaisesRegex(RuntimeError, "GPU acceleration"):
+            smoke.require_gpu_log("info: Loading up OpenGL on adapter X\n")

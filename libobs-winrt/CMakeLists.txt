@@ -9,23 +9,10 @@ target_include_directories(libobs-winrt-headers INTERFACE "${CMAKE_CURRENT_SOURC
 add_library(libobs-winrt MODULE)
 add_library(OBS::libobs-winrt ALIAS libobs-winrt)
 
-target_sources(libobs-winrt PRIVATE winrt-capture.cpp winrt-capture.h winrt-dispatch.cpp winrt-dispatch.h)
-
-target_precompile_headers(
-  libobs-winrt
-  PRIVATE
-    <d3d11.h>
-    <DispatcherQueue.h>
-    <dwmapi.h>
-    <obs-module.h>
-    <util/windows/ComPtr.hpp>
-    <Windows.Graphics.Capture.Interop.h>
-    <windows.graphics.directx.direct3d11.interop.h>
-    <winrt/Windows.Foundation.Metadata.h>
-    <winrt/Windows.Graphics.Capture.h>
-    <winrt/Windows.System.h>
-)
-
+# Unity group (BUILD.md): build/winrt.core+.hpp.cpp #includes the
+# implementation files behind build/winrt.pch.hpp, which now also holds the
+# WinRT headers this target used to precompile through target_precompile_headers.
+target_sources(libobs-winrt PRIVATE build/winrt.core+.hpp.cpp winrt-capture.h winrt-dispatch.h)
 target_link_libraries(libobs-winrt PRIVATE OBS::libobs OBS::COMutils Dwmapi windowsapp)
 
 # FIXME: WinRT library headers trigger deprecation warning until OBS Studio uses C++20 or newer

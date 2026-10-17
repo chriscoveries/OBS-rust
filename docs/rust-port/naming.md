@@ -13,6 +13,49 @@ One name per thing, so releases, crates and tags can't be confused (#320).
   `rust/obs-studio-rust/`. It gets no tag family of its own: published
   binaries go on the app's `obs-studio-rust-v*` releases.
 
+## Repository layout (#1051)
+
+- **The upstream tree stays where upstream has it:** `libobs/`, `libobs-*/`,
+  `frontend/`, `plugins/`, `shared/`, `deps/`, `cmake/`, `test/`. We still
+  merge `upstream/master`, so C/C++ files are never moved to restructure;
+  fixes and ports edit them in place. The only rename is in place, to the
+  build-role names in [BUILD.md](../../BUILD.md) (`foo.c` to `foo.c.h`,
+  same directory and stem, in a `git mv`-only commit), which merges and
+  `git log --follow` still track. A path whose OS its name
+  doesn't say gets an entry in `ci/platform_paths.py`, not a rename.
+- **All Rust lives in the `rust/` Cargo workspace**, one crate per ported
+  component (`rust/tools/` is excluded). The table below is where a port goes.
+- **Host code in C** stays in the OS-named files upstream already has. Each
+  libobs area has one host facade: `util/platform.h` for `libobs/util/`, and
+  `libobs/obs-host/` for the libobs core, with one header per capability
+  (`com.h`, `graphics-thread.h`, `shared-texture.h`, ...). A host that has
+  the capability defines it in its own file (`obs-windows.c`, `obs-nix.c`,
+  `obs-cocoa.m`). A host that lacks it builds `obs-host/noop/<capability>.c`,
+  listed in `libobs/cmake/os-<os>.cmake`, so no `#ifdef` picks between them.
+  This is the C form of a crate's `src/platform/mod.rs`.
+- **When a C component is fully ported**, its C sources are deleted and its
+  CMake target links the Rust staticlib. No moved copy of the C is kept.
+- **Later, not now:** once we stop merging upstream, the remaining C/C++
+  (mostly `frontend/` and `plugins/`) may move under one root directory in a
+  single mechanical PR (only `git mv` plus CMake, CI and docs paths), landed
+  in a quiet window, under a neutral name (libobs is C, not C++). That gets
+  its own issue.
+
+| C/C++ component | Rust crate |
+|---|---|
+| `libobs/util/` | `rust/obs-util` |
+| `libobs/graphics/` | `rust/obs-graphics` |
+| `libobs/media-io/` | `rust/obs-media-io` |
+| `libobs/obs-nal.c`, `obs-avc.c`, `obs-hevc.c`, `obs-av1.c` | `rust/obs-codec` |
+| `libobs/obs-data.c` | `rust/obs-data` |
+| `libobs/obs-properties.c` | `rust/obs-properties` |
+| `libobs/obs-hotkey-name-map.c` | `rust/obs-hotkey` |
+| `plugins/obs-nvenc/` (CUDA/NVENC loader) | `rust/obs-nvenc`, linked through `rust/obs-nvenc-plugin` |
+| GPU acceleration status (frontend, #846) | `rust/obs-gpu-status`, linked through `rust/obs-gpu-status-frontend` |
+| all libobs ports, as one C ABI drop-in | `rust/libobs-rust` |
+
+A new libobs area gets a new `obs-<area>` row here in the PR that starts it.
+
 ## Rust crates (`rust/<dir>/`, directory name = package name)
 
 | Kind | Name | Examples |

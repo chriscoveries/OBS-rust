@@ -9,6 +9,9 @@
 #define _GNU_SOURCE
 /* dstr_printf is C-only and lives renamed in oracle/dstr_libc.c. */
 #define dstr_printf oracle_dstr_printf
+/* os_strtod/os_dtostr: the real platform-number.c, oracle/platform_number.c. */
+#define os_strtod oracle_os_strtod
+#define os_dtostr oracle_os_dtostr
 #define config_create oracle_config_create
 #define config_open oracle_config_open
 #define config_open_string oracle_config_open_string
@@ -47,4 +50,4 @@
  * oracle keeps the C copy under a private name. */
 #define os_safe_replace oracle_host_os_safe_replace
 
-#include "util/config-file.c"
+#include "util/config-file.c.h"

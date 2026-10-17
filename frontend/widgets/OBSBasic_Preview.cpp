@@ -600,7 +600,7 @@ void OBSBasic::UpdatePreviewOverflowSettings()
 	ui->preview->SetOverflowAlwaysVisible(always);
 }
 
-static inline QColor color_from_int(long long val)
+static inline QColor preview_color_from_int(long long val)
 {
 	return QColor(val & 0xff, (val >> 8) & 0xff, (val >> 16) & 0xff, (val >> 24) & 0xff);
 }
@@ -608,7 +608,7 @@ static inline QColor color_from_int(long long val)
 QColor OBSBasic::GetSelectionColor() const
 {
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
-		return color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectRed"));
+		return preview_color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectRed"));
 	} else {
 		return QColor::fromRgb(255, 0, 0);
 	}
@@ -617,7 +617,7 @@ QColor OBSBasic::GetSelectionColor() const
 QColor OBSBasic::GetCropColor() const
 {
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
-		return color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectGreen"));
+		return preview_color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectGreen"));
 	} else {
 		return QColor::fromRgb(0, 255, 0);
 	}
@@ -626,7 +626,7 @@ QColor OBSBasic::GetCropColor() const
 QColor OBSBasic::GetHoverColor() const
 {
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
-		return color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectBlue"));
+		return preview_color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectBlue"));
 	} else {
 		return QColor::fromRgb(0, 127, 255);
 	}

@@ -333,3 +333,8 @@ void add_lua_frontend_funcs(lua_State *script)
 	}
 	lua_pop(script, 1);
 }
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef call_func
+#undef ls_get_libobs_obj
+#undef ls_push_libobs_obj

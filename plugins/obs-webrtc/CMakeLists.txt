@@ -13,7 +13,7 @@ add_library(OBS::webrtc ALIAS obs-webrtc)
 
 target_sources(
   obs-webrtc
-  PRIVATE obs-webrtc.cpp whip-output.cpp whip-output.h whip-service.cpp whip-service.h whip-utils.h whip-rtp-timestamp.h
+  PRIVATE build/obs-webrtc.core+.hpp.cpp whip-output.h whip-service.h whip-utils.h whip-rtp-timestamp.h
 )
 
 target_link_libraries(obs-webrtc PRIVATE OBS::libobs LibDataChannel::LibDataChannel CURL::libcurl)

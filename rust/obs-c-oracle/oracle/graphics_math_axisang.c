@@ -2,7 +2,7 @@
  * its global symbols renamed to oracle_* (graphics_math_names.h). */
 #include "graphics_math_names.h"
 
-#include "graphics/axisang.c"
+#include "graphics/axisang.c.h"
 
 #include <stddef.h>
 

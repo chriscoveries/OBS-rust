@@ -137,8 +137,8 @@ static const char *wgc_whole_match_classes[] = {
 	NULL,
 };
 
-static enum window_capture_method choose_method(enum window_capture_method method, bool wgc_supported,
-						const char *current_class)
+static enum window_capture_method window_choose_method(enum window_capture_method method, bool wgc_supported,
+						       const char *current_class)
 {
 	if (!wgc_supported)
 		return METHOD_BITBLT;
@@ -205,7 +205,7 @@ static void log_settings(struct window_capture *wc, obs_data_t *s)
 
 extern bool wgc_supported;
 
-static void update_settings(struct window_capture *wc, obs_data_t *s)
+static void window_update_settings(struct window_capture *wc, obs_data_t *s)
 {
 	pthread_mutex_lock(&wc->update_mutex);
 
@@ -219,7 +219,7 @@ static void update_settings(struct window_capture *wc, obs_data_t *s)
 
 	ms_build_window_strings(window, &wc->class, &wc->title, &wc->executable);
 
-	wc->method = choose_method(method, wgc_supported, wc->class);
+	wc->method = window_choose_method(method, wgc_supported, wc->class);
 	wc->priority = (enum window_priority)priority;
 	wc->cursor = obs_data_get_bool(s, "cursor");
 	wc->capture_audio = obs_data_get_bool(s, "capture_audio");
@@ -343,7 +343,7 @@ static void *wc_create(obs_data_t *settings, obs_source_t *source)
 
 	signal_handler_connect(sh, "rename", rename_audio_source, &wc->audio_source);
 
-	update_settings(wc, settings);
+	window_update_settings(wc, settings);
 	log_settings(wc, settings);
 	return wc;
 }
@@ -397,7 +397,7 @@ static void force_reset(struct window_capture *wc)
 static void wc_update(void *data, obs_data_t *settings)
 {
 	struct window_capture *wc = data;
-	update_settings(wc, settings);
+	window_update_settings(wc, settings);
 	log_settings(wc, settings);
 
 	force_reset(wc);
@@ -488,7 +488,7 @@ static bool wc_capture_method_changed(obs_properties_t *props, obs_property_t *p
 	if (!wc)
 		return false;
 
-	update_settings(wc, settings);
+	window_update_settings(wc, settings);
 
 	update_settings_visibility(props, wc);
 
@@ -503,7 +503,7 @@ static bool wc_window_changed(obs_properties_t *props, obs_property_t *p, obs_da
 	if (!wc)
 		return false;
 
-	update_settings(wc, settings);
+	window_update_settings(wc, settings);
 
 	update_settings_visibility(props, wc);
 
@@ -844,3 +844,7 @@ struct obs_source_info window_capture_info = {
 	.icon_type = OBS_ICON_TYPE_WINDOW_CAPTURE,
 	.video_get_color_space = wc_get_color_space,
 };
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef TEXT_METHOD
+#undef TEXT_METHOD_WGC

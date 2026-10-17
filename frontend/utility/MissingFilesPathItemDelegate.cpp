@@ -16,6 +16,7 @@
 ******************************************************************************/
 
 #include "MissingFilesPathItemDelegate.hpp"
+#include "MissingFilesModel.hpp"
 
 #include <OBSApp.hpp>
 
@@ -25,8 +26,6 @@
 #include <QToolButton>
 
 #include "moc_MissingFilesPathItemDelegate.cpp"
-
-enum MissingFilesRole { EntryStateRole = Qt::UserRole, NewPathsToProcessRole };
 
 MissingFilesPathItemDelegate::MissingFilesPathItemDelegate() : QStyledItemDelegate() {}
 

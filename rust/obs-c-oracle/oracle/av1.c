@@ -6,4 +6,4 @@
 #define metadata_obu_itu_t35 oracle_metadata_obu_itu_t35
 #define metadata_obu oracle_metadata_obu
 
-#include "obs-av1.c"
+#include "obs-av1.c.h"

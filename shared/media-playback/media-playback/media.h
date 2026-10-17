@@ -23,20 +23,8 @@
 extern "C" {
 #endif
 
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4244)
-#pragma warning(disable : 4204)
-#endif
-
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libswscale/swscale.h>
-#include <util/threading.h>
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
+/* ffmpeg headers, with MSVC warnings 4244/4204 silenced around them only. */
+#include "platform-media-ffmpeg.h"
 
 struct mp_media {
 	AVFormatContext *fmt;
@@ -93,6 +81,9 @@ struct mp_media {
 	bool full_decode;
 	bool measure_duration;
 	int64_t measured_duration;
+	/* the first timestamp of the file (AVFormatContext::start_time, in
+	 * microseconds), 0 if unknown: the media time and seeks count from it */
+	int64_t start_time;
 	int64_t measured_frames;
 
 	uint64_t interrupt_poll_ts;

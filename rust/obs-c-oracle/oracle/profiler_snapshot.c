@@ -21,7 +21,7 @@
 #define profiler_snapshot_entry_max_time_between_calls oracle_profiler_snapshot_entry_max_time_between_calls
 #define profiler_snapshot_entry_overall_between_calls_count oracle_profiler_snapshot_entry_overall_between_calls_count
 
-#include "util/profiler-snapshot.c"
+#include "util/profiler-snapshot.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 size_t oracle_profiler_snapshot_size(void);

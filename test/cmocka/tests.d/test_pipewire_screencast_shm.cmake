@@ -13,13 +13,13 @@ if(OS_LINUX AND TARGET OBS::pipewire)
   add_executable(
     test_pipewire_screencast_shm
     test_pipewire_screencast_shm.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/screencast-portal.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/screencast-portal.c.h"
   )
   target_include_directories(
     test_pipewire_screencast_shm
@@ -48,5 +48,8 @@ if(OS_LINUX AND TARGET OBS::pipewire)
     COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/test_pipewire_cursor_hdr.sh" $<TARGET_FILE:test_pipewire_screencast_shm>
     WORKING_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>"
   )
-  set_tests_properties(test_pipewire_screencast_shm PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+  set_tests_properties(
+    test_pipewire_screencast_shm
+    PROPERTIES RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 90
+  )
 endif()

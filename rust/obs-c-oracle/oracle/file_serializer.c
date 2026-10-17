@@ -12,4 +12,4 @@
  * oracle keeps the C copy under a private name. */
 #define os_safe_replace oracle_host_os_safe_replace
 
-#include "util/file-serializer.c"
+#include "util/file-serializer.c.h"

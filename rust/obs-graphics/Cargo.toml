@@ -13,4 +13,5 @@ libc = "0.2"
 
 [dev-dependencies]
 obs-c-oracle = { path = "../obs-c-oracle" }
+obs-util = { path = "../obs-util" }
 proptest = "1"

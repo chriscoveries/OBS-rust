@@ -30,6 +30,7 @@ ALLOWLIST = {
     "plugins/": "upstream plugins and git submodules (obs-websocket, ...)",
     "ci/test_uv_run.py": "this file spells out the patterns it forbids",
     "ci/test_tool_guard.py": "spells out the bare commands the tool guard denies",
+    ".github/workflows/ci-pre.yml": "zackees/ci.yml GEN-018: ci-pre installs nothing, so ci_lint runs on stdlib python3",
 }
 
 SCANNED_SUFFIXES = {

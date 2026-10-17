@@ -1,9 +1,9 @@
 #!/bin/bash
 # Tier 2 validation (docs/rust-port/testing-policy.md) on macOS, run directly
-# on the host (no Docker). Builds libobs and the cmocka tests with
-# ENABLE_RUST_LIBOBS=OFF and =ON, runs the unchanged C tests in both, and
-# fails unless both builds export exactly the same dynamic symbols from
-# libobs. Mirrors rust/tools/linux-validate/validate.sh.
+# on the host (no Docker). One build makes the cmocka tests and both libobs
+# frameworks, libobs (C) and libobs-with-rust (#1065); it runs the unchanged
+# C tests against each and fails unless both export exactly the same symbols.
+# Mirrors rust/tools/linux-validate/validate.sh.
 #
 # Prerequisites: cmake, Xcode, and `brew install cmocka`. The macos-ci preset
 # downloads the pre-built obs-deps during configure.
@@ -76,42 +76,59 @@ mkdir -p "$XCODE_CAS_PATH"
 
 cmocka_prefix="$(brew --prefix cmocka)"
 
+build="build_rust"
+echo "== configure + build (libobs and libobs-with-rust)"
+cmake --preset macos-ci -B "$build" \
+  -DENABLE_UNIT_TESTS=ON \
+  -DENABLE_FRONTEND=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF \
+  -DENABLE_WEBSOCKET=OFF \
+  -DCMAKE_PREFIX_PATH="$cmocka_prefix" \
+  >"$build.configure.log" 2>&1 || { tail -40 "$build.configure.log"; exit 1; }
+cmake --build "$build" --config RelWithDebInfo \
+  --target libobs libobs-with-rust cmocka-tests \
+  >"$build.build.log" 2>&1 || { grep -E ": (fatal )?error|BUILD FAILED" "$build.build.log" | sort -u | head -40; exit 1; }
+
+# libobs.framework twice: libobs (C, what the tests link) and its Rust twin
+# in $build/libobs-with-rust (#1065), same install name.
+c_lib=$(find "$build" -path "$build/libobs-with-rust" -prune -o -path '*libobs.framework*' -name libobs -type f -print | head -1)
+rust_lib=$(find "$build/libobs-with-rust" -path '*libobs.framework*' -name libobs -type f | head -1)
+if [ -z "$c_lib" ] || [ -z "$rust_lib" ]; then
+  echo "FAIL: libobs.framework not found (C: '${c_lib}', with Rust: '${rust_lib}') in $build"
+  exit 1
+fi
+nm -gU "$c_lib" | awk '{print $3}' | sort >exports-OFF.txt
+nm -gU "$rust_lib" | awk '{print $3}' | sort >exports-ON.txt
+echo "== libobs exported symbols, C vs Rust"
+diff exports-OFF.txt exports-ON.txt
+echo "IDENTICAL ($(wc -l <exports-ON.txt | tr -d ' ') symbols)"
+
+# libobs in turn loads @rpath/libavcodec.dylib etc. from the pre-built
+# obs-deps that the preset unpacked under .deps.
+avcodec=$(find "$PWD/.deps" -path '*/lib/libavcodec*.dylib' | head -1)
+if [ -z "$avcodec" ]; then
+  echo "FAIL: obs-deps libavcodec not found under .deps"
+  exit 1
+fi
+
 for mode in OFF ON; do
-  build="build_rust_$mode"
-  echo "== [$mode] configure + build"
-  cmake --preset macos-ci -B "$build" \
-    -DENABLE_UNIT_TESTS=ON \
-    -DENABLE_RUST_LIBOBS="$mode" \
-    -DENABLE_FRONTEND=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF \
-    -DENABLE_WEBSOCKET=OFF \
-    -DCMAKE_PREFIX_PATH="$cmocka_prefix" \
-    >"$build.configure.log" 2>&1 || { tail -40 "$build.configure.log"; exit 1; }
-  cmake --build "$build" --config RelWithDebInfo \
-    --target libobs cmocka-tests \
-    >"$build.build.log" 2>&1 || { grep -E ": (fatal )?error|BUILD FAILED" "$build.build.log" | sort -u | head -40; exit 1; }
-
-  lib=$(find "$build" -path '*libobs.framework*' -name libobs -type f | head -1)
-  if [ -z "$lib" ]; then
-    echo "FAIL: libobs binary not found inside libobs.framework in $build"
-    exit 1
-  fi
-
+  if [ "$mode" = ON ]; then lib=$rust_lib; else lib=$c_lib; fi
   # The test executables load @rpath/libobs.framework, and their build rpath
   # (@executable_path/../Frameworks) only holds it in an app bundle, so point
-  # dyld at the framework's build directory (absolute: ctest runs each test
-  # from its own directory).
+  # dyld at the framework's directory (absolute: ctest runs each test from
+  # its own directory). That also picks which libobs the tests run against.
   framework_dir="$PWD/${lib%%/libobs.framework/*}"
-  # libobs in turn loads @rpath/libavcodec.dylib etc. from the pre-built
-  # obs-deps that the preset unpacked under .deps.
-  avcodec=$(find "$PWD/.deps" -path '*/lib/libavcodec*.dylib' | head -1)
-  if [ -z "$avcodec" ]; then
-    echo "FAIL: obs-deps libavcodec not found under .deps"
+  dyld=(env DYLD_FRAMEWORK_PATH="$framework_dir" DYLD_LIBRARY_PATH="$(dirname "$avcodec")")
+
+  # Check the loader really took this libobs on one test binary.
+  probe=$(find "$build/test/cmocka" -name test_bitstream -type f -perm -u+x | head -1)
+  if ! "${dyld[@]}" DYLD_PRINT_LIBRARIES=1 "$probe" 2>&1 | grep -qF "$framework_dir/libobs.framework/"; then
+    echo "FAIL: [$mode] tests did not load libobs from $framework_dir"
     exit 1
   fi
+  echo "== [$mode] tests load $framework_dir/libobs.framework"
 
   echo "== [$mode] ctest"
-  if ! DYLD_FRAMEWORK_PATH="$framework_dir" DYLD_LIBRARY_PATH="$(dirname "$avcodec")" \
-    ctest --test-dir "$build" -C RelWithDebInfo --output-on-failure; then
+  if ! "${dyld[@]}" ctest --test-dir "$build" -C RelWithDebInfo --output-on-failure; then
     DYLD_FRAMEWORK_PATH="$framework_dir" DYLD_LIBRARY_PATH="$(dirname "$avcodec")" \
       show_crash_stacks "$build"
     exit 1
@@ -119,14 +136,7 @@ for mode in OFF ON; do
 
   if [ "$repeat" -gt 0 ]; then
     echo "== [$mode] ctest --repeat until-fail:$repeat${tests:+ -R $tests}"
-    DYLD_FRAMEWORK_PATH="$framework_dir" DYLD_LIBRARY_PATH="$(dirname "$avcodec")" \
-      ctest --test-dir "$build" -C RelWithDebInfo --output-on-failure \
+    "${dyld[@]}" ctest --test-dir "$build" -C RelWithDebInfo --output-on-failure \
       --repeat "until-fail:$repeat" ${tests:+-R "$tests"}
   fi
-
-  nm -gU "$lib" | awk '{print $3}' | sort >"exports-$mode.txt"
 done
-
-echo "== libobs exported symbols, OFF vs ON"
-diff exports-OFF.txt exports-ON.txt
-echo "IDENTICAL ($(wc -l <exports-ON.txt | tr -d ' ') symbols)"

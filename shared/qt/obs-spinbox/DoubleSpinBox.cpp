@@ -28,7 +28,7 @@
 #include <QTimer>
 
 namespace {
-QString trimAffixes(const QString &fullText, const QString &prefix, const QString &suffix)
+QString trimDoubleAffixes(const QString &fullText, const QString &prefix, const QString &suffix)
 {
 	if (fullText.isEmpty()) {
 		return QString();
@@ -63,7 +63,7 @@ DoubleSpinBox::~DoubleSpinBox() {}
 
 QValidator::State DoubleSpinBox::validate(QString &text, int &) const
 {
-	QString stripped = trimAffixes(text, prefix(), suffix());
+	QString stripped = trimDoubleAffixes(text, prefix(), suffix());
 
 	QString decPoint = locale().decimalPoint();
 	if (stripped.isEmpty() || stripped == "-" || stripped == decPoint || stripped == "-" + decPoint) {
@@ -91,7 +91,7 @@ QValidator::State DoubleSpinBox::validate(QString &text, int &) const
 
 void DoubleSpinBox::fixup(QString &input) const
 {
-	QString stripped = trimAffixes(input, prefix(), suffix());
+	QString stripped = trimDoubleAffixes(input, prefix(), suffix());
 
 	bool ok;
 	double val = locale().toDouble(stripped, &ok);

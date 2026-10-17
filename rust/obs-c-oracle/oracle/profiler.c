@@ -37,7 +37,7 @@ static size_t oracle_profiler_clock_pos;
 /* Calls inside profiler.c use the scripted clock, not the Rust shim. */
 #define os_gettime_ns oracle_profiler_gettime_ns
 
-#include "util/profiler.c"
+#include "util/profiler.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 void oracle_profiler_set_clock(const uint64_t *times, size_t len);

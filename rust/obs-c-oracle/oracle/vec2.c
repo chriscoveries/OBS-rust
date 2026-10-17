@@ -9,7 +9,7 @@
 #define vec2_close oracle_vec2_close
 #define vec2_norm oracle_vec2_norm
 
-#include "graphics/vec2.c"
+#include "graphics/vec2.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 size_t oracle_vec2_size(void);

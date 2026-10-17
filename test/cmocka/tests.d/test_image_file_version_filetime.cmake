@@ -4,7 +4,7 @@
 add_executable(
   test_image_file_version_filetime
   test_image_file_version_filetime.c
-  "${CMAKE_SOURCE_DIR}/plugins/image-source/image-file-version.c"
+  "${CMAKE_SOURCE_DIR}/plugins/image-source/image-file-version.c.h"
 )
 target_include_directories(
   test_image_file_version_filetime
@@ -13,7 +13,7 @@ target_include_directories(
 if(OS_WINDOWS)
   target_sources(
     test_image_file_version_filetime
-    PRIVATE "${CMAKE_SOURCE_DIR}/plugins/image-source/image-file-version-win32.c"
+    PRIVATE "${CMAKE_SOURCE_DIR}/plugins/image-source/image-file-version-win32.c.h"
   )
 endif()
 target_link_libraries(test_image_file_version_filetime PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})

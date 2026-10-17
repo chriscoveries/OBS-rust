@@ -1,0 +1,193 @@
+name: Pull
+run-name: ${{ github.event.pull_request.title || github.ref_name }} pull request run 🚀
+# Every PR runs (no paths-ignore): `CI Gate ✅` is a required check, and the
+# master merge queue (merge_group) reruns it on the merge result (#692).
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    types: [ opened, synchronize, reopened ]
+  merge_group:
+permissions:
+  contents: read
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
+  cancel-in-progress: true
+jobs:
+  # zackees/ci.yml: the first job is ci-pre.yml (the cache janitor) and every
+  # other job runs after it. The sweep is maintenance, not a check: its
+  # cache-janitor group may cancel a pending sweep and a fork PR's token
+  # cannot delete, so jobs run whatever its result (!cancelled()) and CI Gate
+  # leaves it out.
+  ci-pre:
+    name: CI Pre 🧹
+    uses: ./.github/workflows/ci-pre.yml
+    permissions:
+      actions: write
+      contents: read
+
+  # When master moves, GitHub starts a new queue run per queued PR, but a
+  # queue ref carries the base commit, so the concurrency group above never
+  # pairs it with the old one, which would keep waiting for a runner (#986).
+  cancel-superseded:
+    name: Cancel Superseded Queue Runs 🧹
+    needs: ci-pre
+    if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+      - name: Set Up uv 🐍
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: Cancel 🧹
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run ci/cancel_superseded.py
+
+  check-format:
+    name: Format 🔍
+    needs: ci-pre
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/check-format.yaml
+    permissions:
+      contents: read
+
+  build-project:
+    name: Build 🧱
+    needs: ci-pre
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit
+    permissions:
+      actions: read
+      contents: read
+
+  # One runner for both data validators (#992); each step skips itself when
+  # its files did not change.
+  validate-data:
+    name: Validate Data 🕵️
+    needs: ci-pre
+    if: ${{ !cancelled() && github.base_ref == 'master' }}
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Check for Changed Compatibility Files ✅
+        uses: ./.github/actions/check-changes
+        id: compat
+        with:
+          baseRef: origin/${{ github.base_ref }}
+          checkGlob: plugins/win-capture/data/*.json
+
+      - name: Check for Invalid Compatibility Data 📉
+        if: fromJSON(steps.compat.outputs.hasChangedFiles)
+        uses: ./.github/actions/compatibility-validator
+
+      - name: Check for Changed Services Files ✅
+        uses: ./.github/actions/check-changes
+        id: services
+        with:
+          baseRef: origin/${{ github.base_ref }}
+          checkGlob: plugins/rtmp-services/data/*.json
+
+      - name: Check Services JSON Schema 📉
+        if: fromJSON(steps.services.outputs.hasChangedFiles)
+        uses: ./.github/actions/services-validator
+        with:
+          repositorySecret: ${{ secrets.GITHUB_TOKEN }}
+          runSchemaChecks: true
+          runServiceChecks: false
+
+  update-documentation:
+    name: Update Documentation 📖
+    needs: ci-pre
+    if: ${{ !cancelled() && github.repository_owner == 'obsproject' && github.base_ref == 'master' }}
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Check for Changed Files ✅
+        uses: ./.github/actions/check-changes
+        id: checks
+        with:
+          baseRef: origin/${{ github.base_ref }}
+          checkGlob: docs/sphinx
+
+      - uses: ./.github/actions/generate-docs
+        if: fromJSON(steps.checks.outputs.hasChangedFiles)
+
+  # The AppImage build and portability test for PRs that touch it.
+  # pull_request lives only in this file (zackees/ci.yml GEN-008), so this
+  # replaces appimage.yaml's own path-filtered pull_request trigger. Both jobs
+  # are skipped (and so pass CI Gate) unless the PR touches those files.
+  appimage-changes:
+    name: AppImage Changes 🔎
+    needs: ci-pre
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Diff AppImage Files 🔎
+        id: diff
+        # git diff --quiet exits 1 when the files differ: changed=1.
+        run: echo "changed=$(git diff --quiet "origin/${GITHUB_BASE_REF}" HEAD -- build-aux/appimage .github/workflows/appimage.yaml; echo $?)" >> "$GITHUB_OUTPUT"
+
+  appimage:
+    name: AppImage 📦
+    needs: appimage-changes
+    if: needs.appimage-changes.outputs.changed == '1'
+    uses: ./.github/workflows/appimage.yaml
+    # appimage.yaml's release job asks for contents: write; it only runs for
+    # a tag push, so on a PR it is skipped (release-rust.yaml grants the same).
+    permissions:
+      contents: write
+
+  # The one required check (master ruleset, #692): fails when any job above
+  # failed or was cancelled; skipped jobs (out of scope, or attested by the
+  # local gate on a PR) pass.
+  ci-gate:
+    name: CI Gate ✅
+    if: always()
+    needs: [cancel-superseded, check-format, build-project, validate-data, update-documentation, appimage-changes, appimage]
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      # Queue wall time, runner time and rebuilds in the job summary (#930
+      # E1), so a regression or a bypass that rebuilt the queue shows up.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: github.event_name == 'merge_group'
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+      - name: Set Up uv 🐍
+        if: github.event_name == 'merge_group'
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: Report Queue Run 📊
+        if: github.event_name == 'merge_group'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run ci/queue_report.py
+      - name: Check Job Results ✅
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo 'All required jobs passed or were skipped.'

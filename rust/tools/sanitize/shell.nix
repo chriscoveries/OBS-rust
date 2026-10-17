@@ -1,10 +1,14 @@
-# Native NixOS environment for sanitize.sh: the nixpkgs OBS build inputs plus
-# cmocka, valgrind and a headless X server. Usage: nix-shell rust/tools/sanitize/shell.nix
+# Native NixOS environment for sanitize.sh and a host (Docker-free) Tier 2
+# run of rust/tools/linux-validate/validate.sh: the nixpkgs OBS build inputs
+# plus cmocka, valgrind, a headless X server, and what the cmocka tests start
+# (PipeWire with pipewire-pulse, WirePlumber, pactl, D-Bus, VLC).
+# Usage: nix-shell rust/tools/sanitize/shell.nix
 { pkgs ? import <nixpkgs> { } }:
 pkgs.mkShell {
   inputsFrom = [ pkgs.obs-studio ];
   packages = with pkgs; [
-    cmocka valgrind xorg.xorgserver dbus mesa ninja ccache git rsync
+    cmocka valgrind xorg.xorgserver xvfb-run dbus mesa ninja curl git rsync
+    pipewire wireplumber pulseaudio vlc
     simde uthash nlohmann_json websocketpp asio qrcodegencpp
   ];
   hardeningDisable = [ "all" ];

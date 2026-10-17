@@ -9,10 +9,10 @@ if(TARGET OBS::outputs AND NOT WIN32)
   add_executable(
     test_rtmp_dbr_user_bitrate
     test_rtmp_dbr_user_bitrate.c
-    $<$<BOOL:${ENABLE_HEVC}>:${CMAKE_SOURCE_DIR}/plugins/obs-outputs/rtmp-hevc.c>
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/flv-mux.c"
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/net-if.c"
-    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/rtmp-av1.c"
+    $<$<BOOL:${ENABLE_HEVC}>:${CMAKE_SOURCE_DIR}/plugins/obs-outputs/rtmp-hevc.c.h>
+    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/flv-mux.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/net-if.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/rtmp-av1.c.h"
     "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/amf.c"
     "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/cencode.c"
     "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/hashswf.c"

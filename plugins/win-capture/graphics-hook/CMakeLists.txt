@@ -20,6 +20,10 @@ if(NOT TARGET OBS::hook-config)
 endif()
 
 add_library(graphics-hook MODULE)
+# Its sources each use a different Direct3D version (d3d8.h, d3d9.h, d3d10,
+# d3d11, d3d12), whose headers can't share a translation unit: no unity
+# batches (cmake/common/unity.cmake).
+set_property(TARGET graphics-hook PROPERTY OBS_DISABLE_UNITY_BUILD ON)
 add_library(OBS::graphics-hook ALIAS graphics-hook)
 
 target_sources(

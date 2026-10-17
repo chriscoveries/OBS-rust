@@ -488,7 +488,7 @@ extern "C" void FreeSceneSwitcher()
 	switcher = nullptr;
 }
 
-static void OBSEvent(enum obs_frontend_event event, void *)
+static void SceneSwitcherOBSEvent(enum obs_frontend_event event, void *)
 {
 	if (event == OBS_FRONTEND_EVENT_EXIT) {
 		FreeSceneSwitcher();
@@ -519,7 +519,7 @@ extern "C" void InitSceneSwitcher()
 	};
 
 	obs_frontend_add_save_callback(SaveSceneSwitcher, nullptr);
-	obs_frontend_add_event_callback(OBSEvent, nullptr);
+	obs_frontend_add_event_callback(SceneSwitcherOBSEvent, nullptr);
 
 	QObject::connect(action, &QAction::triggered, action, cb);
 }

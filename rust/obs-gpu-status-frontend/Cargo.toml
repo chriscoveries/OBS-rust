@@ -1,0 +1,16 @@
+[package]
+name = "obs-gpu-status-frontend"
+version = "0.1.0"
+description = "The staticlib the frontend links: obs-gpu-status's C ABI (obs-rust/obs-studio#846)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[dependencies]
+obs-gpu-status = { path = "../obs-gpu-status" }

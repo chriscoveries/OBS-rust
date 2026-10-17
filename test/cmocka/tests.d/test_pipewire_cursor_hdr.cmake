@@ -12,13 +12,13 @@ if(OS_LINUX AND TARGET OBS::pipewire)
   add_executable(
     test_pipewire_cursor_hdr
     test_pipewire_cursor_hdr.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/screencast-portal.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/screencast-portal.c.h"
   )
   target_include_directories(
     test_pipewire_cursor_hdr

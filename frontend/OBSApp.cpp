@@ -16,6 +16,7 @@
 ******************************************************************************/
 
 #include "OBSApp.hpp"
+#include <utility/GpuStatus.hpp>
 
 #include <utility/output-filename-format.h>
 #include <utility/output-filename-reserve.h>
@@ -30,35 +31,31 @@
 #include <utility/product-name.h>
 #include <utility/platform.hpp>
 #include <utility/scene-collection-migration.hpp>
-#if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
+#ifdef OBS_PLATFORM_HAS_UPDATE_BRANCHES
 #include <utility/models/branches.hpp>
 #endif
 #include <widgets/OBSBasic.hpp>
 
-#if !defined(_WIN32) && !defined(__APPLE__)
-#include <obs-nix-platform.h>
-#endif
 #include <qt-wrappers.hpp>
+#include <utility/settings-migration.hpp>
+#include <utility/unclean-launch.hpp>
 
 #include <QCheckBox>
 #include <QDesktopServices>
 #include <QLockFile>
-#if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
+#ifdef OBS_PLATFORM_HAS_UPDATE_BRANCHES
 #include <QFile>
 #endif
 
 #include <QSessionManager>
-#ifndef _WIN32
+#ifdef OBS_PLATFORM_POSIX_SIGNALS
 #include <QSocketNotifier>
 #endif
 
 #include <chrono>
 #include <sstream>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
+#ifdef OBS_PLATFORM_POSIX_SIGNALS
 #include <unistd.h>
 #include <sys/socket.h>
 #endif
@@ -75,16 +72,11 @@ extern bool portable_mode;
 extern bool safe_mode;
 extern bool multi;
 extern bool disable_3p_plugins;
+extern bool disable_shutdown_check;
 extern bool opt_disable_updater;
 extern bool opt_disable_missing_files_check;
 extern string opt_starting_collection;
 extern string opt_starting_profile;
-
-// GPU hint exports for AMD/NVIDIA laptops
-#ifdef _MSC_VER
-extern "C" __declspec(dllexport) DWORD NvOptimusEnablement = 1;
-extern "C" __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
-#endif
 
 constexpr double kDefaultSnapDistance = 5.0;
 
@@ -264,14 +256,6 @@ QObject *CreateShortcutFilter(QObject *parent)
 			case Qt::Key_Meta:
 				break;
 
-#ifdef __APPLE__
-			case Qt::Key_CapsLock:
-				// kVK_CapsLock == 57
-				hotkey.key = obs_key_from_virtual_key(57);
-				pressed = true;
-				break;
-#endif
-
 			case Qt::Key_Enter:
 			case Qt::Key_Escape:
 			case Qt::Key_Return:
@@ -281,6 +265,9 @@ QObject *CreateShortcutFilter(QObject *parent)
 					return true;
 				/* Falls through. */
 			default:
+				if (GetPlatformHotkeyOverride(key, hotkey.key, pressed)) {
+					break;
+				}
 				hotkey.key = obs_key_from_virtual_key(event->nativeVirtualKey());
 			}
 
@@ -317,18 +304,14 @@ string CurrentDateTimeString()
 	time_t now = time(0);
 	struct tm tstruct;
 	char buf[80];
-#ifdef _WIN32
-	localtime_s(&tstruct, &now);
-#else
-	localtime_r(&now, &tstruct);
-#endif
+	PlatformLocalTime(&now, &tstruct);
 	strftime(buf, sizeof(buf), "%Y-%m-%d, %X", &tstruct);
 	return buf;
 }
 
 #define DEFAULT_LANG "en-US"
 
-#ifndef _WIN32
+#ifdef OBS_PLATFORM_POSIX_SIGNALS
 std::array<int, 2> OBSApp::sigIntFileDescriptor{0, 0};
 std::array<int, 2> OBSApp::sigTermFileDescriptor{0, 0};
 std::array<int, 2> OBSApp::sigAbrtFileDescriptor{0, 0};
@@ -342,29 +325,7 @@ bool OBSApp::InitGlobalConfigDefaults()
 	config_set_default_string(appConfig, "General", "ProcessPriority", "Normal");
 	config_set_default_bool(appConfig, "General", "EnableAutoUpdates", true);
 
-#if _WIN32
-	config_set_default_string(appConfig, "Video", "Renderer", "Direct3D 11");
-#else
-#if defined(__APPLE__) && defined(__aarch64__)
-	// TODO: Change this value to "Metal" once the renderer has reached production quality
-	config_set_default_string(appConfig, "Video", "Renderer", "OpenGL");
-#else
-	config_set_default_string(appConfig, "Video", "Renderer", "OpenGL");
-#endif
-#endif
-
-#ifdef _WIN32
-	config_set_default_bool(appConfig, "Audio", "DisableAudioDucking", true);
-#endif
-
-#if defined(_WIN32) || defined(__APPLE__) || defined(__linux__)
-	config_set_default_bool(appConfig, "General", "BrowserHWAccel", true);
-#endif
-
-#ifdef __APPLE__
-	config_set_default_bool(appConfig, "Video", "DisableOSXVSync", true);
-	config_set_default_bool(appConfig, "Video", "ResetOSXVSyncOnExit", true);
-#endif
+	InitPlatformConfigDefaults(appConfig);
 
 	return true;
 }
@@ -470,14 +431,14 @@ static bool MakeUserDirs()
 		return false;
 	}
 
-#ifdef _WIN32
-	if (GetAppConfigPath(path, sizeof(path), "obs-studio/crashes") <= 0) {
-		return false;
+	for (const std::string &dir : GetPlatformExtraConfigDirs()) {
+		if (GetAppConfigPath(path, sizeof(path), dir.c_str()) <= 0) {
+			return false;
+		}
+		if (!do_mkdir(path)) {
+			return false;
+		}
 	}
-	if (!do_mkdir(path)) {
-		return false;
-	}
-#endif
 
 	if (GetAppConfigPath(path, sizeof(path), "obs-studio/updates") <= 0) {
 		return false;
@@ -657,15 +618,23 @@ bool OBSApp::InitGlobalConfig()
 
 	uint32_t lastVersion = config_get_int(appConfig, "General", "LastVersion");
 
-	if (lastVersion && lastVersion < MAKE_SEMANTIC_VERSION(31, 0, 0)) {
-		bool migratedUserSettings = config_get_bool(appConfig, "General", "Pre31Migrated");
+	LegacySettingsState legacySettings{};
+	legacySettings.lastVersion = lastVersion;
+	legacySettings.alreadyMigrated = config_get_bool(appConfig, "General", "Pre31Migrated");
+	legacySettings.globalHasFirstRun = config_has_user_value(appConfig, "General", "FirstRun");
 
-		if (!migratedUserSettings) {
-			bool migrated = MigrateGlobalSettings();
+	char configRoot[512];
+	if (GetAppConfigPath(configRoot, sizeof(configRoot), nullptr) > 0) {
+		std::string userConfigFile{configRoot};
+		userConfigFile.append("/" OBS_CONFIG_DIRECTORY "/user.ini");
+		legacySettings.userConfigExists = std::filesystem::exists(std::filesystem::u8path(userConfigFile));
+	}
 
-			config_set_bool(appConfig, "General", "Pre31Migrated", migrated);
-			config_save_safe(appConfig, "tmp", nullptr);
-		}
+	if (ShouldMigratePre31Settings(legacySettings)) {
+		bool migrated = MigrateGlobalSettings();
+
+		config_set_bool(appConfig, "General", "Pre31Migrated", migrated);
+		config_save_safe(appConfig, "tmp", nullptr);
 	}
 
 	InitGlobalConfigDefaults();
@@ -922,7 +891,7 @@ bool OBSApp::InitLocale()
 	return true;
 }
 
-#if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
+#ifdef OBS_PLATFORM_HAS_UPDATE_BRANCHES
 void ParseBranchesJson(const std::string &jsonString, vector<UpdateBranch> &out, std::string &error)
 {
 	JsonBranches branches;
@@ -936,15 +905,9 @@ void ParseBranchesJson(const std::string &jsonString, vector<UpdateBranch> &out,
 	}
 
 	for (const JsonBranch &json_branch : branches) {
-#ifdef _WIN32
-		if (!json_branch.windows) {
+		if (!IsUpdateBranchSupported(json_branch.windows, json_branch.macos)) {
 			continue;
 		}
-#elif defined(__APPLE__)
-		if (!json_branch.macos) {
-			continue;
-		}
-#endif
 
 		UpdateBranch branch = {
 			QString::fromStdString(json_branch.name),
@@ -989,7 +952,7 @@ fail:
 
 void OBSApp::SetBranchData(const string &data)
 {
-#if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
+#ifdef OBS_PLATFORM_HAS_UPDATE_BRANCHES
 	string error;
 	vector<UpdateBranch> result;
 
@@ -1016,7 +979,7 @@ std::vector<UpdateBranch> OBSApp::GetBranches()
 	/* Always ensure the default branch exists */
 	out.push_back(UpdateBranch{"stable", "", "", true, true});
 
-#if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
+#ifdef OBS_PLATFORM_HAS_UPDATE_BRANCHES
 	if (!branches_loaded) {
 		vector<UpdateBranch> result;
 		if (LoadBranchesFile(result)) {
@@ -1050,7 +1013,7 @@ OBSApp::OBSApp(int &argc, char **argv, profiler_name_store_t *store)
 	}
 #endif
 
-#ifndef _WIN32
+#ifdef OBS_PLATFORM_POSIX_SIGNALS
 	// Add POSIX signal handlers:
 	// * SIGINT
 	// * SIGTERM
@@ -1079,11 +1042,7 @@ OBSApp::OBSApp(int &argc, char **argv, profiler_name_store_t *store)
 
 	sleepInhibitor = os_inhibit_sleep_create("OBS Video/audio");
 
-#ifdef __APPLE__
-	InitializeMacApplicationIcon();
-#else
-	setWindowIcon(QIcon::fromTheme("obs", QIcon(":/res/images/obs.png")));
-#endif
+	SetApplicationIcon();
 
 	setDesktopFileName(OBS_DESKTOP_ID);
 
@@ -1190,13 +1149,13 @@ void OBSApp::AppInit()
 {
 	ProfileScope("OBSApp::AppInit");
 
+	GpuStatus::Prefetch();
+
 	QAccessible::installFactory(alignmentSelectorFactory);
 
-#ifdef _WIN32
 	if (!InitializeAppIdentity()) {
 		throw "Failed to initialize application identity";
 	}
-#endif
 	if (!MigrateRustConfiguration()) {
 		throw "Failed to import settings into the independent Rust configuration";
 	}
@@ -1236,18 +1195,7 @@ void OBSApp::AppInit()
 		config_set_string(userConfig, "Basic", "SceneCollectionFile", Str("Untitled"));
 	}
 
-#ifdef _WIN32
-	bool disableAudioDucking = config_get_bool(appConfig, "Audio", "DisableAudioDucking");
-	if (disableAudioDucking) {
-		DisableAudioDucking(true);
-	}
-#endif
-
-#ifdef __APPLE__
-	if (config_get_bool(appConfig, "Video", "DisableOSXVSync")) {
-		EnableOSXVSync(false);
-	}
-#endif
+	ApplyPlatformAppSettings(appConfig);
 
 	UpdateHotkeyFocusSetting(false);
 
@@ -1264,7 +1212,14 @@ void OBSApp::checkForUncleanShutdown()
 	bool hasUncleanShutdown = crashHandler_->hasUncleanShutdown();
 	bool hasNewCrashLog = crashHandler_->hasNewCrashLog();
 
-	if (hasUncleanShutdown) {
+	const UncleanLaunchDecision decision = decideUncleanLaunch(hasUncleanShutdown, disable_shutdown_check);
+
+	if (decision.logSkippedPrompt) {
+		blog(LOG_WARNING, "Crash or unclean shutdown detected; prompt skipped (--disable-shutdown-check), "
+				  "launching normally");
+	}
+
+	if (decision.showPrompt) {
 		UncleanLaunchAction launchAction = handleUncleanShutdown(hasNewCrashLog);
 
 		safe_mode = launchAction.useSafeMode;
@@ -1277,17 +1232,9 @@ void OBSApp::checkForUncleanShutdown()
 
 const char *OBSApp::GetRenderModule() const
 {
-#if defined(_WIN32)
 	const char *renderer = config_get_string(appConfig, "Video", "Renderer");
 
-	return (astrcmpi(renderer, "Direct3D 11") == 0) ? DL_D3D11 : DL_OPENGL;
-#elif defined(__APPLE__) && defined(__aarch64__)
-	const char *renderer = config_get_string(appConfig, "Video", "Renderer");
-
-	return (astrcmpi(renderer, "Metal") == 0) ? DL_METAL : DL_OPENGL;
-#else
-	return DL_OPENGL;
-#endif
+	return GetPlatformRenderModule(renderer);
 }
 
 static bool StartupOBS(const char *locale, profiler_name_store_t *store)
@@ -1351,35 +1298,7 @@ bool OBSApp::OBSInit()
 
 	qRegisterMetaType<VoidFunc>("VoidFunc");
 
-#if !defined(_WIN32) && !defined(__APPLE__)
-	if (QApplication::platformName() == "xcb") {
-		auto native = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
-
-		obs_set_nix_platform_display(native->display());
-
-		obs_set_nix_platform(OBS_NIX_PLATFORM_X11_EGL);
-
-		blog(LOG_INFO, "Using EGL/X11");
-	}
-
-#ifdef ENABLE_WAYLAND
-	if (QApplication::platformName().contains("wayland")) {
-		auto native = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
-
-		obs_set_nix_platform_display(native->display());
-
-		obs_set_nix_platform(OBS_NIX_PLATFORM_WAYLAND);
-		setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
-
-		blog(LOG_INFO, "Platform: Wayland");
-	}
-#endif
-
-#endif
-
-#ifdef __APPLE__
-	setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
-#endif
+	InitPlatformDisplay();
 
 	if (!StartupOBS(locale.c_str(), GetProfilerNameStore())) {
 		return false;
@@ -1389,21 +1308,18 @@ bool OBSApp::OBSInit()
 
 	obs_set_ui_task_handler(ui_task_handler);
 
-#if defined(_WIN32) || defined(__APPLE__) || defined(__linux__)
-	bool browserHWAccel = config_get_bool(appConfig, "General", "BrowserHWAccel");
+	if (PlatformSupportsBrowserHWAccel()) {
+		bool browserHWAccel = config_get_bool(appConfig, "General", "BrowserHWAccel");
 
-	OBSDataAutoRelease settings = obs_data_create();
-	obs_data_set_bool(settings, "BrowserHWAccel", browserHWAccel);
-	obs_apply_private_data(settings);
+		OBSDataAutoRelease settings = obs_data_create();
+		obs_data_set_bool(settings, "BrowserHWAccel", browserHWAccel);
+		obs_apply_private_data(settings);
 
-	blog(LOG_INFO, "Current Date/Time: %s", CurrentDateTimeString().c_str());
+		blog(LOG_INFO, "Current Date/Time: %s", CurrentDateTimeString().c_str());
 
-	blog(LOG_INFO, "Browser Hardware Acceleration: %s", browserHWAccel ? "true" : "false");
-#endif
-#ifdef _WIN32
-	bool hideFromCapture = config_get_bool(userConfig, "BasicWindow", "HideOBSWindowsFromCapture");
-	blog(LOG_INFO, "Hide OBS windows from screen capture: %s", hideFromCapture ? "true" : "false");
-#endif
+		blog(LOG_INFO, "Browser Hardware Acceleration: %s", browserHWAccel ? "true" : "false");
+	}
+	LogPlatformSettings(userConfig);
 
 	blog(LOG_INFO, "Qt Version: %s (runtime), %s (compiled)", qVersion(), QT_VERSION_STR);
 	blog(LOG_INFO, "Portable mode: %s", portable_mode ? "true" : "false");
@@ -1468,24 +1384,7 @@ string OBSApp::GetVersionString(bool platform) const
 	ver << obs_get_version_string();
 
 	if (platform) {
-		ver << " (";
-#ifdef _WIN32
-		if (sizeof(void *) == 8) {
-			ver << "64-bit, ";
-		} else {
-			ver << "32-bit, ";
-		}
-
-		ver << "windows)";
-#elif __APPLE__
-		ver << "mac)";
-#elif __OpenBSD__
-		ver << "openbsd)";
-#elif __FreeBSD__
-		ver << "freebsd)";
-#else /* assume linux for the time being */
-		ver << "linux)";
-#endif
+		ver << " (" << GetPlatformVersionName() << ")";
 	}
 
 	return ver.str();
@@ -1506,25 +1405,14 @@ bool OBSApp::IsMissingFilesCheckDisabled()
 	return opt_disable_missing_files_check;
 }
 
-#ifdef __APPLE__
-#define INPUT_AUDIO_SOURCE "coreaudio_input_capture"
-#define OUTPUT_AUDIO_SOURCE "coreaudio_output_capture"
-#elif _WIN32
-#define INPUT_AUDIO_SOURCE "wasapi_input_capture"
-#define OUTPUT_AUDIO_SOURCE "wasapi_output_capture"
-#else
-#define INPUT_AUDIO_SOURCE "pulse_input_capture"
-#define OUTPUT_AUDIO_SOURCE "pulse_output_capture"
-#endif
-
 const char *OBSApp::InputAudioSource() const
 {
-	return INPUT_AUDIO_SOURCE;
+	return GetPlatformInputAudioSource();
 }
 
 const char *OBSApp::OutputAudioSource() const
 {
-	return OUTPUT_AUDIO_SOURCE;
+	return GetPlatformOutputAudioSource();
 }
 
 const char *OBSApp::GetLastLog() const
@@ -1653,11 +1541,7 @@ string GenerateTimeDateFilename(const char *extension, bool noSpace)
 	char file[256] = {};
 	struct tm cur_time;
 
-#ifdef _WIN32
-	localtime_s(&cur_time, &now);
-#else
-	localtime_r(&now, &cur_time);
-#endif
+	PlatformLocalTime(&now, &cur_time);
 	snprintf(file, sizeof(file), "%d-%02d-%02d%c%02d-%02d-%02d.%s", cur_time.tm_year + 1900, cur_time.tm_mon + 1,
 		 cur_time.tm_mday, noSpace ? '_' : ' ', cur_time.tm_hour, cur_time.tm_min, cur_time.tm_sec, extension);
 
@@ -1772,39 +1656,21 @@ vector<pair<string, string>> GetLocaleNames()
 	return names;
 }
 
-#if defined(__APPLE__) || defined(__linux__)
-#define BASE_PATH ".."
-#else
-#define BASE_PATH "../.."
-#endif
-
-#define CONFIG_PATH BASE_PATH "/config"
-
-#if defined(ENABLE_PORTABLE_CONFIG) || defined(_WIN32)
-#define ALLOW_PORTABLE_MODE 1
-#else
-#define ALLOW_PORTABLE_MODE 0
-#endif
-
 int GetAppConfigPath(char *path, size_t size, const char *name)
 {
 #ifdef OBS_RUST_VERSION
 	const std::string relativePath = AppConfigRelativePath(name);
 	name = relativePath.c_str();
 #endif
-#if ALLOW_PORTABLE_MODE
-	if (portable_mode) {
+	if (IsPortableModeAllowed() && portable_mode) {
 		if (name && *name) {
-			return snprintf(path, size, CONFIG_PATH "/%s", name);
+			return snprintf(path, size, "%s/config/%s", GetPortableConfigBasePath(), name);
 		} else {
-			return snprintf(path, size, CONFIG_PATH);
+			return snprintf(path, size, "%s/config", GetPortableConfigBasePath());
 		}
 	} else {
 		return os_get_config_path(path, size, name);
 	}
-#else
-	return os_get_config_path(path, size, name);
-#endif
 }
 
 char *GetAppConfigPathPtr(const char *name)
@@ -1813,11 +1679,10 @@ char *GetAppConfigPathPtr(const char *name)
 	const std::string relativePath = AppConfigRelativePath(name);
 	name = relativePath.c_str();
 #endif
-#if ALLOW_PORTABLE_MODE
-	if (portable_mode) {
+	if (IsPortableModeAllowed() && portable_mode) {
 		char path[512];
 
-		if (snprintf(path, sizeof(path), CONFIG_PATH "/%s", name) > 0) {
+		if (snprintf(path, sizeof(path), "%s/config/%s", GetPortableConfigBasePath(), name) > 0) {
 			return bstrdup(path);
 		} else {
 			return NULL;
@@ -1825,9 +1690,6 @@ char *GetAppConfigPathPtr(const char *name)
 	} else {
 		return os_get_config_path_ptr(name);
 	}
-#else
-	return os_get_config_path_ptr(name);
-#endif
 }
 
 int GetProgramDataPath(char *path, size_t size, const char *name)
@@ -1913,7 +1775,7 @@ bool WindowPositionValid(QRect rect)
 	return false;
 }
 
-#ifndef _WIN32
+#ifdef OBS_PLATFORM_POSIX_SIGNALS
 // Static signal handlers
 void OBSApp::sigIntSignalHandler(int)
 {
@@ -1953,15 +1815,15 @@ void OBSApp::processSigInt()
 
 	sigIntNotifier->setEnabled(true);
 
-#ifndef __APPLE__
-	OBSBasic *main = OBSBasic::Get();
-	if (main) {
-		main->saveAll();
-		main->close();
+	if (PlatformSavesBeforeSignalQuit()) {
+		OBSBasic *main = OBSBasic::Get();
+		if (main) {
+			main->saveAll();
+			main->close();
+		}
+	} else {
+		quit();
 	}
-#else
-	quit();
-#endif
 }
 
 void OBSApp::processSigTerm()
@@ -1977,12 +1839,12 @@ void OBSApp::processSigTerm()
 
 	sigTermNotifier->setEnabled(true);
 
-#ifndef __APPLE__
-	OBSBasic *main = OBSBasic::Get();
-	if (main) {
-		main->saveAll();
+	if (PlatformSavesBeforeSignalQuit()) {
+		OBSBasic *main = OBSBasic::Get();
+		if (main) {
+			main->saveAll();
+		}
 	}
-#endif
 	quit();
 }
 
@@ -1999,12 +1861,12 @@ void OBSApp::processSigAbrt()
 
 	sigAbrtNotifier->setEnabled(true);
 
-#ifndef __APPLE__
-	OBSBasic *main = OBSBasic::Get();
-	if (main) {
-		main->saveAll();
+	if (PlatformSavesBeforeSignalQuit()) {
+		OBSBasic *main = OBSBasic::Get();
+		if (main) {
+			main->saveAll();
+		}
 	}
-#endif
 	quit();
 }
 
@@ -2021,12 +1883,12 @@ void OBSApp::processSigQuit()
 
 	sigQuitNotifier->setEnabled(true);
 
-#ifndef __APPLE__
-	OBSBasic *main = OBSBasic::Get();
-	if (main) {
-		main->saveAll();
+	if (PlatformSavesBeforeSignalQuit()) {
+		OBSBasic *main = OBSBasic::Get();
+		if (main) {
+			main->saveAll();
+		}
 	}
-#endif
 	quit();
 }
 #else
@@ -2066,12 +1928,9 @@ void OBSApp::commitData(QSessionManager &manager)
 
 void OBSApp::applicationShutdown() noexcept
 {
-#ifdef _WIN32
-	bool disableAudioDucking = config_get_bool(appConfig, "Audio", "DisableAudioDucking");
-	if (disableAudioDucking) {
-		DisableAudioDucking(false);
-	}
-#else
+	RevertPlatformAppSettings(appConfig);
+
+#ifdef OBS_PLATFORM_POSIX_SIGNALS
 	auto disconnectSignal = [this](std::array<int, 2> &fileDescriptor,
 				       QPointer<QSocketNotifier> &notifier) -> void {
 		notifier->setEnabled(false);
@@ -2085,14 +1944,6 @@ void OBSApp::applicationShutdown() noexcept
 	disconnectSignal(sigTermFileDescriptor, sigTermNotifier);
 	disconnectSignal(sigAbrtFileDescriptor, sigAbrtNotifier);
 	disconnectSignal(sigQuitFileDescriptor, sigQuitNotifier);
-#endif
-
-#ifdef __APPLE__
-	bool vsyncDisabled = config_get_bool(appConfig, "Video", "DisableOSXVSync");
-	bool resetVSync = config_get_bool(appConfig, "Video", "ResetOSXVSyncOnExit");
-	if (vsyncDisabled && resetVSync) {
-		EnableOSXVSync(true);
-	}
 #endif
 
 	os_inhibit_sleep_set_active(sleepInhibitor, false);

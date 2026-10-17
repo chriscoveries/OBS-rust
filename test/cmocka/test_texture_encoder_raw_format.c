@@ -26,6 +26,15 @@
  * by defining obs_get_video_info() in the executable: on ELF platforms it
  * interposes libobs's own definition. Mach-O's two-level namespace does not
  * allow that, so the tests skip on macOS as well as Windows.
+ *
+ * Each scenario runs in a forked child so a crash fails the test instead of
+ * the run. The parent never starts libobs: the child forks from a process
+ * without threads and starts its own libobs. Forking a process that runs
+ * libobs threads copies their locks as they are at that moment, and a lock
+ * another thread held then (the hotkey thread takes the hotkey mutex every
+ * 25 ms) stays locked in the child forever. The parent gives the child
+ * CHILD_TIMEOUT_MS and then kills it, so a hung scenario fails the test
+ * instead of hanging ctest.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -57,11 +66,15 @@
 #define WIDTH 64
 #define HEIGHT 64
 
+/* a scenario takes well under a second; this only bounds a hang */
+#define CHILD_TIMEOUT_MS 20000
+/* how long the hotkey holder keeps libobs's hotkey mutex */
+#define HOTKEY_HOLD_MS 300
+
 #define TEX_ONLY_ID "test_tex_only_encoder"
 #define HYBRID_ID "test_hybrid_encoder"
 #define OUTPUT_ID "test_encoded_output"
 
-static int obs_up;
 static volatile long encode_calls;
 
 /* ------------------------------------------------------------------------- */
@@ -213,6 +226,7 @@ enum run_result {
 	RUN_REFUSED_WITHOUT_ERROR = 2,
 	RUN_SETUP_FAILED = 3,
 	RUN_STARTED_NOTHING_ENCODED = 4,
+	RUN_NO_OBS = 5,
 };
 
 /* Start an output on a raw video_t of the given format, push a few frames
@@ -270,8 +284,95 @@ static enum run_result run_scenario(const char *encoder_id, enum video_format fo
 }
 
 #ifndef SCENARIO_UNSUPPORTED
-/* Run the scenario in a child so a crash fails the test instead of the run. */
-static int run_in_child(const char *encoder_id, enum video_format format)
+/* ------------------------------------------------------------------------- */
+/* hotkey mutex holder */
+
+/* libobs's hotkey thread takes the hotkey mutex every 25 ms to poll the
+ * bindings. The holder takes the same mutex on another thread, through
+ * obs_enum_hotkeys(), and keeps it for HOTKEY_HOLD_MS: a scenario must work
+ * no matter which libobs lock another thread holds when it starts. */
+struct hotkey_holder {
+	pthread_t thread;
+	os_event_t *inside;
+	obs_hotkey_id hotkey;
+};
+
+static void noop_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	(void)data;
+	(void)id;
+	(void)hotkey;
+	(void)pressed;
+}
+
+static bool hold_hotkey_mutex(void *data, obs_hotkey_id id, obs_hotkey_t *key)
+{
+	struct hotkey_holder *holder = data;
+	(void)id;
+	(void)key;
+	/* obs_enum_hotkeys() holds the hotkey mutex around this callback */
+	os_event_signal(holder->inside);
+	os_sleep_ms(HOTKEY_HOLD_MS);
+	return false;
+}
+
+static void *hotkey_holder_thread(void *data)
+{
+	obs_enum_hotkeys(hold_hotkey_mutex, data);
+	return NULL;
+}
+
+/* Returns once another thread holds the hotkey mutex. */
+static bool hotkey_holder_start(struct hotkey_holder *holder)
+{
+	*holder = (struct hotkey_holder){0};
+	holder->hotkey = obs_hotkey_register_frontend("test_texture_encoder.hold", "hold", noop_hotkey, NULL);
+	if (holder->hotkey == OBS_INVALID_HOTKEY_ID)
+		return false;
+	if (os_event_init(&holder->inside, OS_EVENT_TYPE_MANUAL) != 0)
+		return false;
+	if (pthread_create(&holder->thread, NULL, hotkey_holder_thread, holder) != 0)
+		return false;
+	return os_event_timedwait(holder->inside, CHILD_TIMEOUT_MS) == 0;
+}
+
+static void hotkey_holder_stop(struct hotkey_holder *holder)
+{
+	pthread_join(holder->thread, NULL);
+	os_event_destroy(holder->inside);
+	obs_hotkey_unregister(holder->hotkey);
+}
+
+/* ------------------------------------------------------------------------- */
+
+/* The child's whole run: its own libobs, one scenario, shutdown. */
+static int child_main(const char *encoder_id, enum video_format format, bool hotkeys_busy)
+{
+	if (!obs_startup("en-US", NULL, NULL))
+		return RUN_NO_OBS;
+	register_encoders();
+	register_output();
+
+	struct hotkey_holder holder;
+	if (hotkeys_busy && !hotkey_holder_start(&holder)) {
+		fprintf(stderr, "could not hold the hotkey mutex\n");
+		return RUN_SETUP_FAILED;
+	}
+	enum run_result result = run_scenario(encoder_id, format);
+	if (hotkeys_busy)
+		hotkey_holder_stop(&holder);
+
+	obs_shutdown();
+	return (int)result;
+}
+
+#define CHILD_TIMED_OUT -1
+#define CHILD_CRASHED(sig) (-100 - (sig))
+
+/* Run the scenario in a child so a crash fails the test instead of the run.
+ * Returns the scenario's run_result, CHILD_TIMED_OUT or CHILD_CRASHED(sig);
+ * skips when the child cannot start libobs (no display). */
+static int run_in_child(const char *encoder_id, enum video_format format, bool hotkeys_busy)
 {
 	fflush(stderr);
 	pid_t pid = fork();
@@ -281,19 +382,41 @@ static int run_in_child(const char *encoder_id, enum video_format format)
 		signal(SIGBUS, SIG_DFL);
 		signal(SIGILL, SIG_DFL);
 		signal(SIGFPE, SIG_DFL);
-		_exit((int)run_scenario(encoder_id, format));
+		int r = child_main(encoder_id, format, hotkeys_busy);
+		fflush(stderr);
+		_exit(r);
+	}
+	if (pid < 0) {
+		fprintf(stderr, "fork failed\n");
+		fail();
 	}
 
 	int status = 0;
-	if (waitpid(pid, &status, 0) != pid) {
+	pid_t r = 0;
+	for (int i = 0; i < CHILD_TIMEOUT_MS / 10; i++) {
+		r = waitpid(pid, &status, WNOHANG);
+		if (r != 0)
+			break;
+		os_sleep_ms(10);
+	}
+	if (r == 0) {
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, 0);
+		fprintf(stderr, "%s on %s did not finish within %d ms\n", encoder_id, get_video_format_name(format),
+			CHILD_TIMEOUT_MS);
+		return CHILD_TIMED_OUT;
+	}
+	if (r != pid) {
 		fprintf(stderr, "waitpid failed\n");
 		fail();
 	}
 	if (WIFSIGNALED(status)) {
 		fprintf(stderr, "%s on %s crashed with signal %d\n", encoder_id, get_video_format_name(format),
 			WTERMSIG(status));
-		fail();
+		return CHILD_CRASHED(WTERMSIG(status));
 	}
+	if (WEXITSTATUS(status) == RUN_NO_OBS)
+		skip();
 	return WEXITSTATUS(status);
 }
 #endif
@@ -304,9 +427,7 @@ static void tex_only_on_format(enum video_format format)
 	(void)format;
 	skip();
 #else
-	if (!obs_up)
-		skip();
-	int r = run_in_child(TEX_ONLY_ID, format);
+	int r = run_in_child(TEX_ONLY_ID, format, false);
 	if (r != RUN_REFUSED_WITH_ERROR) {
 		fprintf(stderr,
 			"texture-only encoder on %s: expected the output to refuse to start with an error, got %d\n",
@@ -342,40 +463,35 @@ static void tex_only_nv12_without_textures_refused(void **state)
 	tex_only_on_format(VIDEO_FORMAT_NV12);
 }
 
-/* Control: an encoder that has a CPU path keeps working on raw frames. */
-static void hybrid_i444_starts(void **state)
+static void expect_hybrid_i444_starts(bool hotkeys_busy)
 {
-	(void)state;
 #ifdef SCENARIO_UNSUPPORTED
+	(void)hotkeys_busy;
 	skip();
 #else
-	if (!obs_up)
-		skip();
-	int r = run_in_child(HYBRID_ID, VIDEO_FORMAT_I444);
+	int r = run_in_child(HYBRID_ID, VIDEO_FORMAT_I444, hotkeys_busy);
 	if (r != RUN_STARTED_AND_ENCODED) {
-		fprintf(stderr, "encoder with a CPU encode path on I444: expected it to start, got %d\n", r);
+		fprintf(stderr, "encoder with a CPU encode path on I444%s: expected it to start, got %d\n",
+			hotkeys_busy ? " (hotkey mutex held)" : "", r);
 		fail();
 	}
 #endif
 }
 
-static int group_setup(void **state)
+/* Control: an encoder that has a CPU path keeps working on raw frames. */
+static void hybrid_i444_starts(void **state)
 {
 	(void)state;
-	obs_up = obs_startup("en-US", NULL, NULL);
-	if (obs_up) {
-		register_encoders();
-		register_output();
-	}
-	return 0;
+	expect_hybrid_i444_starts(false);
 }
 
-static int group_teardown(void **state)
+/* The same while another libobs thread holds the hotkey mutex, as the
+ * hotkey thread does for a moment every 25 ms. A scenario forked from a
+ * process that already runs libobs would inherit the held mutex and hang. */
+static void hybrid_i444_starts_while_hotkeys_busy(void **state)
 {
 	(void)state;
-	if (obs_up)
-		obs_shutdown();
-	return 0;
+	expect_hybrid_i444_starts(true);
 }
 
 int main(void)
@@ -386,6 +502,7 @@ int main(void)
 		cmocka_unit_test(tex_only_i420_refused),
 		cmocka_unit_test(tex_only_bgra_refused),
 		cmocka_unit_test(tex_only_nv12_without_textures_refused),
+		cmocka_unit_test(hybrid_i444_starts_while_hotkeys_busy),
 	};
-	return cmocka_run_group_tests(tests, group_setup, group_teardown);
+	return cmocka_run_group_tests(tests, NULL, NULL);
 }

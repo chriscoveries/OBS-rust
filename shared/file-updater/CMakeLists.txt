@@ -5,7 +5,7 @@ find_package(CURL REQUIRED)
 add_library(file-updater INTERFACE)
 add_library(OBS::file-updater ALIAS file-updater)
 
-target_sources(file-updater INTERFACE file-updater/file-updater.c file-updater/file-updater.h)
+target_sources(file-updater INTERFACE build/file-updater.core+.h.c file-updater/file-updater.h)
 
 target_include_directories(file-updater INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
 

@@ -22,12 +22,14 @@ PROBE = r'''
 import {readFileSync} from "node:fs";
 import {Parser, Lexer, Evaluator, data} from "@actions/expressions";
 const workflow = readFileSync(process.argv[2], "utf8");
-const source = workflow.match(/RUST_LIBOBS:\s*\$\{\{(.*?)\}\}/)[1].trim();
+const variable = process.argv[3];
+const input = process.argv[4];
+const source = workflow.match(new RegExp(variable + ":\\s*\\$\\{\\{(.*?)\\}\\}"))[1].trim();
 const results = [];
 for (const event of ["push", "pull_request", "schedule", "workflow_dispatch"]) {
   for (const mode of ["absent", "empty", "false", "true"]) {
     const pairs = mode === "absent" ? [] : [{
-      key: "rust_libobs",
+      key: input,
       value: mode === "empty" ? new data.StringData("") : new data.BooleanData(mode === "true")
     }];
     const context = new data.Dictionary(
@@ -58,11 +60,15 @@ class AppImageRustExpressionTest(unittest.TestCase):
             raise RuntimeError(f"GitHub expression engine installation failed:\n{install.stdout}\n{install.stderr}")
         probe = directory / "probe.mjs"
         probe.write_text(PROBE)
-        result = subprocess.run(
-            ["node", str(probe), str(ROOT / ".github/workflows/appimage.yaml")],
-            capture_output=True, text=True, check=True, timeout=30,
-        )
-        cls.results = json.loads(result.stdout)
+        def evaluate(variable, input):
+            result = subprocess.run(
+                ["node", str(probe), str(ROOT / ".github/workflows/appimage.yaml"), variable, input],
+                capture_output=True, text=True, check=True, timeout=30,
+            )
+            return json.loads(result.stdout)
+
+        cls.results = evaluate("RUST_LIBOBS", "rust_libobs")
+        cls.qsv_results = evaluate("QSV", "qsv")
 
     def test_absent_input_defaults_to_rust(self):
         for result in self.results:
@@ -81,6 +87,20 @@ class AppImageRustExpressionTest(unittest.TestCase):
             if result["mode"] == "true":
                 with self.subTest(event=result["event"]):
                     self.assertEqual(result["value"], "true")
+
+    def test_qsv_is_always_a_boolean(self):
+        # release-rust.yaml dispatched by hand (verify_only, repair) calls this
+        # workflow with the caller's event, workflow_dispatch, but qsv is not
+        # a workflow_call input; the old expression gave '' and build.py
+        # failed with "argument --qsv: expected true or false, got ''".
+        for result in self.qsv_results:
+            with self.subTest(event=result["event"], mode=result["mode"]):
+                self.assertIn(result["value"], {"true", "false"})
+
+    def test_qsv_is_only_on_when_asked(self):
+        for result in self.qsv_results:
+            with self.subTest(event=result["event"], mode=result["mode"]):
+                self.assertEqual(result["value"], "true" if result["mode"] == "true" else "false")
 
 
 if __name__ == "__main__":

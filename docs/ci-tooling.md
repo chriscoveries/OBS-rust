@@ -46,8 +46,8 @@ win.
 2. **Prove changes locally, once, with the local gate**, then push the stamped
    commit unchanged. A valid stamp lets PR CI skip the Linux test jobs.
 3. **Don't use GitHub as your test runner.** Don't push to "see if CI passes",
-   don't re-run whole workflows to debug, and don't add the `ci-full` label
-   unless a platform build is genuinely needed.
+   don't re-run whole workflows to debug, and don't look for a label to
+   force more CI: no label changes what runs, only the changed paths do.
 4. **Don't hit Docker directly for long or parallel work.** Docker on the shared
    machines is meant to be managed by `bosn`; never `docker system prune`.
 5. **The gate lock is shared per clone.** If the gate says another gate is
@@ -63,8 +63,8 @@ win.
 the toolchain pinned in `rust-toolchain.toml`. It bundles **zccache**, a
 content-addressed compiler cache shared across branches and worktrees, so the
 same crate is not rebuilt for every checkout. It also manages the
-cross-compilation SDKs that let a Linux host check the Windows and macOS
-targets.
+cross-compilation SDKs that let a Linux host check and link the Windows and
+macOS targets.
 
 What to do:
 
@@ -88,6 +88,30 @@ Known pitfall: zccache has replayed stale compiler output. The local gate runs
 cargo with `SOLDR_RUSTC_WRAPPER=none` (`OBS_GATE_ZCCACHE=1` opts back in). If a
 build behaves impossibly, retry with that variable set before debugging the
 code.
+
+#### Cross-compile check: Windows and macOS C from any host
+
+`cmake/cross/` compiles libobs for another OS on this machine, with no Windows or macOS runner.
+- **Toolchain:** soldr's LLVM and the SDK soldr provisions for that OS (the Apple SDK, or the xwin MSVC CRT + Windows SDK).
+- **Dependencies:** the same prebuilt Windows/macOS dependencies the real build uses (pinned in `CMakePresets.json`, unpacked into `.deps/`).
+- **Sources:** the same file lists as the real build (`libobs/cmake/sources.cmake`), including both the C build's ported files and the Rust build's C halves.
+- **Output:** objects only; it compiles and links nothing.
+
+```sh
+cmake -S cmake/cross -B build_cross_win-x64 -G Ninja -DOBS_CROSS_TARGET=win-x64
+cmake --build build_cross_win-x64
+# or from a configured OBS build:
+cmake --build build --target cross-win-x64      # cross-mac-arm64, cross-mac-x64, cross-all
+```
+
+- **Only Docker on the host:** `cmake/cross/docker.sh mac-arm64 win-x64` runs the same check in a container (through `ci/docker-task.sh`).
+  - The checkout is a copy-on-write overlay at `/src`.
+  - Writable caches are named volumes the next run reattaches: `/build` per checkout; soldr's LLVM and SDKs and the prebuilt deps shared.
+  - `--clean` starts the build volume over.
+- **Warnings** are reported; `-DOBS_CROSS_WERROR=ON` makes them errors.
+- **Getting soldr:** `cmake/common/soldr.cmake` uses soldr from `PATH`, or downloads the version CI pins and checks its SHA256 (`ci/test_soldr_pin.py` keeps that pin equal to the workflows').
+- **Finding the toolchain:** it runs `soldr toolchain prepare`, then finds LLVM and the SDK under soldr's root. That changes to `soldr cc --target <triple>` once soldr exposes Apple and MSVC there.
+- **No `win-arm64`:** `util/threading-windows.h` uses MSVC-only ARM64 intrinsics that clang lacks.
 
 ### setup-soldr: soldr in GitHub Actions
 
@@ -127,13 +151,37 @@ What to do:
 What not to do:
 
 - `docker system prune`. It destroys everyone's warm caches.
-- Install bosn or add a `bosn.toml` unasked. It's manifest-driven, and the
-  machine owner decides.
+- Install bosn unasked, or add stacks to `bosn.toml` without a reason. It's
+  manifest-driven, and the machine owner decides what runs.
 
-Current gap: this repo doesn't route its own Docker work through bosn yet.
-`rust/tools/linux-validate/run.sh` (the Tier 2 lane) calls `docker build` and
-`docker run` directly, so concurrent local gates from many agents run
-unmanaged. Moving the Tier 2 harness under bosn is the main open step.
+The repo's `bosn.toml` declares one stack so far: `appimage`, an Ubuntu 26.04
+image (`build-aux/appimage/Dockerfile`) with the AppImage build dependencies
+preinstalled. `bosn run --task appimage` builds the AppImage locally by
+running `build-aux/appimage/build.py`, the same script the AppImage workflow
+calls, with no act and no GitHub involved. The source is bind-mounted, the zccache
+and cargo caches live in bosn volumes, and the AppImage lands in
+`build_appimage/` (#899). (`bosn ci run` can't run that job through act: its
+`ubuntu-26.04` label isn't supported there.)
+
+Tier 2 Linux in CI runs natively on the runner (#966): the
+`rust-linux-tier2` job installs `rust/tools/linux-validate/apt-packages.txt`
+and runs `validate.sh` directly: one build, then one job per libobs (C or with Rust) and shard. The
+intended local equivalent is bosn running that same job through act2:
+
+```sh
+bosn ci run --workflow build-project.yaml --job rust-linux-tier2 --trigger pr --wait
+```
+
+It does not run yet: bosn accepts only the `ubuntu-latest`, `-24.04` and
+`-22.04` labels (zackees/bosn#642), so it marks the
+job's `check-event` and `ci-mode` dependencies unsupported and skips Tier 2
+("some jobs need runners bosn cannot supervise"). Until it does, use
+`./unittest` (the Docker lane below) locally.
+
+Remaining gap: `rust/tools/linux-validate/run.sh` (the local gate's Tier 2
+lane, `./unittest`) still calls `docker build` and `docker run` directly, so
+concurrent local gates from many agents run unmanaged. It reads the same
+package list; moving it under bosn is the open step.
 
 ### act2: GitHub Actions, locally
 
@@ -175,13 +223,53 @@ the paths that select them, so a change only triggers the tests it can affect.
 - **`local-gate.toml`** declares the local lanes and what they attest:
   - `lint`: formatters, clippy, dylints, the `ci/` Python tests;
   - `rust-test`: Rust Tiers 1-3;
-  - `cross`: clippy, dylint and `check` for the Windows and macOS targets,
-    cross-compiled from Linux with soldr;
-  - `tier2-linux`: the cmocka suite with `ENABLE_RUST_LIBOBS` OFF and ON, in
+  - `cross`: clippy, dylint, and a link of every test binary
+    (`test --no-run`) for the Windows and macOS targets, cross-compiled from
+    Linux with soldr;
+  - `tier2-linux`: the cmocka suite against libobs and libobs-with-rust, in
     Docker.
-- **`ci/ci_scope.py`** maps changed paths to jobs. Linux Rust tests and Tier 2
-  always run. macOS or Windows Rust tests and Tier 2 run when platform code,
-  shared build config, C++ cmocka tests or the test CMake files change.
+- **`ci/ci_scope.py`** maps changed paths to jobs, by path alone (#897). Linux
+  Rust tests and Tier 2 always run. A changed file that belongs to a platform
+  (`ci/platform_paths.py`: path tokens such as `win-capture/`,
+  `platform-osx.mm`, `rust/*/src/platform/windows/`, or extensions such as
+  `.m`, `.rc`) starts that platform's Rust tests and Tier 2. POSIX/Unix files
+  (`*-posix.c`, `unix/`, and `libobs/util/platform-nix.c`) belong to Linux
+  and macOS, so changing one starts macOS too. Core files carry no platform
+  defines or OS headers (`ci/platform_ifdef_ratchet.py` enforces it, and
+  fails a platform file that names another OS), so a core change runs on
+  Linux; file contents are never read. A module whose name doesn't say its OSes
+  (`coreaudio-encoder`, `obs-text`, ...) is listed in `ci/platform_paths.py`
+  with its `PLATFORMS` from `plugins/CMakeLists.txt`; upstream paths are
+  never renamed for this (#1051). `libobs/cmake/os-<os>.cmake` starts only
+  its OS. Shared and so every platform:
+  `.github/`, `cmake/common/`, `cmake/finders/`, the rest of `libobs/cmake/`, the root
+  CMake files, `platform/mod.rs`, `test/cmocka/CMakeLists.txt` and the C++
+  cmocka tests with their `tests.d` registrations (#610). Pushes and the
+  merge queue are scoped the same way; every platform runs on master pushes, schedule, workflow_dispatch, tags,
+  release branches and in the release gate; no PR path selects the full builds.
+  Packaging and submodule moves are still compiled on Linux (touched targets)
+  on the PR. `.github/` edits start no platform job.
+
+### Path to lane table (fast gate)
+
+A PR needs about 5 runners: Event Data, CI Mode (attestation and lane proofs),
+Checks (swift detection, flatpak and Qt XML validators, ci/ self-tests; plus
+clang-format and gersemi on pushes), the Fast Gate and CI Gate. The Fast Gate
+runs formatters, rustfmt, clippy, Dylint and the unit tests of the crates the
+diff touches and their dependents (`ci/rust_scope.py`; libobs, dylints and
+Cargo files test the workspace), on every PR. No Qt is installed there.
+`LANES` in `ci/ci_scope.py` selects the rest by path:
+
+| Paths | Lane |
+|---|---|
+| everything | Fast Gate: 1) fmt, clippy, Dylint; 2) unit tests of the touched crates; 3) Linux build of touched `plugins/<x>`/`shared/<x>` targets (ENABLE_FRONTEND=OFF, no Qt) |
+| `libobs/` (not platform-only files), crates linked into libobs, `test/cmocka/`, `deps/`, `rust/tools/linux-validate/`, Cargo files | Tier 2 Linux (after the Fast Gate) |
+| `frontend/`, Qt-linked tests, `shared/qt`, the Qt job's own files | Qt Frontend Linux (the only Qt). Frontend platform files start no Windows/macOS Rust or Tier 2 job; Windows/macOS Qt lanes are a follow-up |
+| files matching `/platform[/-](windows, macos, linux, posix)[/.]` (posix = linux+macos), legacy OS names, shared build files (`cmake/common`, `cmake/finders`, `libobs/cmake`, root CMake, `platform/mod.rs`, C++ cmocka tests) | macOS / Windows Rust tests, Tier 2, cross lint |
+| `build-aux/`, `.gitmodules`, submodules | compiled on Linux only; no full build from a PR |
+| `docs/`, `.github/`, `ci/` | lint and the ci/ self-tests |
+
+The macOS, Windows, Qt, Tier 2 and cross jobs `needs:` the Fast Gate, so a lint or unit-test failure spends none of those runners.
 
 Unchanged lanes are cached by the gate, so a re-run after a small fix is fast.
 
@@ -230,7 +318,6 @@ Flatpak app builds, and the platform Rust test and Tier 2 jobs that
 `ci_scope.py` selects.
 
 **The stamp is ignored (CI runs everything it would anyway) when:**
-- the PR has the `ci-full` label;
 - the PR comes from a fork or from a non-writer;
 - the head isn't attested for its exact tree;
 - a lane is missing from the stamp;
@@ -258,8 +345,8 @@ that CI will run the Linux jobs itself.
    running for this clone, wait and retry.
 6. Push the stamped commit as-is: no amend, no rebase, no "Update branch"
    afterwards. Rebase before stamping, not after.
-7. Add `ci-full` only when the change affects a platform build that the quick
-   gate doesn't cover, and say why in the PR.
+7. There is no label to force CI: a `build-aux/` or submodule change selects
+   the full builds by path.
 
 ## When CI fails
 
@@ -281,7 +368,8 @@ Each gap is a step toward the full protocol, and a good issue to pick up:
 - **Docker through bosn.** The Tier 2 Linux harness
   (`rust/tools/linux-validate/run.sh`) drives Docker directly, so concurrent
   local gates run unmanaged. Running it under bosn's bounded runner slots is
-  the biggest single relief for shared machines.
+  the biggest single relief for shared machines. (The AppImage build already
+  runs under bosn: `bosn run --task appimage`.)
 - **A real `ci.toml`.** Path selection lives in `ci/ci_scope.py`, outside
   ci.yml's checker. Moving it into a schema-3 `ci.toml` lets the protocol's
   tooling validate and evolve it.

@@ -3,24 +3,9 @@ cmake_minimum_required(VERSION 3.28...3.30)
 add_library(libobs-d3d11 MODULE)
 add_library(OBS::libobs-d3d11 ALIAS libobs-d3d11)
 
-target_sources(
-  libobs-d3d11
-  PRIVATE
-    d3d11-duplicator.cpp
-    d3d11-indexbuffer.cpp
-    d3d11-rebuild.cpp
-    d3d11-samplerstate.cpp
-    d3d11-shader.cpp
-    d3d11-shaderprocessor.cpp
-    d3d11-shaderprocessor.hpp
-    d3d11-stagesurf.cpp
-    d3d11-subsystem.cpp
-    d3d11-subsystem.hpp
-    d3d11-texture2d.cpp
-    d3d11-texture3d.cpp
-    d3d11-vertexbuffer.cpp
-    d3d11-zstencilbuffer.cpp
-)
+# Unity group (BUILD.md): build/d3d11.core+.hpp.cpp #includes the
+# implementation files (d3d11-foo.cpp.hpp) behind one precompiled header.
+target_sources(libobs-d3d11 PRIVATE build/d3d11.core+.hpp.cpp d3d11-shaderprocessor.hpp d3d11-subsystem.hpp)
 
 configure_file(cmake/windows/obs-module.rc.in libobs-d3d11.rc)
 target_sources(libobs-d3d11 PRIVATE libobs-d3d11.rc)

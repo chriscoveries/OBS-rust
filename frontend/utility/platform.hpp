@@ -18,11 +18,23 @@
 #pragma once
 
 #include <util/c99defs.h>
+#include <util/config-file.h>
+#include <obs.h>
 
+#include <ctime>
 #include <string>
 #include <vector>
 
 class QWidget;
+
+/* Features the shared frontend code compiles in. Defined here once so the
+ * shared files do not test platform macros themselves (#847). */
+#if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
+#define OBS_PLATFORM_HAS_UPDATE_BRANCHES 1
+#endif
+#ifndef _WIN32
+#define OBS_PLATFORM_POSIX_SIGNALS 1
+#endif
 
 #ifdef __APPLE__
 bool InitializeMacApplicationIcon();
@@ -43,6 +55,45 @@ bool SetDisplayAffinitySupported(void);
 
 bool HighContrastEnabled();
 
+/* glGetString from the GL library libobs-opengl uses (the frontend does not
+ * link GL), or nullptr. Call it only with the graphics context entered. */
+void *GetGlGetStringProc();
+
+/* OBSApp platform facade (#849). Each function has one implementation in
+ * platform-osx.mm, platform-windows.cpp and platform-x11.cpp. */
+
+/* Platform defaults of the global (app) config: renderer, audio ducking,
+ * browser acceleration, macOS vsync. */
+void InitPlatformConfigDefaults(config_t *appConfig);
+/* Applies platform settings from the app config at startup / reverts them at shutdown. */
+void ApplyPlatformAppSettings(config_t *appConfig);
+void RevertPlatformAppSettings(config_t *appConfig);
+/* Per-platform lines of the startup log. */
+void LogPlatformSettings(config_t *userConfig);
+bool PlatformSupportsBrowserHWAccel();
+/* Directories below the app config path that exist only on this platform. */
+std::vector<std::string> GetPlatformExtraConfigDirs();
+/* Process identity (Windows AppUserModelID); true when there is nothing to do. */
+bool InitializeAppIdentity();
+void SetApplicationIcon();
+/* Native display setup (X11/Wayland platform selection, macOS widget attribute). */
+void InitPlatformDisplay();
+/* Hotkeys Qt reports in a platform-specific way (macOS CapsLock). */
+bool GetPlatformHotkeyOverride(int qtKey, obs_key_t &key, bool &pressed);
+void PlatformLocalTime(const time_t *now, struct tm *out);
+/* The graphics module (DL_*) for the configured "Video/Renderer" value. */
+const char *GetPlatformRenderModule(const char *renderer);
+/* "windows", "mac", "linux", ... as shown in the version string. */
+std::string GetPlatformVersionName();
+const char *GetPlatformInputAudioSource();
+const char *GetPlatformOutputAudioSource();
+bool IsPortableModeAllowed();
+const char *GetPortableConfigBasePath();
+/* Whether an update branch announced for these platforms applies here. */
+bool IsUpdateBranchSupported(bool windows, bool macos);
+/* Whether SIGINT/SIGTERM/... save the scene collection before quitting (not on macOS). */
+bool PlatformSavesBeforeSignalQuit();
+
 enum TaskbarOverlayStatus {
 	TaskbarOverlayStatusInactive,
 	TaskbarOverlayStatusActive,
@@ -60,7 +111,6 @@ void
 CheckIfAlreadyRunning(bool &already_running);
 
 #ifdef _WIN32
-bool InitializeAppIdentity();
 bool VerifyAppIdentity();
 uint32_t GetWindowsVersion();
 uint32_t GetWindowsBuild();

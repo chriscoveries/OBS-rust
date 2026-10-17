@@ -86,3 +86,23 @@ void output_filename_release(const char *path)
 	if (path && *path && os_get_file_size(path) == 0)
 		os_unlink(path);
 }
+
+void output_filename_reservation_hold(struct output_filename_reservation *reservation, const char *path)
+{
+	output_filename_reservation_cancel(reservation);
+	if (path && *path)
+		reservation->path = bstrdup(path);
+}
+
+void output_filename_reservation_hand_over(struct output_filename_reservation *reservation)
+{
+	bfree(reservation->path);
+	reservation->path = NULL;
+}
+
+void output_filename_reservation_cancel(struct output_filename_reservation *reservation)
+{
+	output_filename_release(reservation->path);
+	bfree(reservation->path);
+	reservation->path = NULL;
+}

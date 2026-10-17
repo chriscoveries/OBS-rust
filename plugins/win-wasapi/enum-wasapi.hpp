@@ -2,6 +2,9 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+/* Declare GUID_NULL before audioclient.h pulls in ks.h, which redefines it as
+ * a macro: a later cguid.h (WRL, OLE) would then fail to declare it. */
+#include <cguid.h>
 #include <initguid.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>

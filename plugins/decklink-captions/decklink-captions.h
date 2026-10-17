@@ -1,3 +1,5 @@
+#pragma once
+
 #include <QDialog>
 #include <obs-module.h>
 #include <util/platform.h>

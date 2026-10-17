@@ -1,3 +1,5 @@
+#pragma once
+
 //
 //  OBSAVCapturePresetInfo.h
 //  mac-avcapture

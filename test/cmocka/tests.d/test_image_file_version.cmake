@@ -5,7 +5,7 @@ if(NOT OS_WINDOWS)
   add_executable(
     test_image_file_version
     test_image_file_version.c
-    "${CMAKE_SOURCE_DIR}/plugins/image-source/image-file-version.c"
+    "${CMAKE_SOURCE_DIR}/plugins/image-source/image-file-version.c.h"
   )
   target_include_directories(
     test_image_file_version

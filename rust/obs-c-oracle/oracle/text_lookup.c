@@ -50,4 +50,4 @@
 #define dstr_mid oracle_dstr_mid
 #define dstr_right oracle_dstr_right
 
-#include "util/text-lookup.c"
+#include "util/text-lookup.c.h"

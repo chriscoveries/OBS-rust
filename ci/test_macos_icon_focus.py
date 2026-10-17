@@ -2,6 +2,7 @@
 """Compile actual frontend icon initialization against observable focus receivers (#725)."""
 
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -73,6 +74,10 @@ class MacIconFocus(unittest.TestCase):
             if marker in platform
             else ""
         )
+        # The facade (#849) picks the icon call per platform file.
+        facade = (ROOT / "frontend/utility" / ("platform-osx.mm" if apple else "platform-x11.cpp")).read_text()
+        icon = re.search(r"^void SetApplicationIcon\(\)\n\{.*?^\}", facade, re.S | re.M).group(0)
+        policy += "\n" + icon.replace("QApplication::", "qApp->")
         post_log = ""
         if logging:
             main = (ROOT / "frontend/obs-main.cpp").read_text()

@@ -2,4 +2,4 @@
  * its global symbols renamed to oracle_* (graphics_math_names.h). */
 #include "graphics_math_names.h"
 
-#include "graphics/quat.c"
+#include "graphics/quat.c.h"

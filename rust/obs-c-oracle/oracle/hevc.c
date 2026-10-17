@@ -9,4 +9,4 @@
 #define obs_nal_find_startcode oracle_obs_nal_find_startcode
 #define array_output_serializer_init oracle_array_output_serializer_init
 
-#include "obs-hevc.c"
+#include "obs-hevc.c.h"

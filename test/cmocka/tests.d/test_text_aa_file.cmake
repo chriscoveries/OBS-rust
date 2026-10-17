@@ -4,12 +4,13 @@ if(OS_LINUX AND TARGET OBS::text-freetype2)
   add_executable(
     test_text_aa_file
     test_text_aa_file.c
-    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/text-freetype2.c"
-    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/text-functionality.c"
-    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/text-file.c"
-    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/glyph-atlas.c"
-    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/obs-convenience.c"
-    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/find-font-unix.c"
+    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/text-freetype2.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/text-functionality.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/text-file.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/glyph-atlas.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/obs-convenience.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/find-font-unix.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/text-freetype2/text-freetype2-host-posix.c.h"
   )
   target_compile_definitions(test_text_aa_file PRIVATE TEST_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/data/text-aa.ttf")
   target_include_directories(

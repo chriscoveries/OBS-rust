@@ -5,8 +5,8 @@ if(OS_LINUX OR OS_FREEBSD)
   add_executable(
     test_wayland_hotkeys
     test_wayland_hotkeys.c
-    "${CMAKE_SOURCE_DIR}/libobs/obs-hotkey.c"
-    "${CMAKE_SOURCE_DIR}/libobs/obs-nix-hotkey-state.c"
+    "${CMAKE_SOURCE_DIR}/libobs/obs-hotkey.c.h"
+    "${CMAKE_SOURCE_DIR}/libobs/obs-nix-hotkey-state.c.h"
   )
   target_compile_definitions(test_wayland_hotkeys PRIVATE obs=hotkey_test_obs)
   target_include_directories(test_wayland_hotkeys PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/libobs")
@@ -25,9 +25,9 @@ if(OS_LINUX OR OS_FREEBSD)
     add_executable(
       test_portal_shortcuts
       test_portal_shortcuts.c
-      "${CMAKE_SOURCE_DIR}/libobs/obs-hotkey.c"
-      "${CMAKE_SOURCE_DIR}/libobs/obs-nix-hotkey-state.c"
-      "${CMAKE_SOURCE_DIR}/libobs/obs-nix-portal-shortcuts.c"
+      "${CMAKE_SOURCE_DIR}/libobs/obs-hotkey.c.h"
+      "${CMAKE_SOURCE_DIR}/libobs/obs-nix-hotkey-state.c.h"
+      "${CMAKE_SOURCE_DIR}/libobs/obs-nix-portal-shortcuts.c.h"
     )
     target_compile_definitions(test_portal_shortcuts PRIVATE obs=hotkey_test_obs)
     target_include_directories(test_portal_shortcuts PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/libobs")

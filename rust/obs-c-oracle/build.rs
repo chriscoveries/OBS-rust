@@ -367,16 +367,14 @@ fn main() {
             oracle.define(from, Some(to));
         }
     }
-    // base.c's variadic entry points stay C in libobs; the oracle needs them too.
-    oracle.file(libobs.join("util/base-variadic.c"));
     // plugins/obs-nvenc loader parity (obs-rust/obs-studio#520): the
     // original load_cuda_lib(), cuda_functions[] and load_nvenc_lib(),
     // extracted verbatim for oracle/obs_nvenc_loader.c.
     let nvenc_dir = libobs.with_file_name("plugins").join("obs-nvenc");
     let extract_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("obs-nvenc-extract");
     std::fs::create_dir_all(&extract_dir).expect("create obs-nvenc-extract");
-    let cuda_load = nvenc_dir.join("cuda-load.c");
-    let nvenc_load = nvenc_dir.join("nvenc-load.c");
+    let cuda_load = nvenc_dir.join("cuda-load.c.h");
+    let nvenc_load = nvenc_dir.join("nvenc-load.c.h");
     for (name, src, start, end) in [
         (
             "load_cuda_lib.inc",
@@ -410,7 +408,18 @@ fn main() {
         // package, so the text-lookup oracle uses a vendored copy of the
         // same release (2.3.0, BSD-1-Clause, see vendor/uthash/LICENSE).
         .include(manifest.join("vendor/uthash"))
+        // obs-properties.c includes obs-internal.h, which includes
+        // <caption/caption.h> from deps/libcaption (headers only).
+        .include(libobs.with_file_name("deps").join("libcaption"))
         .std("c11");
+    // The real build is gnu17, whose glibc headers see _DEFAULT_SOURCE (POSIX
+    // 2008: PTHREAD_MUTEX_RECURSIVE for util/threading.h). Strict c11 hides
+    // it, and a unity group's precompiled header (BUILD.md) brings
+    // threading.h to every oracle file of its family, not only the ones that
+    // used to include it.
+    if unix {
+        oracle.define("_DEFAULT_SOURCE", None);
+    }
     // task.c calls pthread_mutex_*/pthread_create plus os_event/os_sem helpers.
     // Those helpers come from oracle/threading_posix.c or
     // oracle/threading_windows.c, included under private names. MSVC has no
@@ -471,6 +480,25 @@ fn main() {
         // is 13.0 (CMakePresets.json). Silence that one cross warning.
         owned_flags.push("-Wno-unguarded-availability-new".to_string());
     }
+    // obs-data.c calls its own deprecated autoselect setters. The shipped
+    // libobs build silences that on this one file; the oracle has to as well
+    // or -Werror fails the include of the original source.
+    if oracle.get_compiler().is_like_msvc() {
+        oracle.flag("/wd4996");
+        owned_flags.push("/wd4996".into());
+    } else {
+        oracle.flag("-Wno-deprecated-declarations");
+        owned_flags.push("-Wno-deprecated-declarations".into());
+    }
+    // obs-properties.c initializes `struct list_item item = {NULL};`; the
+    // shipped build tolerates it, the oracle's -Werror does not.
+    if !oracle.get_compiler().is_like_msvc() || oracle.get_compiler().is_like_clang_cl() {
+        oracle.flag("-Wno-missing-field-initializers");
+        owned_flags.push("-Wno-missing-field-initializers".into());
+    }
+    let jansson_src = manifest.join("vendor/jansson/src");
+    oracle.include(&jansson_src);
+    owned_flags.push("-Ivendor/jansson/src".into());
     let mut hash_flags: Vec<&str> = flags.clone();
     hash_flags.extend(owned_flags.iter().map(String::as_str));
     println!(
@@ -492,6 +520,32 @@ fn main() {
         _ => {}
     }
     oracle.compile("obs_c_oracle");
+
+    // Jansson 2.14.1 for cargo test. libobs links its own copy, so this
+    // staticlib stays on the oracle and is not a rustc-link-lib of obs-data.
+    // Warnings stay off: the third-party sources are not part of the ratchet.
+    let mut jansson = cc::Build::new();
+    jansson
+        .include(&jansson_src)
+        .warnings(false)
+        .define("HAVE_CONFIG_H", None);
+    for name in [
+        "dump.c",
+        "error.c",
+        "hashtable.c",
+        "hashtable_seed.c",
+        "load.c",
+        "memory.c",
+        "pack_unpack.c",
+        "strbuffer.c",
+        "strconv.c",
+        "utf.c",
+        "value.c",
+        "version.c",
+    ] {
+        jansson.file(jansson_src.join(name));
+    }
+    jansson.compile("jansson_vendor");
 
     if macos {
         let mut objc = cc::Build::new();

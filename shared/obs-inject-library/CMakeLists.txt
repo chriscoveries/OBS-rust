@@ -6,6 +6,6 @@ endif()
 
 add_library(inject-library INTERFACE)
 add_library(OBS::inject-library ALIAS inject-library)
-target_sources(inject-library INTERFACE inject-library.c inject-library.h)
+target_sources(inject-library INTERFACE build/inject-library.windows+.h.c inject-library.h)
 target_link_libraries(inject-library INTERFACE OBS::obfuscate)
 target_include_directories(inject-library INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")

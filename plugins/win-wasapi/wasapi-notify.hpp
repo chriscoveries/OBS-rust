@@ -1,7 +1,7 @@
 #pragma once
 
 #include <util/windows/ComPtr.hpp>
-#include <Mmdeviceapi.h>
+#include <mmdeviceapi.h>
 
 #include <unordered_map>
 #include <functional>

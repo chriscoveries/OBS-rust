@@ -375,9 +375,8 @@ struct obs_core_video_mix {
 	gs_stagesurf_t *copy_surfaces[NUM_TEXTURES][NUM_CHANNELS];
 	gs_texture_t *convert_textures[NUM_CHANNELS];
 	gs_texture_t *convert_textures_encode[NUM_CHANNELS];
-#ifdef _WIN32
+	/* Staging for GPU-encode frames; only Windows creates them (obs-host.h). */
 	gs_stagesurf_t *copy_surfaces_encode[NUM_TEXTURES];
-#endif
 	gs_texture_t *render_texture;
 	gs_texture_t *output_texture;
 	enum gs_color_space render_space;
@@ -638,10 +637,6 @@ struct obs_graphics_context {
 
 extern void *obs_graphics_thread(void *param);
 extern bool obs_graphics_thread_loop(struct obs_graphics_context *context);
-#ifdef __APPLE__
-extern void *obs_graphics_thread_autorelease(void *param);
-extern bool obs_graphics_thread_loop_autorelease(struct obs_graphics_context *context);
-#endif
 
 extern gs_effect_t *obs_load_effect(gs_effect_t **effect, const char *file);
 
@@ -1524,6 +1519,8 @@ extern struct obs_encoder_info *find_encoder(const char *id);
 extern bool obs_encoder_initialize(obs_encoder_t *encoder);
 extern void obs_encoder_shutdown(obs_encoder_t *encoder);
 extern void obs_encoder_shutdown_unstarted(obs_encoder_t *encoder);
+extern video_t *obs_encoder_unbind_video(obs_encoder_t *encoder, video_t *const *videos, size_t num);
+extern void obs_encoder_rebind_video(obs_encoder_t *encoder, video_t *video);
 
 extern void obs_encoder_start(obs_encoder_t *encoder, encoded_callback_t new_packet, void *param);
 extern void obs_encoder_stop(obs_encoder_t *encoder, encoded_callback_t new_packet, void *param);
@@ -1569,6 +1566,7 @@ void obs_service_destroy(obs_service_t *service);
 
 void obs_output_remove_encoder_internal(struct obs_output *output, struct obs_encoder *encoder);
 bool obs_output_needs_encoders(const struct obs_output *output);
+bool obs_output_starting(const struct obs_output *output);
 
 /** Internal Source Profiler functions **/
 

@@ -6,10 +6,17 @@
 
 # reset_stale_build BUILD_DIR RUSTC_VERSION
 # Removes BUILD_DIR unless BUILD_DIR.rustc records RUSTC_VERSION, then
-# records it. ccache keeps the C rebuild warm.
+# records it. zccache keeps the C rebuild warm.
 reset_stale_build() {
   local build=$1 version=$2
   if [ "$(cat "$build.rustc" 2>/dev/null)" != "$version" ]; then
+    rm -rf "$build"
+  fi
+  # A tree configured from another source path (the old /src copy, now /ro)
+  # can't be reused: CMake refuses ("does not match the source ... used to
+  # generate cache").
+  if [ -f "$build/CMakeCache.txt" ] && [ -n "${SRC:-}" ] &&
+    ! grep -qx "CMAKE_HOME_DIRECTORY:INTERNAL=$SRC" "$build/CMakeCache.txt"; then
     rm -rf "$build"
   fi
   printf '%s\n' "$version" >"$build.rustc"

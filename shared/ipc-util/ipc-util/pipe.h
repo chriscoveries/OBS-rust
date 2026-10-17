@@ -21,11 +21,10 @@
 
 #ifdef __cplusplus
 extern "C" {
-#elif defined(_MSC_VER)
-#ifndef inline
-#define inline __inline
 #endif
-#endif
+
+/* MSVC's C compiler spells inline __inline */
+#include "platform-pipe-compat.h"
 
 struct ipc_pipe_server;
 struct ipc_pipe_client;
@@ -42,11 +41,8 @@ void ipc_pipe_client_free(ipc_pipe_client_t *pipe);
 bool ipc_pipe_client_write(ipc_pipe_client_t *pipe, const void *data, size_t size);
 static inline bool ipc_pipe_client_valid(ipc_pipe_client_t *pipe);
 
-#ifdef _WIN32
-#include "pipe-windows.h"
-#else /* assume posix */
-#include "pipe-posix.h"
-#endif
+/* pipe-windows.h or pipe-posix.h */
+#include "platform-pipe.h"
 
 #ifdef __cplusplus
 }

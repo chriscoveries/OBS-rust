@@ -10,90 +10,98 @@
 # and plugins, and it makes helper processes (obs-ffmpeg-mux, ...) work too.
 HERE="$(dirname "$(readlink -f "$0")")"
 LOADER="@LOADER@"
-LOADER_DIR="$(dirname "$LOADER")"
-BUNDLED_LOADER="$HERE/lib64/ld-linux-x86-64.so.2"
-GLIBC_DIR="$HERE/glibc"
+# Built on a glibc at or below the AppImage's floor (2.28, #926), the bundle
+# carries no glibc: every ELF keeps the system interpreter and the host's glibc
+# and C++ runtime are used. Built on a newer glibc, the bundled one is
+# installed below.
+if [ "@BUNDLE_GLIBC@" = 1 ]; then
+    LOADER_DIR="$(dirname "$LOADER")"
+    BUNDLED_LOADER="$HERE/lib64/ld-linux-x86-64.so.2"
+    GLIBC_DIR="$HERE/glibc"
 
-# glibc, libstdc++ and libgcc_s: the host's when they are at least as new as the
-# bundled ones, the bundled ones otherwise (obs-rust/obs-studio#621). The host's
-# Mesa and LLVM are built against the host's C and C++ runtime and cannot load
-# against an older one; but an older host (Ubuntu 22.04, ...) cannot run what
-# was built here. Every ELF file's RPATH ends with $LOADER_DIR/lib: filled with
-# the bundled copies, or left empty so that the host's are found.
-# (OBS_APPIMAGE_BUNDLED_LIBC=1 forces the bundled ones.)
-host_loader=""
-for c in /lib64/ld-linux-x86-64.so.2 /usr/lib64/ld-linux-x86-64.so.2 \
-    /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
-    /usr/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2; do
-    [ -x "$c" ] && { host_loader="$(readlink -f "$c")"; break; }
-done
-# "major.minor" -> a comparable number
-ver_num() { echo "$1" | awk -F. '{ printf "%d", $1 * 1000 + $2 }'; }
-use_host_libc=0
-if [ -n "$host_loader" ] && [ -z "$OBS_APPIMAGE_BUNDLED_LIBC" ]; then
-    host_glibc="$("$host_loader" --version 2>/dev/null | sed -n '1s/.*release version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
-    host_stdcxx=""
-    for d in /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib /lib64 /lib/x86_64-linux-gnu /lib; do
-        if [ -r "$d/libstdc++.so.6" ] && [ -r "$d/libgcc_s.so.1" ]; then
-            host_stdcxx="$(grep -a -o 'GLIBCXX_3\.4\.[0-9]*' "$d/libstdc++.so.6" 2>/dev/null | sed 's/.*\.//' | sort -n | tail -1)"
-            break
-        fi
+    # glibc, libstdc++ and libgcc_s: the host's when they are at least as new as the
+    # bundled ones, the bundled ones otherwise (obs-rust/obs-studio#621). The host's
+    # Mesa and LLVM are built against the host's C and C++ runtime and cannot load
+    # against an older one; but an older host (Ubuntu 22.04, ...) cannot run what
+    # was built here. Every ELF file's RPATH ends with $LOADER_DIR/lib: filled with
+    # the bundled copies, or left empty so that the host's are found.
+    # (OBS_APPIMAGE_BUNDLED_LIBC=1 forces the bundled ones.)
+    host_loader=""
+    for c in /lib64/ld-linux-x86-64.so.2 /usr/lib64/ld-linux-x86-64.so.2 \
+        /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+        /usr/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2; do
+        [ -x "$c" ] && { host_loader="$(readlink -f "$c")"; break; }
     done
-    if [ -n "$host_glibc" ] && [ -n "$host_stdcxx" ] &&
-        [ "$(ver_num "$host_glibc")" -ge "$(ver_num "$(cat "$GLIBC_DIR/GLIBC_VERSION")")" ] &&
-        [ "$host_stdcxx" -ge "$(cat "$GLIBC_DIR/GLIBCXX_MINOR")" ]; then
-        use_host_libc=1
+    # "major.minor" -> a comparable number
+    ver_num() { echo "$1" | awk -F. '{ printf "%d", $1 * 1000 + $2 }'; }
+    use_host_libc=0
+    if [ -n "$host_loader" ] && [ -z "$OBS_APPIMAGE_BUNDLED_LIBC" ]; then
+        host_glibc="$("$host_loader" --version 2>/dev/null | sed -n '1s/.*release version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+        host_stdcxx=""
+        for d in /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib /lib64 /lib/x86_64-linux-gnu /lib; do
+            if [ -r "$d/libstdc++.so.6" ] && [ -r "$d/libgcc_s.so.1" ]; then
+                host_stdcxx="$(grep -a -o 'GLIBCXX_3\.4\.[0-9]*' "$d/libstdc++.so.6" 2>/dev/null | sed 's/.*\.//' | sort -n | tail -1)"
+                break
+            fi
+        done
+        if [ -n "$host_glibc" ] && [ -n "$host_stdcxx" ] &&
+            [ "$(ver_num "$host_glibc")" -ge "$(ver_num "$(cat "$GLIBC_DIR/GLIBC_VERSION")")" ] &&
+            [ "$host_stdcxx" -ge "$(cat "$GLIBC_DIR/GLIBCXX_MINOR")" ]; then
+            use_host_libc=1
+        fi
     fi
-fi
-if [ "$use_host_libc" = 1 ]; then
-    MODE=host
-    SOURCE_LOADER="$host_loader"
-else
-    MODE=bundled
-    SOURCE_LOADER="$BUNDLED_LOADER"
-fi
-
-# Only coreutils here: minimal containers lack cmp, find, ...
-same_loader() {
-    [ -f "$LOADER" ] && [ "$(sha256sum <"$SOURCE_LOADER")" = "$(sha256sum <"$LOADER")" ]
-}
-umask 022
-mkdir -p "$LOADER_DIR" 2>/dev/null
-if ! same_loader; then
-    tmp="$(mktemp "$LOADER_DIR/.ld.XXXXXX" 2>/dev/null)" &&
-        cp "$SOURCE_LOADER" "$tmp" && chmod 755 "$tmp" &&
-        mv -f "$tmp" "$LOADER"
-fi
-# Never trust a loader directory someone else owns or can write to: it is
-# executed as the interpreter of every process we start.
-owner="$(stat -c %u "$LOADER_DIR" 2>/dev/null)"
-mode="$(stat -c %a "$LOADER_DIR" 2>/dev/null)"
-case "$mode" in
-*[2367]? | *[2367]) writable=1 ;;
-*) writable=0 ;;
-esac
-if ! same_loader || [ "$writable" = 1 ] || { [ "$owner" != "$(id -u)" ] && [ "$owner" != 0 ]; }; then
-    echo "obs AppImage: cannot set up the bundled loader in $LOADER_DIR" >&2
-    echo "(the directory must be writable by you only and /tmp must allow exec)" >&2
-    exit 1
-fi
-# The libraries behind the RPATH entry: copies (the AppImage mounts at a new
-# place every time, so links into it would dangle for a running instance).
-if [ "$MODE" = host ]; then
-    rm -rf "$LOADER_DIR/lib" 2>/dev/null
-elif [ ! -e "$LOADER_DIR/lib/.complete" ]; then
-    rm -rf "$LOADER_DIR/lib" "$LOADER_DIR/lib.new" 2>/dev/null
-    if mkdir "$LOADER_DIR/lib.new" &&
-        for f in "$GLIBC_DIR"/*.so*; do cp "$f" "$LOADER_DIR/lib.new/" || exit 1; done &&
-        : >"$LOADER_DIR/lib.new/.complete" &&
-        mv "$LOADER_DIR/lib.new" "$LOADER_DIR/lib"; then
-        :
+    if [ "$use_host_libc" = 1 ]; then
+        MODE=host
+        SOURCE_LOADER="$host_loader"
     else
-        echo "obs AppImage: cannot copy the bundled C library to $LOADER_DIR/lib" >&2
+        MODE=bundled
+        SOURCE_LOADER="$BUNDLED_LOADER"
+    fi
+
+    # Only coreutils here: minimal containers lack cmp, find, ...
+    same_loader() {
+        [ -f "$LOADER" ] && [ "$(sha256sum <"$SOURCE_LOADER")" = "$(sha256sum <"$LOADER")" ]
+    }
+    umask 022
+    mkdir -p "$LOADER_DIR" 2>/dev/null
+    if ! same_loader; then
+        tmp="$(mktemp "$LOADER_DIR/.ld.XXXXXX" 2>/dev/null)" &&
+            cp "$SOURCE_LOADER" "$tmp" && chmod 755 "$tmp" &&
+            mv -f "$tmp" "$LOADER"
+    fi
+    # Never trust a loader directory someone else owns or can write to: it is
+    # executed as the interpreter of every process we start.
+    owner="$(stat -c %u "$LOADER_DIR" 2>/dev/null)"
+    mode="$(stat -c %a "$LOADER_DIR" 2>/dev/null)"
+    case "$mode" in
+    *[2367]? | *[2367]) writable=1 ;;
+    *) writable=0 ;;
+    esac
+    if ! same_loader || [ "$writable" = 1 ] || { [ "$owner" != "$(id -u)" ] && [ "$owner" != 0 ]; }; then
+        echo "obs AppImage: cannot set up the bundled loader in $LOADER_DIR" >&2
+        echo "(the directory must be writable by you only and /tmp must allow exec)" >&2
         exit 1
     fi
+    # The libraries behind the RPATH entry: copies (the AppImage mounts at a new
+    # place every time, so links into it would dangle for a running instance).
+    if [ "$MODE" = host ]; then
+        rm -rf "$LOADER_DIR/lib" 2>/dev/null
+    elif [ ! -e "$LOADER_DIR/lib/.complete" ]; then
+        rm -rf "$LOADER_DIR/lib" "$LOADER_DIR/lib.new" 2>/dev/null
+        if mkdir "$LOADER_DIR/lib.new" &&
+            for f in "$GLIBC_DIR"/*.so*; do cp "$f" "$LOADER_DIR/lib.new/" || exit 1; done &&
+            : >"$LOADER_DIR/lib.new/.complete" &&
+            mv "$LOADER_DIR/lib.new" "$LOADER_DIR/lib"; then
+            :
+        else
+            echo "obs AppImage: cannot copy the bundled C library to $LOADER_DIR/lib" >&2
+            exit 1
+        fi
+    fi
+    echo "$MODE" >"$LOADER_DIR/mode" 2>/dev/null
+else
+    MODE=host
 fi
-echo "$MODE" >"$LOADER_DIR/mode" 2>/dev/null
 
 export APPDIR="$HERE"
 # Deliberately NO LD_LIBRARY_PATH: every bundled ELF carries a relative RPATH
@@ -101,7 +109,7 @@ export APPDIR="$HERE"
 # OBS spawns, and host programs crash when they pick up the bundled glibc.
 export QT_PLUGIN_PATH="$HERE/usr/lib/qt6/plugins"
 export QT_QPA_PLATFORM_PLUGIN_PATH="$HERE/usr/lib/qt6/plugins/platforms"
-export GCONV_PATH="$HERE/usr/lib/gconv"
+[ -d "$HERE/usr/lib/gconv" ] && export GCONV_PATH="$HERE/usr/lib/gconv"
 export XDG_DATA_DIRS="$HERE/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 export SPA_PLUGIN_DIR="$HERE/usr/lib/spa-0.2"
 export PIPEWIRE_MODULE_DIR="$HERE/usr/lib/pipewire-0.3"
@@ -130,7 +138,37 @@ fi
 if [ -z "${__EGL_VENDOR_LIBRARY_DIRS:-}" ] && [ -z "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" ]; then
     __EGL_VENDOR_LIBRARY_DIRS="$(host_driver_dirs /run/opengl-driver/share/glvnd/egl_vendor.d \
         /etc/glvnd/egl_vendor.d /usr/share/glvnd/egl_vendor.d)"
-    if [ -n "$__EGL_VENDOR_LIBRARY_DIRS" ]; then export __EGL_VENDOR_LIBRARY_DIRS; fi
+    if [ -n "$__EGL_VENDOR_LIBRARY_DIRS" ]; then
+        export __EGL_VENDOR_LIBRARY_DIRS
+        # glvnd loads every EGL vendor it finds, and Mesa's brings libgallium
+        # and all of LLVM (about 30 MiB resident) into a process that only
+        # renders with NVIDIA's. When every DRM render node is driven by the
+        # nvidia kernel driver, give glvnd NVIDIA's vendor files alone. Any
+        # other GPU (a laptop's Intel or AMD one, nouveau) keeps them all.
+        nvidia_only=""
+        for node in /sys/class/drm/renderD*; do
+            [ -e "$node" ] || continue
+            driver="$(readlink "$node/device/driver" 2>/dev/null)"
+            if [ "${driver##*/}" = nvidia ]; then
+                nvidia_only=1
+            else
+                nvidia_only=""
+                break
+            fi
+        done
+        if [ -n "$nvidia_only" ]; then
+            nvidia_vendors=""
+            saved_ifs="$IFS"
+            IFS=:
+            for vendor_dir in $__EGL_VENDOR_LIBRARY_DIRS; do
+                for vendor in "$vendor_dir"/*nvidia*.json; do
+                    [ -f "$vendor" ] && nvidia_vendors="${nvidia_vendors:+$nvidia_vendors:}$vendor"
+                done
+            done
+            IFS="$saved_ifs"
+            if [ -n "$nvidia_vendors" ]; then export __EGL_VENDOR_LIBRARY_FILENAMES="$nvidia_vendors"; fi
+        fi
+    fi
 fi
 if [ -z "${__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS:-}" ] && [ -z "${__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES:-}" ]; then
     __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS="$(host_driver_dirs /run/opengl-driver/share/egl/egl_external_platform.d \
@@ -172,6 +210,13 @@ if [ -n "$OBS_APPIMAGE_DEBUG" ]; then
             --args "$HERE/usr/bin/@OBS_GUI_NAME@" "$@"
     fi
     echo "gdb not found; install it to get a backtrace" >&2
+fi
+
+# The libraries OBS cannot start without come from the host (#959): say which
+# is missing, and how to get it, instead of the dynamic loader's one-line error
+# in a terminal nobody has open. (Optional ones are loaded on first use.)
+if [ -x "$HERE/usr/bin/obs-hostlib-check" ] && [ -z "${OBS_HOSTLIB_SKIP_CHECK:-}" ]; then
+    "$HERE/usr/bin/obs-hostlib-check" || exit $?
 fi
 
 # Run OBS as a child (not exec) so that a crash can be reported instead of

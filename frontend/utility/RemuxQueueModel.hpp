@@ -24,6 +24,9 @@ enum RemuxEntryState { Empty, Ready, Pending, InProgress, Complete, InvalidPath,
 
 Q_DECLARE_METATYPE(RemuxEntryState);
 
+/* Enumerators stay out of the global scope: a unity build puts this header
+ * next to other models' Count/State/EntryStateRole. */
+namespace remux_queue_model {
 enum RemuxEntryColumn {
 	State,
 	InputPath,
@@ -33,6 +36,9 @@ enum RemuxEntryColumn {
 };
 
 enum RemuxEntryRole { EntryStateRole = Qt::UserRole, NewPathsToProcessRole };
+} // namespace remux_queue_model
+using remux_queue_model::RemuxEntryColumn;
+using remux_queue_model::RemuxEntryRole;
 
 class RemuxQueueModel : public QAbstractTableModel {
 	Q_OBJECT

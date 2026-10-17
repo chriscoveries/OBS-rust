@@ -1,12 +1,20 @@
 #include "OBSBasicStatusBar.hpp"
 #include "ui_StatusBarWidget.h"
 
+#include <utility/GpuStatus.hpp>
 #include <widgets/OBSBasic.hpp>
+
+#include <QBoxLayout>
+#include <QMessageBox>
+#include <QPainter>
+#include <QPushButton>
 
 #include "moc_OBSBasicStatusBar.cpp"
 
 static constexpr int bitrateUpdateSeconds = 2;
 static constexpr int congestionUpdateSeconds = 4;
+static constexpr int gpuStatusUpdateSeconds = 5;
+static constexpr int gpuStatusSampleMs = 1000;
 static constexpr float excellentThreshold = 0.0f;
 static constexpr float goodThreshold = 0.3333f;
 static constexpr float mediocreThreshold = 0.6667f;
@@ -35,6 +43,26 @@ OBSBasicStatusBar::OBSBasicStatusBar(QWidget *parent)
 	statusWidget->ui->delayFrame->hide();
 	statusWidget->ui->issuesFrame->hide();
 	statusWidget->ui->kbps->hide();
+
+	if (GpuStatus::Available()) {
+		gpuStatusButton = new QPushButton(statusWidget);
+		gpuStatusButton->setObjectName("gpuStatusButton");
+		gpuStatusButton->setFlat(true);
+		gpuStatusButton->setText(QTStr("Basic.StatusBar.GpuStatus"));
+		gpuStatusButton->setAccessibleName(QTStr("Basic.StatusBar.GpuStatus"));
+		connect(gpuStatusButton, &QPushButton::clicked, this, &OBSBasicStatusBar::ShowGpuStatusDialog);
+		/* Next to the CPU usage, where people look for performance (#1003). */
+		auto *row = qobject_cast<QBoxLayout *>(statusWidget->layout());
+		if (row) {
+			row->insertWidget(row->indexOf(statusWidget->ui->cpuFrame), gpuStatusButton);
+		} else {
+			addPermanentWidget(gpuStatusButton);
+		}
+
+		gpuStatusTimer = new QTimer(this);
+		connect(gpuStatusTimer, &QTimer::timeout, this, &OBSBasicStatusBar::GpuStatusTick);
+		gpuStatusTimer->start(gpuStatusSampleMs);
+	}
 
 	addPermanentWidget(statusWidget, 1);
 	setMinimumHeight(statusWidget->height());
@@ -626,4 +654,83 @@ void OBSBasicStatusBar::showMessage(const QString &message, int timeout)
 void OBSBasicStatusBar::clearMessage()
 {
 	statusWidget->ui->message->setText("");
+}
+
+static QColor GpuStatusColor(GpuStatus::State state)
+{
+	switch (state) {
+	case GpuStatus::State::Green:
+		return QColor(0x2e, 0xb8, 0x4b);
+	case GpuStatus::State::Yellow:
+		return QColor(0xe8, 0xb0, 0x0c);
+	case GpuStatus::State::Red:
+		break;
+	}
+	return QColor(0xd9, 0x30, 0x25);
+}
+
+void OBSBasicStatusBar::GpuStatusTick()
+{
+	if (!obs_get_video()) {
+		return;
+	}
+	GpuStatus::Sample();
+	/* Refresh the light on the first tick, then every few seconds. */
+	if (gpuStatusTicks++ % gpuStatusUpdateSeconds == 0) {
+		UpdateGpuStatus();
+	}
+}
+
+void OBSBasicStatusBar::UpdateGpuStatus()
+{
+	if (!gpuStatusButton || !obs_get_video()) {
+		return;
+	}
+
+	GpuStatus::Info info = GpuStatus::Query();
+
+	QPixmap dot(12, 12);
+	dot.fill(Qt::transparent);
+	QPainter painter(&dot);
+	painter.setRenderHint(QPainter::Antialiasing);
+	painter.setPen(Qt::NoPen);
+	painter.setBrush(GpuStatusColor(info.state));
+	painter.drawEllipse(0, 0, 12, 12);
+	painter.end();
+
+	const char *key = info.state == GpuStatus::State::Green    ? "Basic.StatusBar.GpuStatus.Green"
+			  : info.state == GpuStatus::State::Yellow ? "Basic.StatusBar.GpuStatus.Yellow"
+								   : "Basic.StatusBar.GpuStatus.Red";
+	gpuStatusButton->setIcon(QIcon(dot));
+	gpuStatusButton->setToolTip(QTStr(key) + "\n" + info.summary);
+	gpuStatusButton->setAccessibleDescription(QTStr(key));
+}
+
+void OBSBasicStatusBar::ShowGpuStatusDialog()
+{
+	GpuStatus::Info info = GpuStatus::Query();
+	UpdateGpuStatus();
+
+	QString text = "<p>" + info.summary.toHtmlEscaped() + "</p>";
+	text += "<p><b>" + QTStr("Basic.StatusBar.GpuStatus.Adapter").toHtmlEscaped() + "</b> " +
+		(info.adapter.isEmpty() ? QString("-") : info.adapter.toHtmlEscaped()) + "</p>";
+	text += "<p><b>" + QTStr("Basic.StatusBar.GpuStatus.Detected").toHtmlEscaped() + "</b> " +
+		(info.gpus.isEmpty() ? QString("-") : info.gpus.join(", ").toHtmlEscaped()) + "</p>";
+	if (!info.causes.isEmpty()) {
+		text += "<p><b>" + QTStr("Basic.StatusBar.GpuStatus.Causes").toHtmlEscaped() + "</b></p><ul>";
+		for (const QString &cause : info.causes) {
+			text += "<li>" + cause.toHtmlEscaped() + "</li>";
+		}
+		text += "</ul>";
+	}
+
+	if (!info.logLines.isEmpty()) {
+		text += "<p><b>" + QTStr("Basic.StatusBar.GpuStatus.Log").toHtmlEscaped() + "</b></p><pre>" +
+			info.logLines.join("\n").toHtmlEscaped() + "</pre>";
+	}
+
+	QMessageBox box(info.state == GpuStatus::State::Green ? QMessageBox::Information : QMessageBox::Warning,
+			QTStr("Basic.StatusBar.GpuStatus.Title"), text, QMessageBox::Ok, this);
+	box.setTextFormat(Qt::RichText);
+	box.exec();
 }

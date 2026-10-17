@@ -19,7 +19,7 @@
 
 #include "moc_SourceTreeItem.cpp"
 
-static inline OBSScene GetCurrentScene()
+static inline OBSScene SourceTreeItemCurrentScene()
 {
 	OBSBasic *main = OBSBasic::Get();
 	return main->GetCurrentScene();
@@ -372,7 +372,7 @@ void SourceTreeItem::ExitEditMode(bool save)
 		OBSBasic *main = OBSBasic::Get();
 		main->undo_s.pop_disabled();
 
-		OBSData redoSceneData = main->BackupScene(GetCurrentScene());
+		OBSData redoSceneData = main->BackupScene(SourceTreeItemCurrentScene());
 
 		QString text = QTStr("Undo.GroupItems").arg(newName.c_str());
 		main->CreateSceneUndoRedoAction(text, tree->undoSceneData, redoSceneData);
@@ -499,7 +499,7 @@ void SourceTreeItem::LockedChanged(bool locked)
 
 void SourceTreeItem::Update(bool force)
 {
-	OBSScene scene = GetCurrentScene();
+	OBSScene scene = SourceTreeItemCurrentScene();
 	obs_scene_t *itemScene = obs_sceneitem_get_scene(sceneitem);
 
 	Type newType;

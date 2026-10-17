@@ -750,11 +750,11 @@ void OBSBasicPreview::UpdateCursor(uint32_t &flags)
 	}
 }
 
-static bool select_one(obs_scene_t * /* scene */, obs_sceneitem_t *item, void *param)
+static bool preview_select_one(obs_scene_t * /* scene */, obs_sceneitem_t *item, void *param)
 {
 	obs_sceneitem_t *selectedItem = static_cast<obs_sceneitem_t *>(param);
 	if (obs_sceneitem_is_group(item)) {
-		obs_sceneitem_group_enum_items(item, select_one, param);
+		obs_sceneitem_group_enum_items(item, preview_select_one, param);
 	}
 
 	obs_sceneitem_select(item, (selectedItem == item));
@@ -769,7 +769,7 @@ void OBSBasicPreview::DoSelect(const vec2 &pos)
 	OBSScene scene = main->GetCurrentScene();
 	OBSSceneItem item = GetItemAtPos(pos, true);
 
-	obs_scene_enum_items(scene, select_one, (obs_sceneitem_t *)item);
+	obs_scene_enum_items(scene, preview_select_one, (obs_sceneitem_t *)item);
 }
 
 void OBSBasicPreview::DoCtrlSelect(const vec2 &pos)

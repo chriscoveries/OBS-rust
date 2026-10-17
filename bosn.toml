@@ -1,0 +1,52 @@
+# Local Docker work under bosn (docs/ci-tooling.md). `bosn run --task appimage`
+# builds the AppImage like .github/workflows/appimage.yaml does, without act or
+# GitHub: build-aux/appimage/build.py in an Ubuntu 26.04 image (#899).
+
+[stack.appimage]
+dockerfile = "build-aux/appimage/Dockerfile"
+family = "obs-appimage"
+default = true
+workdir = "/src"
+
+[stack.appimage.env]
+ZCCACHE_CACHE_DIR = "/zccache"
+
+[stack.appimage.mounts]
+src = { source = ".", destination = "/src" }
+
+[stack.appimage.volumes]
+zccache = { scope = "machine", destination = "/zccache" }
+cargo-registry = { scope = "machine", destination = "/usr/local/cargo/registry" }
+cargo-git = { scope = "machine", destination = "/usr/local/cargo/git" }
+build = { scope = "stack", destination = "/src/build_ubuntu" }
+
+# The AppImage lands in build_appimage/ (gitignored: /build_*/).
+[task.appimage]
+stack = "appimage"
+cmd = "uv run build-aux/appimage/build.py --skip-deps --output-dir build_appimage"
+
+# glibc 2.28 base for the AppImage (#926): manylinux_2_28 (AlmaLinux 8) with
+# the bundled libraries built from source into /opt/obs-deps.
+[stack.appimage-228]
+dockerfile = "build-aux/appimage/manylinux/Dockerfile"
+family = "obs-appimage-228"
+workdir = "/src"
+
+[stack.appimage-228.mounts]
+src = { source = ".", destination = "/src" }
+
+[stack.appimage-228.env]
+ZCCACHE_CACHE_DIR = "/zccache"
+
+[stack.appimage-228.volumes]
+zccache = { scope = "machine", destination = "/zccache" }
+cargo-registry = { scope = "machine", destination = "/usr/local/cargo/registry" }
+cargo-git = { scope = "machine", destination = "/usr/local/cargo/git" }
+build = { scope = "stack", destination = "/src/build_ubuntu" }
+
+# `bosn run --task appimage-228`: the AppImage on the glibc 2.28 base (#926).
+[task.appimage-228]
+stack = "appimage-228"
+# The build directory is a persistent volume: drop CMake's cache so a changed
+# dependency (a newer prebuilt library) is found again, as a fresh CI checkout would.
+cmd = "sh -c 'rm -f build_ubuntu/CMakeCache.txt && uv run build-aux/appimage/build.py --base manylinux --output-dir build_appimage'"

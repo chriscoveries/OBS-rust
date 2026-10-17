@@ -23,24 +23,21 @@ endif()
 target_sources(
   linux-pipewire
   PRIVATE
-    $<$<BOOL:${_HAS_PIPEWIRE_CAMERA}>:camera-portal.c>
     $<$<BOOL:${_HAS_PIPEWIRE_CAMERA}>:camera-portal.h>
-    formats.c
+    build/linux-pipewire.nix+.h.c
     formats.h
-    frame-layout.c
     frame-layout.h
-    frame-pacing.c
     frame-pacing.h
-    linux-pipewire.c
-    pipewire.c
     pipewire.h
-    portal.c
     portal.h
-    reconnect-policy.c
     reconnect-policy.h
-    screencast-portal.c
     screencast-portal.h
 )
+# The camera portal's unity group (BUILD.md), listed plainly: groups.cmake
+# doesn't read sources behind generator expressions.
+if(_HAS_PIPEWIRE_CAMERA)
+  target_sources(linux-pipewire PRIVATE build/linux-pipewire.nix-camera+.h.c)
+endif()
 
 target_include_directories(linux-pipewire PRIVATE ${libdrm_include_directories})
 

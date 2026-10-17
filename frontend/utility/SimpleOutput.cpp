@@ -224,15 +224,7 @@ SimpleOutput::SimpleOutput(OBSBasic *main_) : BasicOutputHandler(main_)
 		const char *recFormat = config_get_string(main->Config(), "SimpleOutput", "RecFormat2");
 
 		if (useReplayBuffer) {
-			OBSDataAutoRelease hotkey;
-			const char *str = config_get_string(main->Config(), "Hotkeys", "ReplayBuffer");
-			if (str) {
-				hotkey = obs_data_create_from_json(str);
-			} else {
-				hotkey = nullptr;
-			}
-
-			replayBuffer = obs_output_create("replay_buffer", Str("ReplayBuffer"), nullptr, hotkey);
+			replayBuffer = obs_output_create("replay_buffer", Str("ReplayBuffer"), nullptr, nullptr);
 
 			if (!replayBuffer) {
 				throw "Failed to create replay buffer output "
@@ -756,12 +748,15 @@ bool SimpleOutput::StartStreaming(obs_service_t *service)
 	}
 
 	if (obs_output_start(streamOutput)) {
+		bool dumpStarted = false;
 		if (multitrackVideo && multitrackVideoActive) {
-			multitrackVideo->StartedStreaming();
+			dumpStarted = multitrackVideo->StartedStreaming();
 		}
+		SettleStreamDumpReservation(dumpStarted);
 		return true;
 	}
 
+	SettleStreamDumpReservation(false);
 	if (multitrackVideo && multitrackVideoActive) {
 		multitrackVideoActive = false;
 	}

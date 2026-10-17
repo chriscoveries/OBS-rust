@@ -1,4 +1,3 @@
-package 'ccache'
 package 'cmake', bin: '/usr/bin/cmake'
 package 'curl'
 package 'git'

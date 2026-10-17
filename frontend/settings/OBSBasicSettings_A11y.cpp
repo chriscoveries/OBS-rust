@@ -10,12 +10,12 @@ enum ColorPreset {
 	COLOR_PRESET_CUSTOM = 99,
 };
 
-static inline QColor color_from_int(long long val)
+static inline QColor a11y_color_from_int(long long val)
 {
 	return QColor(val & 0xff, (val >> 8) & 0xff, (val >> 16) & 0xff, (val >> 24) & 0xff);
 }
 
-static inline long long color_to_int(QColor color)
+static inline long long a11y_color_to_int(QColor color)
 {
 	auto shift = [&](unsigned val, int shift) {
 		return ((val & 0xff) << shift);
@@ -33,7 +33,7 @@ QColor OBSBasicSettings::GetColor(uint32_t colorVal, QString label)
 	options |= QColorDialog::DontUseNativeDialog;
 #endif
 
-	QColor color = color_from_int(colorVal);
+	QColor color = a11y_color_from_int(colorVal);
 
 	return QColorDialog::getColor(color, this, label, options);
 }
@@ -116,7 +116,7 @@ void OBSBasicSettings::SaveA11ySettings()
 
 static void SetStyle(QLabel *label, uint32_t colorVal)
 {
-	QColor color = color_from_int(colorVal);
+	QColor color = a11y_color_from_int(colorVal);
 	color.setAlpha(255);
 	QPalette palette = QPalette(color);
 	label->setFrameStyle(QFrame::Sunken | QFrame::Panel);
@@ -185,7 +185,7 @@ void OBSBasicSettings::on_choose1_clicked()
 		return;
 	}
 
-	selectRed = color_to_int(color);
+	selectRed = a11y_color_to_int(color);
 
 	preset = COLOR_PRESET_CUSTOM;
 	bool block = ui->colorPreset->blockSignals(true);
@@ -205,7 +205,7 @@ void OBSBasicSettings::on_choose2_clicked()
 		return;
 	}
 
-	selectGreen = color_to_int(color);
+	selectGreen = a11y_color_to_int(color);
 
 	preset = COLOR_PRESET_CUSTOM;
 	bool block = ui->colorPreset->blockSignals(true);
@@ -225,7 +225,7 @@ void OBSBasicSettings::on_choose3_clicked()
 		return;
 	}
 
-	selectBlue = color_to_int(color);
+	selectBlue = a11y_color_to_int(color);
 
 	preset = COLOR_PRESET_CUSTOM;
 	bool block = ui->colorPreset->blockSignals(true);
@@ -245,7 +245,7 @@ void OBSBasicSettings::on_choose4_clicked()
 		return;
 	}
 
-	mixerGreen = color_to_int(color);
+	mixerGreen = a11y_color_to_int(color);
 
 	preset = COLOR_PRESET_CUSTOM;
 	bool block = ui->colorPreset->blockSignals(true);
@@ -265,7 +265,7 @@ void OBSBasicSettings::on_choose5_clicked()
 		return;
 	}
 
-	mixerYellow = color_to_int(color);
+	mixerYellow = a11y_color_to_int(color);
 
 	preset = COLOR_PRESET_CUSTOM;
 	bool block = ui->colorPreset->blockSignals(true);
@@ -285,7 +285,7 @@ void OBSBasicSettings::on_choose6_clicked()
 		return;
 	}
 
-	mixerRed = color_to_int(color);
+	mixerRed = a11y_color_to_int(color);
 
 	preset = COLOR_PRESET_CUSTOM;
 	bool block = ui->colorPreset->blockSignals(true);
@@ -306,7 +306,7 @@ void OBSBasicSettings::on_choose7_clicked()
 		return;
 	}
 
-	mixerGreenActive = color_to_int(color);
+	mixerGreenActive = a11y_color_to_int(color);
 
 	preset = COLOR_PRESET_CUSTOM;
 	bool block = ui->colorPreset->blockSignals(true);
@@ -327,7 +327,7 @@ void OBSBasicSettings::on_choose8_clicked()
 		return;
 	}
 
-	mixerYellowActive = color_to_int(color);
+	mixerYellowActive = a11y_color_to_int(color);
 
 	preset = COLOR_PRESET_CUSTOM;
 	bool block = ui->colorPreset->blockSignals(true);
@@ -347,7 +347,7 @@ void OBSBasicSettings::on_choose9_clicked()
 		return;
 	}
 
-	mixerRedActive = color_to_int(color);
+	mixerRedActive = a11y_color_to_int(color);
 
 	preset = COLOR_PRESET_CUSTOM;
 	bool block = ui->colorPreset->blockSignals(true);

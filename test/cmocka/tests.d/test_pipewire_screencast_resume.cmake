@@ -3,7 +3,8 @@
 # portal on a private D-Bus bus and a producer stream (the monitor) on a
 # private PipeWire daemon that test_pipewire_cursor_hdr.sh starts. Needs an X
 # display (xvfb-run) for obs_startup(), dbus-daemon and pipewire; skips (77,
-# or cmocka skips) without them.
+# or cmocka skips) without them. Also: screen captures that are not showing
+# keep their streams paused (obsproject/obs-studio#13836).
 if(OS_LINUX AND TARGET OBS::pipewire)
   find_package(X11 REQUIRED)
   find_package(PkgConfig REQUIRED)
@@ -12,13 +13,13 @@ if(OS_LINUX AND TARGET OBS::pipewire)
   add_executable(
     test_pipewire_screencast_resume
     test_pipewire_screencast_resume.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/screencast-portal.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/screencast-portal.c.h"
   )
   target_include_directories(
     test_pipewire_screencast_resume
@@ -35,6 +36,8 @@ if(OS_LINUX AND TARGET OBS::pipewire)
       X11::X11
       ${CMOCKA_LIBRARIES}
   )
+  # Counts the frames each capture stream takes (obsproject/obs-studio#13836).
+  target_link_options(test_pipewire_screencast_resume PRIVATE "-Wl,--wrap=pw_stream_dequeue_buffer")
   # A build tree has no libobs-opengl on the loader path, so load it by path.
   target_compile_definitions(
     test_pipewire_screencast_resume
@@ -47,5 +50,8 @@ if(OS_LINUX AND TARGET OBS::pipewire)
     COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/test_pipewire_cursor_hdr.sh" $<TARGET_FILE:test_pipewire_screencast_resume>
     WORKING_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>"
   )
-  set_tests_properties(test_pipewire_screencast_resume PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  set_tests_properties(
+    test_pipewire_screencast_resume
+    PROPERTIES RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 120
+  )
 endif()

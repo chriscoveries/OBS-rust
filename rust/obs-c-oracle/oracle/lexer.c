@@ -19,7 +19,7 @@
  * runs the original C formatting. */
 #define dstr_catf oracle_dstr_catf
 
-#include "util/lexer.c"
+#include "util/lexer.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 size_t oracle_strref_size(void);

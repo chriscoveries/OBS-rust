@@ -3,6 +3,8 @@
 //! The ABI implementation lives with the engine at
 //! `rust/obs-preflight/src/ffi`; this tiny target compiles that module into a
 //! static library without changing the engine's normal Rust `rlib` target.
+//! Sharing this module keeps the engine API and standalone C ABI on one
+//! implementation while their crate types stay separate.
 
 #![deny(unsafe_code)]
 

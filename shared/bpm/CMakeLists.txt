@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.28...3.30)
 add_library(bpm OBJECT)
 add_library(OBS::bpm ALIAS bpm)
 
-target_sources(bpm PRIVATE bpm.c bpm-internal.h PUBLIC bpm.h)
+target_sources(bpm PRIVATE build/bpm.core+.h.c bpm-internal.h PUBLIC bpm.h)
 
 target_include_directories(bpm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 

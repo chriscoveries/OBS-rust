@@ -330,3 +330,6 @@ int qsv_hevc_encoder_headers(qsv_t *pContext, uint8_t **pVPS, uint8_t **pSPS, ui
 
 	return 0;
 }
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef do_log

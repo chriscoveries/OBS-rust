@@ -10,11 +10,15 @@ target_sources(
     utility/CrashHandler.hpp
     utility/crash-sentinel-dir.cpp
     utility/crash-sentinel-dir.hpp
+    utility/settings-migration.hpp
+    utility/unclean-launch.hpp
+    utility/output-start-log.hpp
     utility/FFmpegCodec.cpp
     utility/FFmpegCodec.hpp
     utility/FFmpegFormat.cpp
     utility/FFmpegFormat.hpp
     utility/FFmpegShared.hpp
+    utility/frontend-api-call.hpp
     utility/filter-clipboard.c
     utility/filter-clipboard.h
     utility/GoLiveAPI_CensoredJson.cpp

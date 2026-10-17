@@ -54,7 +54,7 @@ namespace {
 
 QPointer<OBSWhatsNew> obsWhatsNew;
 
-template<typename OBSRef> struct SignalContainer {
+template<typename OBSRef> struct UpdaterSignalContainer {
 	OBSRef ref;
 	vector<shared_ptr<OBSSignal>> handlers;
 };

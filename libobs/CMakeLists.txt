@@ -9,8 +9,6 @@ endif()
 
 include(cmake/obs-core-modules.cmake)
 
-option(ENABLE_RUST_LIBOBS "Replace ported libobs internals with their Rust implementations" OFF)
-
 find_package(SIMDe REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -24,242 +22,73 @@ if(NOT TARGET OBS::caption)
   add_subdirectory("${CMAKE_SOURCE_DIR}/deps/libcaption" "${CMAKE_BINARY_DIR}/deps/libcaption")
 endif()
 
+# Two libobs binaries share one compile of every unported source (#1065):
+# - libobs: those objects + the C of each ported unit. The one everything links
+#   against, installs and packages.
+# - libobs-with-rust: those objects + the rust/libobs-rust staticlib in place
+#   of the ported C (cmake/rust.cmake). Same file name and SONAME, in its own
+#   directory, never installed or linked: Tier 2 runs the unchanged C tests
+#   against it by pointing the loader at that directory. Built whenever cargo is
+#   available (the Flatpak sandbox has none).
+add_library(libobs-objects OBJECT)
 add_library(libobs SHARED)
 add_library(OBS::libobs ALIAS libobs)
 
-target_sources(
-  libobs
-  PRIVATE
-    $<$<AND:$<BOOL:${ENABLE_HEVC}>,$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>>:obs-hevc.c>
-    $<$<BOOL:${ENABLE_HEVC}>:obs-hevc.h>
-    obs-audio-controls.c
-    obs-audio-controls.h
-    obs-audio.c
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:obs-av1.c>
-    obs-av1.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:obs-avc.c>
-    obs-avc.h
-    obs-canvas.c
-    obs-config.h
-    $<$<PLATFORM_ID:Darwin>:obs-core-modules-loader-mac.m>
-    $<$<PLATFORM_ID:Windows>:obs-core-modules-loader-win.c>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:obs-core-modules-loader-nix.c>
-    obs-core-modules-loader.h
-    obs-data.c
-    obs-data.h
-    obs-defs.h
-    obs-display.c
-    obs-encoder.c
-    obs-encoder.h
-    obs-ffmpeg-compat.h
-    obs-hotkey-name-map.c
-    obs-hotkey.c
-    obs-hotkey.h
-    obs-hotkeys.h
-    obs-interaction.h
-    obs-internal.h
-    obs-missing-files.c
-    obs-missing-files.h
-    obs-module.c
-    obs-module.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:obs-nal.c>
-    obs-nal.h
-    obs-output-delay.c
-    obs-output.c
-    obs-output.h
-    obs-properties.c
-    obs-properties.h
-    obs-scene-bounds.c
-    obs-scene-bounds.h
-    obs-scene.c
-    obs-scene.h
-    obs-service.c
-    obs-service.h
-    obs-source-deinterlace.c
-    obs-source-transition.c
-    obs-source.c
-    obs-source.h
-    obs-video-gpu-encode.c
-    obs-video.c
-    obs-view.c
-    obs.c
-    obs.h
-    obs.hpp
-)
+find_program(OBS_LIBOBS_CARGO cargo)
+if(OBS_LIBOBS_CARGO)
+  add_library(libobs-with-rust SHARED)
+  set(LIBOBS_SHARED_TARGETS libobs libobs-with-rust)
+else()
+  message(WARNING "cargo not found: building libobs without its Rust-linked twin (libobs-with-rust, #1065)")
+  set(LIBOBS_SHARED_TARGETS libobs)
+endif()
 
-target_sources(
-  libobs
-  PRIVATE
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/array-serializer.c>
-    util/array-serializer.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/base.c>
-    $<$<BOOL:${ENABLE_RUST_LIBOBS}>:util/base-variadic.c>
-    util/base.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/bitstream.c>
-    util/bitstream.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/bmem.c>
-    util/bmem.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/buffered-file-serializer.c>
-    util/buffered-file-serializer.h
-    util/c99defs.h
-    util/cf-lexer.c
-    util/cf-lexer.h
-    util/cf-parser.c
-    util/cf-parser.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/cf-tokenizer.c>
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/config-file.c>
-    util/config-file.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/crc32.c>
-    util/crc32.h
-    util/curl/curl-helper.h
-    util/darray.h
-    util/deque.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/dstr.c>
-    util/dstr-libc.c
-    util/dstr.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/file-serializer.c>
-    util/file-serializer.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/lexer.c>
-    util/lexer.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/path-extension.c>
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/pipe.c>
-    $<$<BOOL:${ENABLE_RUST_LIBOBS}>:util/pipe-variadic.c>
-    util/pipe.h
-    util/platform.c
-    util/platform.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/profiler-snapshot.c>
-    util/profiler-snapshot.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/profiler.c>
-    $<$<BOOL:${ENABLE_RUST_LIBOBS}>:util/profiler-variadic.c>
-    util/profiler-io.c
-    util/profiler.h
-    util/profiler.hpp
-    util/serializer.h
-    util/source-profiler.c
-    util/source-profiler.h
-    util/sse-intrin.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/task.c>
-    util/task.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/text-lookup.c>
-    util/text-lookup.h
-    util/threading.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/utf8.c>
-    util/utf8.h
-    util/uthash.h
-    util/util.hpp
-    util/util_uint128.h
-    util/util_uint64.h
-)
+include(cmake/sources.cmake)
 
-target_sources(
-  libobs
-  PRIVATE
-    callback/calldata.c
-    callback/calldata.h
-    callback/decl.c
-    callback/decl.h
-    callback/proc.c
-    callback/proc.h
-    callback/signal.c
-    callback/signal.h
-)
-
-target_sources(
-  libobs
-  PRIVATE
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/audio-io.c>
-    media-io/audio-io.h
-    media-io/audio-math.h
-    media-io/audio-resampler-ffmpeg.c
-    media-io/audio-resampler.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/format-conversion.c>
-    media-io/format-conversion.h
-    media-io/frame-rate.h
-    media-io/media-io-defs.h
-    media-io/media-remux.c
-    media-io/media-remux.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-fourcc.c>
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-frame.c>
-    media-io/video-frame.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-io.c>
-    media-io/video-io.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:media-io/video-matrices.c>
-    media-io/video-scaler-ffmpeg.c
-    media-io/video-scaler.h
-)
-
-target_sources(
-  libobs
-  PRIVATE
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/axisang.c>
-    graphics/axisang.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/bounds.c>
-    graphics/bounds.h
-    graphics/device-exports.h
-    graphics/effect-parser.c
-    graphics/effect-parser.h
-    graphics/effect.c
-    graphics/effect.h
-    graphics/graphics-ffmpeg.c
-    graphics/graphics-imports.c
-    graphics/graphics-internal.h
-    graphics/graphics.c
-    graphics/graphics.h
-    graphics/half.h
-    graphics/image-file.c
-    graphics/image-file.h
-    graphics/input.h
-    graphics/libnsgif/gif.c
-    graphics/libnsgif/lzw.c
-    graphics/libnsgif/lzw.h
-    graphics/libnsgif/nsgif.h
-    graphics/math-defs.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/math-extra.c>
-    graphics/math-extra.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/matrix3.c>
-    graphics/matrix3.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/matrix4.c>
-    graphics/matrix4.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/plane.c>
-    graphics/plane.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/quat.c>
-    graphics/quat.h
-    graphics/shader-parser.c
-    graphics/shader-parser.h
-    graphics/srgb.h
-    graphics/texture-render.c
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/vec2.c>
-    graphics/vec2.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/vec3.c>
-    graphics/vec3.h
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:graphics/vec4.c>
-    graphics/vec4.h
-)
+set_target_properties(libobs-objects PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+target_sources(libobs-objects PRIVATE ${LIBOBS_SOURCES})
+target_sources(libobs PRIVATE ${LIBOBS_PORTED_SOURCES})
+# libobs-version and libobs-core-modules are object libraries too, and CMake
+# adds an object library's objects only to targets that link it directly, so
+# each shared library links them itself (libobs-objects gets their headers).
+foreach(target IN LISTS LIBOBS_SHARED_TARGETS)
+  target_link_libraries(${target} PRIVATE libobs-objects OBS::libobs-core-modules OBS::libobs-version)
+endforeach()
 
 # Temporarily disables deprecation warnings while obs_data_autoselect_* is deprecated.
 if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
-  set_source_files_properties(obs-data.c PROPERTIES COMPILE_OPTIONS "/wd4996")
+  set_source_files_properties(build/libobs.ported-data+.h.c PROPERTIES COMPILE_OPTIONS "/wd4996")
 elseif(
   CMAKE_C_COMPILER_ID STREQUAL "GNU"
   OR CMAKE_C_COMPILER_ID STREQUAL "Clang"
   OR CMAKE_C_COMPILER_ID STREQUAL "AppleClang"
 )
-  set_source_files_properties(obs-data.c PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations")
+  set_source_files_properties(build/libobs.ported-data+.h.c PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations")
 endif()
 
-target_compile_features(libobs PUBLIC cxx_std_17)
+# Usage requirements on libobs-objects are PUBLIC so they reach both shared
+# libraries' own sources and link lines; the ones plugins also need are
+# repeated on libobs's interface below.
+target_compile_features(libobs-objects PUBLIC cxx_std_17)
+target_compile_features(libobs INTERFACE cxx_std_17)
 
 target_compile_definitions(
-  libobs
-  PRIVATE IS_LIBOBS
+  libobs-objects
   PUBLIC
+    IS_LIBOBS
+    $<BUILD_INTERFACE:$<$<BOOL:${ENABLE_HEVC}>:ENABLE_HEVC>>
+    $<BUILD_INTERFACE:$<$<BOOL:${ENABLE_FFMPEG_MUX_DEBUG}>:SHOW_SUBPROCESSES>>
+)
+target_compile_definitions(
+  libobs
+  INTERFACE
     $<BUILD_INTERFACE:$<$<BOOL:${ENABLE_HEVC}>:ENABLE_HEVC>>
     $<BUILD_INTERFACE:$<$<BOOL:${ENABLE_FFMPEG_MUX_DEBUG}>:SHOW_SUBPROCESSES>>
 )
 
 target_link_libraries(
-  libobs
-  PRIVATE
+  libobs-objects
+  PUBLIC
     OBS::caption
     OBS::libobs-core-modules
     OBS::libobs-version
@@ -271,10 +100,13 @@ target_link_libraries(
     jansson::jansson
     Uthash::Uthash
     ZLIB::ZLIB
-  PUBLIC SIMDe::SIMDe Threads::Threads
+    SIMDe::SIMDe
+    Threads::Threads
 )
+target_link_libraries(libobs INTERFACE SIMDe::SIMDe Threads::Threads)
 
-if(ENABLE_RUST_LIBOBS)
+if(TARGET libobs-with-rust)
+  target_sources(libobs-with-rust PRIVATE ${LIBOBS_RUST_SOURCES})
   include(cmake/rust.cmake)
 endif()
 
@@ -290,10 +122,12 @@ endif()
 
 configure_file(obsconfig.h.in "${CMAKE_BINARY_DIR}/config/obsconfig.h" @ONLY)
 
-target_include_directories(
-  libobs
-  PUBLIC "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/config>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
-)
+foreach(target libobs-objects libobs)
+  target_include_directories(
+    ${target}
+    PUBLIC "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/config>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+  )
+endforeach()
 
 set(
   public_headers
@@ -411,3 +245,30 @@ set_target_properties_obs(
 )
 
 target_export(libobs)
+
+# libobs-with-rust takes libobs's final file name and ABI version, which each
+# platform's set_target_properties_obs decides (Linux: SOVERSION 30, not the
+# OBS major version), so it loads in libobs's place (#1065).
+if(TARGET libobs-with-rust)
+  foreach(
+    property
+    VERSION
+    SOVERSION
+    OUTPUT_NAME
+    PREFIX
+    FRAMEWORK
+    FRAMEWORK_VERSION
+    MACOSX_FRAMEWORK_IDENTIFIER
+    INSTALL_NAME_DIR
+    BUILD_WITH_INSTALL_NAME_DIR
+  )
+    get_target_property(value libobs ${property})
+    if(property STREQUAL "OUTPUT_NAME" AND value MATCHES "-NOTFOUND$")
+      # No OUTPUT_NAME (macOS): the file name is the target name, libobs.
+      set(value libobs)
+    endif()
+    if(NOT value MATCHES "-NOTFOUND$")
+      set_property(TARGET libobs-with-rust PROPERTY ${property} "${value}")
+    endif()
+  endforeach()
+endif()

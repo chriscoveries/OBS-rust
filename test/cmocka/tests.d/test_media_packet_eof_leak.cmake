@@ -3,8 +3,8 @@ if(TARGET OBS::libobs AND TARGET FFmpeg::avformat)
   add_executable(
     test_media_packet_eof_leak
     test_media_packet_eof_leak.c
-    "${CMAKE_SOURCE_DIR}/shared/media-playback/media-playback/decode.c"
-    "${CMAKE_SOURCE_DIR}/shared/media-playback/media-playback/network-timeout.c"
+    "${CMAKE_SOURCE_DIR}/shared/media-playback/media-playback/decode.c.h"
+    "${CMAKE_SOURCE_DIR}/shared/media-playback/media-playback/network-timeout.c.h"
   )
   target_include_directories(
     test_media_packet_eof_leak

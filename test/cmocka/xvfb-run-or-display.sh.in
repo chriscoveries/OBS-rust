@@ -1,0 +1,24 @@
+#!/bin/sh
+# Stand-in for xvfb-run in the cmocka tests' add_test commands (configured by
+# test/cmocka/CMakeLists.txt): run the test on the X display it already has
+# (validate.sh runs all of ctest under one xvfb-run), and start a private
+# Xvfb only when there is none. Each test starting its own `xvfb-run -a`
+# raced the others for a display number under ctest -j: two at once picked
+# the same one, and the loser's obs_startup failed with "Unable to open X
+# display".
+#   xvfb-run-or-display [xvfb-run options] <command> [args...]
+if [ -z "${DISPLAY:-}" ]; then
+  exec "@OBS_XVFB_RUN_REAL@" "$@"
+fi
+# xvfb-run's own options (they configure the server we don't start).
+while [ $# -gt 0 ]; do
+  case "$1" in
+  -a | --auto-servernum | -l | --listen-tcp) shift ;;
+  -e | -f | -n | -p | -s | -w) shift 2 ;;
+  --error-file | --auth-file | --server-num | --xauth-protocol | --server-args | --wait) shift 2 ;;
+  --*=*) shift ;;
+  --) shift; break ;;
+  *) break ;;
+  esac
+done
+exec "$@"

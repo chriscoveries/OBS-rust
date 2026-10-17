@@ -22,6 +22,11 @@ obs-websocket port (Phase 5 item 3).
   Outputs, Stream, Record, UI, Canvases).
 - Event subscription delivery (`SceneCreated`, `CustomEvent`,
   `VendorEvent`), and `EventSubscription::None` isolation.
+- `GetStats.gpuAcceleration` with OpenGL forced onto llvmpipe: not green,
+  and the startup log warns (obs-rust/obs-studio#846).
+- Linux, in the same run: exactly one libsrt mapped into the OBS process.
+  With two builds of libsrt in one process (the SRT output's and FFmpeg's)
+  OBS aborts on quit after any SRT use.
 - Request batches: serial, `haltOnFailure`, no-halt error propagation, and
   parallel execution acceptance.
 - Error codes for malformed JSON (close 4002), unknown opcode (4006),
@@ -46,6 +51,7 @@ uv run test/websocket-tier4/run_tier4.py                # uses `obs` on PATH
 uv run test/websocket-tier4/run_tier4.py --obs /path/to/obs
 TIER4_PORT=4460 uv run test/websocket-tier4/run_tier4.py
 TIER4_VERBOSE=1 uv run test/websocket-tier4/run_tier4.py  # log each status code
+uv run test/websocket-tier4/run_tier4.py --only gpu     # GPU status check (#940) and the libsrt check only
 ```
 
 Flags:

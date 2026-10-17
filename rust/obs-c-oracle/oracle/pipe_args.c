@@ -11,4 +11,4 @@
 /* dstr_vprintf is C-only and lives renamed in oracle/dstr_libc.c. */
 #define dstr_vprintf oracle_dstr_vprintf
 
-#include "util/pipe.c"
+#include "util/pipe.c.h"

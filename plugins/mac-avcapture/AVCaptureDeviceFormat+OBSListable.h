@@ -1,3 +1,5 @@
+#pragma once
+
 //
 //  AVCaptureDeviceFormat+OBSListable.h
 //  obs-studio

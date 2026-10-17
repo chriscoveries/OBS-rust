@@ -11,13 +11,13 @@ if(TARGET OBS::pipewire)
   add_executable(
     test_screencast_portal_teardown
     test_screencast_portal_teardown.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/screencast-portal.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/formats.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-layout.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/pipewire.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/portal.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/reconnect-policy.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/screencast-portal.c.h"
   )
   target_include_directories(
     test_screencast_portal_teardown
@@ -29,5 +29,8 @@ if(TARGET OBS::pipewire)
   )
   add_dependencies(cmocka-tests test_screencast_portal_teardown)
   add_test(test_screencast_portal_teardown ${CMAKE_CURRENT_BINARY_DIR}/test_screencast_portal_teardown)
-  set_tests_properties(test_screencast_portal_teardown PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+  set_tests_properties(
+    test_screencast_portal_teardown
+    PROPERTIES RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 60
+  )
 endif()

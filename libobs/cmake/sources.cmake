@@ -1,0 +1,206 @@
+# libobs source lists, relative to libobs/. The real build (libobs/CMakeLists.txt
+# and cmake/os-<os>.cmake) and the cross-compile check (cmake/cross/) both read
+# them, so a cross check compiles exactly the files that host's build would.
+#
+# Sources are unity groups (BUILD.md): build/<name>+.h.c (.h.m for
+# Objective-C) #includes the implementation files (foo.c.h) it compiles. A
+# file moves between lists by moving its #include line between groups.
+#
+# Per list:
+# - LIBOBS_SOURCES: built on every host, no Rust port.
+# - LIBOBS_PORTED_SOURCES: C with a Rust port in rust/libobs-rust. libobs
+#   compiles them; libobs-with-rust links the staticlib instead (#1065).
+# - LIBOBS_RUST_SOURCES: the C halves only libobs-with-rust adds (C variadics).
+# - LIBOBS_<HOST>_SOURCES / _PORTED_SOURCES: the same split, per host.
+# - No-op host capabilities (#1051) are not listed: each host file includes
+#   the obs-host/noop/<capability>.hpp headers for what it lacks.
+# <HOST> is WINDOWS, MACOS or LINUX; LINUX also covers FreeBSD and OpenBSD,
+# which build obs-nix.c the same way.
+
+set(
+  LIBOBS_SOURCES
+  obs-audio-controls.h
+  obs-av1.h
+  obs-avc.h
+  obs-config.h
+  obs-core-modules-loader.h
+  obs-data.h
+  obs-defs.h
+  obs-encoder.h
+  obs-ffmpeg-compat.h
+  obs-hotkey.h
+  obs-hotkeys.h
+  obs-host/com.h
+  obs-host/default-monitoring-device.h
+  obs-host/defs.h
+  obs-host/display-clear-workaround.h
+  obs-host/display-srgb-clear.h
+  obs-host/graphics-thread.h
+  obs-host/graphics-thread-hooks.h
+  obs-host/module-paths.h
+  obs-host/module-symbols.h
+  obs-host/shared-texture.h
+  obs-interaction.h
+  obs-internal.h
+  obs-missing-files.h
+  obs-module.h
+  obs-nal.h
+  obs-output.h
+  obs-properties.h
+  obs-scene-bounds.h
+  obs-scene.h
+  obs-service.h
+  obs-source.h
+  obs.h
+  obs.hpp
+  util/array-serializer.h
+  util/base.h
+  util/bitstream.h
+  util/bmem.h
+  util/buffered-file-serializer.h
+  util/c99defs.h
+  util/cf-lexer.h
+  util/cf-parser.h
+  util/config-file.h
+  util/crc32.h
+  util/curl/curl-helper.h
+  util/darray.h
+  util/deque.h
+  util/dstr.h
+  util/file-serializer.h
+  util/lexer.h
+  util/pipe.h
+  util/platform.h
+  util/profiler-snapshot.h
+  util/profiler.h
+  util/profiler.hpp
+  util/serializer.h
+  util/source-profiler.h
+  util/sse-intrin.h
+  util/task.h
+  util/text-lookup.h
+  util/threading.h
+  util/utf8.h
+  util/uthash.h
+  util/util.hpp
+  util/util_uint128.h
+  util/util_uint64.h
+  callback/calldata.h
+  callback/decl.h
+  callback/proc.h
+  callback/signal.h
+  media-io/audio-io.h
+  media-io/audio-math.h
+  media-io/audio-resampler.h
+  media-io/format-conversion.h
+  media-io/frame-rate.h
+  media-io/media-io-defs.h
+  media-io/media-remux.h
+  media-io/video-frame.h
+  media-io/video-io.h
+  media-io/video-scaler.h
+  graphics/axisang.h
+  graphics/bounds.h
+  graphics/device-exports.h
+  graphics/effect-parser.h
+  graphics/effect.h
+  graphics/graphics-internal.h
+  graphics/graphics.h
+  graphics/half.h
+  graphics/image-file.h
+  graphics/input.h
+  graphics/libnsgif/lzw.h
+  graphics/libnsgif/nsgif.h
+  graphics/math-defs.h
+  graphics/math-extra.h
+  graphics/matrix3.h
+  graphics/matrix4.h
+  graphics/plane.h
+  graphics/quat.h
+  graphics/shader-parser.h
+  graphics/srgb.h
+  graphics/vec2.h
+  graphics/vec3.h
+  graphics/vec4.h
+  build/libobs.core+.h.c
+  build/libobs.core-output+.h.c
+  build/libobs.core-source+.h.c
+  build/libobs.util+.h.c
+  build/libobs.util-libc+.h.c
+  build/libobs.graphics+.h.c
+  build/libobs.media+.h.c
+  build/libobs.nsgif+.h.c
+  build/libobs.platform+.h.c
+)
+
+set(
+  LIBOBS_PORTED_SOURCES
+  build/libobs.ported-util+.h.c
+  build/libobs.ported-util-io+.h.c
+  build/libobs.ported-media+.h.c
+  build/libobs.ported-data+.h.c
+  build/libobs.ported-graphics+.h.c
+)
+
+set(LIBOBS_RUST_SOURCES build/libobs.rust-variadic+.h.c)
+
+if(ENABLE_HEVC)
+  list(APPEND LIBOBS_SOURCES obs-hevc.h)
+  list(APPEND LIBOBS_PORTED_SOURCES build/libobs.ported-hevc+.h.c)
+endif()
+
+set(
+  LIBOBS_WINDOWS_SOURCES
+  audio-monitoring/win32/wasapi-output.h
+  util/threading-windows.h
+  util/windows/CoTaskMemPtr.hpp
+  util/windows/device-enum.h
+  util/windows/HRError.hpp
+  util/windows/win-registry.h
+  util/windows/win-version.h
+  util/windows/window-helpers.h
+  build/libobs.windows+.h.c
+  build/libobs.windows-crash-handler+.h.c
+)
+set(
+  LIBOBS_WINDOWS_PORTED_SOURCES
+  build/libobs.ported-windows+.h.c
+  build/libobs.ported-windows-pipe+.h.c
+  build/libobs.ported-windows-platform+.h.c
+)
+
+set(
+  LIBOBS_MACOS_SOURCES
+  audio-monitoring/osx/mac-helpers.h
+  util/apple/cfstring-utils.h
+  util/threading-posix.h
+  build/libobs.macos+.h.c
+  build/libobs.macos-cocoa+.h.m
+  build/libobs.macos-loader+.h.m
+)
+set(
+  LIBOBS_MACOS_PORTED_SOURCES
+  build/libobs.ported-posix+.h.c
+  build/libobs.ported-posix-threading+.h.c
+  build/libobs.ported-macos-cocoa+.h.m
+)
+
+# Linux and the BSDs. Optional parts (PulseAudio, GIO, Wayland) stay in
+# cmake/os-linux.cmake and cmake/os-freebsd.cmake, next to their find_package.
+set(
+  LIBOBS_LINUX_SOURCES
+  obs-nix-platform.h
+  obs-nix-x11-keymap.h
+  util/threading-posix.h
+  build/libobs.nix+.h.c
+  build/libobs.nix-main+.h.c
+)
+set(LIBOBS_LINUX_PORTED_SOURCES build/libobs.ported-posix+.h.c build/libobs.ported-posix-threading+.h.c)
+
+# Adds a host's lists (libobs/CMakeLists.txt): its sources to the
+# objects both libobs binaries share, its ported C to libobs only
+# (libobs-with-rust gets the staticlib instead).
+macro(libobs_add_host_sources host)
+  target_sources(libobs-objects PRIVATE ${LIBOBS_${host}_SOURCES})
+  target_sources(libobs PRIVATE ${LIBOBS_${host}_PORTED_SOURCES})
+endmacro()

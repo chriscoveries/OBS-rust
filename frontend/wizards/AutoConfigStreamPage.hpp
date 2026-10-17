@@ -2,6 +2,12 @@
 
 #include <QWizardPage>
 
+/* Service list entries the wizard adds after the real services. */
+enum class ListOpt : int {
+	ShowAll = 1,
+	Custom,
+};
+
 class Auth;
 class Ui_AutoConfigStreamPage;
 

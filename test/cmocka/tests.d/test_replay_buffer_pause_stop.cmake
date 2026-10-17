@@ -6,7 +6,7 @@ if(OS_LINUX AND TARGET OBS::libobs-opengl)
   add_executable(
     test_replay_buffer_pause_stop
     test_replay_buffer_pause_stop.c
-    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-mux.c"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-mux.c.h"
   )
   target_compile_definitions(
     test_replay_buffer_pause_stop

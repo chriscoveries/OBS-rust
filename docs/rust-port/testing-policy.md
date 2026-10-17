@@ -68,18 +68,22 @@ cannot prove both, so every ported unit carries the four tiers below.
 - A layout test MUST assert `size_of`, `align_of`, and every field offset of
   each `#[repr(C)]` struct against values measured from the real C header
   (via the oracle crate, see Tier 3).
-- The CMake option `ENABLE_RUST_LIBOBS` (default `OFF` until the port is
-  accepted) drops the ported C sources from libobs and links the Rust
-  implementation in their place. Each port adds its C file to the
-  `$<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:...>` guard in
-  `libobs/CMakeLists.txt`. The unchanged C test MUST pass in **both**
-  configurations.
-- libobs MUST export exactly the same dynamic symbols with
-  `ENABLE_RUST_LIBOBS=ON` as with `OFF`: no missing C symbols, no leaked Rust
-  internals (`libobs/cmake/rust-exports.map` hides them on ELF).
+- Every build makes two libobs binaries from one compile of the shared code
+  (#1065): `libobs`, with the C of each ported unit, which everything links,
+  installs and packages; and `libobs-with-rust`, with the Rust implementation
+  in place of that C, same file name and SONAME, in its own directory, never
+  installed or linked. Each port moves its C file's `#include` line from a
+  libobs unity group into a ported one (`libobs/build/libobs.ported-*+.h.c`,
+  listed in `LIBOBS_PORTED_SOURCES` or `LIBOBS_<HOST>_PORTED_SOURCES` in
+  `libobs/cmake/sources.cmake`; see [BUILD.md](../../BUILD.md)). The
+  unchanged C test MUST pass against **both** (mode `OFF`: `libobs`; mode
+  `ON`: `libobs-with-rust`, loaded in its place).
+- `libobs-with-rust` MUST export exactly the same dynamic symbols as `libobs`:
+  no missing C symbols, no leaked Rust internals
+  (`libobs/cmake/rust-exports.map` hides them on ELF).
 - Run `rust/tools/linux-validate/run.sh` to check both requirements. It builds
-  OFF and ON in Docker, runs the cmocka tests, and diffs the exported symbols.
-  Paste its summary into the PR.
+  once in Docker, runs the cmocka tests against each libobs, and diffs the
+  exported symbols. Paste its summary into the PR.
 - Tests for the C boundary are written in C (they already are). Do not add
   C++ tests for C APIs.
 - Memory that C code later frees or resizes (e.g. darray buffers) MUST be
@@ -102,7 +106,7 @@ cannot prove both, so every ported unit carries the four tiers below.
   symbol is listed in `libobs/cmake/rust-exports.d/<crate>-<ffi module>.txt`
   (one fragment per FFI module, so ports don't edit a shared list), which
   `libobs/cmake/rust.cmake` turns into `/EXPORT:` linker options.
-  `rust/obs-util/tests/export_list.rs` fails if a fragment and the
+  `rust/obs-util/tests/platform/export_list.rs` fails if a fragment and the
   `#[unsafe(no_mangle)]` functions in its `rust/<crate>/src/ffi/<module>.rs`
   differ.
 - macOS: `libobs/cmake/rust-unexports-macos.txt` hides Rust internals with
@@ -153,9 +157,9 @@ cannot prove both, so every ported unit carries the four tiers below.
    failing.
 2. **GREEN:** implement the safe Rust core until Tier 1 passes.
 3. Add the C shim, the layout test, and the Tier 3 differential test.
-4. Add the C file to the `ENABLE_RUST_LIBOBS` guard and run
-   `rust/tools/linux-validate/run.sh`: the unchanged C tests pass `ON` and
-   `OFF`, and the exported symbol sets are identical.
+4. Move the C file's `#include` into a ported group (`libobs/build/libobs.ported-*+.h.c`,
+   [BUILD.md](../../BUILD.md)) and run `rust/tools/linux-validate/run.sh`: the unchanged C tests pass against
+   `libobs` and `libobs-with-rust`, and the exported symbol sets are identical.
 5. Record every intentional behavior difference in the tracking issue.
 
 A port is not done until all applicable tiers pass. "Tier 1 passes" alone is
@@ -170,16 +174,16 @@ editing C tests or public headers stay mandatory.
 ## Extracting a function before porting it
 
 If the unit to port is one function inside a larger C file,
-`ENABLE_RUST_LIBOBS` cannot drop it, because the guard drops whole files.
+`libobs-with-rust` cannot drop it, because the ported lists hold whole files.
 
 1. First move the function verbatim into its own `.c` file in the same
    directory.
 2. Use a separate, behavior-neutral commit/PR that contains no Rust and changes
    no signature, header, or behavior.
-3. Add the new file to `libobs/CMakeLists.txt`.
+3. Add the new file to a libobs unity group (`libobs/build/`, [BUILD.md](../../BUILD.md)).
 4. The unchanged C tests must pass.
-5. Only then port the new file with the normal workflow, and add it to the
-   `$<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:...>` guard.
+5. Only then port the new file with the normal workflow, and move its
+   `#include` into a ported group.
 
 Example: `os_get_path_extension` moves from `util/platform.c` to
 `util/path-extension.c`.
@@ -192,7 +196,7 @@ CURRENT C behavior, including odd or buggy behavior. Comment such cases as
 "characterized, not endorsed".
 
 - It lands in its own commit/PR BEFORE the port, contains no Rust, and passes
-  with `ENABLE_RUST_LIBOBS` OFF (and ON, since nothing is swapped yet).
+  against `libobs` (and `libobs-with-rust`, since nothing is swapped yet).
 - From then on it is an existing C test under Tier 2: the port may not edit
   it. Tier 1 ports its assertions 1:1 into Rust.
 - Register it in `test/cmocka/CMakeLists.txt` and add it to the `cmocka-tests`
@@ -337,9 +341,10 @@ rust/
     src/ffi/bitstream.rs      # extern "C" shim, #[repr(C)] types (Tier 2)
     src/ffi/*.rs              # matching shims for the cores above
     src/platform/             # the only host-specific code (cfg_select!, unix/, windows/)
-    tests/bitstream.rs        # Tier 1: 1:1 port of test/cmocka/test_bitstream.c
-    tests/bitstream_layout.rs # Tier 2: struct layout vs. C header
-    tests/bitstream_parity.rs # Tier 3: proptest vs. C oracle
+    tests/containers/main.rs  # one test binary per category, <= 8 per crate (ci/test_binary_cap.py)
+    tests/containers/bitstream.rs        # Tier 1: 1:1 port of test/cmocka/test_bitstream.c
+    tests/containers/bitstream_layout.rs # Tier 2: struct layout vs. C header
+    tests/containers/bitstream_parity.rs # Tier 3: proptest vs. C oracle
   obs-graphics/               # ports of libobs/graphics/*
   obs-media-io/               # ports of libobs/media-io/*
   ../dylints/                 # repo Dylints run by ./lint (not workspace members)

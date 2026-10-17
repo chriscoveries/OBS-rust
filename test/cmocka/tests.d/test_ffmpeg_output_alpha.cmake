@@ -7,7 +7,7 @@ if(OS_LINUX AND TARGET OBS::libobs-opengl)
   add_executable(
     test_ffmpeg_output_alpha
     test_ffmpeg_output_alpha.c
-    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-output.c"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-output.c.h"
   )
   target_compile_definitions(test_ffmpeg_output_alpha PRIVATE GRAPHICS_MODULE_PATH="$<TARGET_FILE:OBS::libobs-opengl>")
   target_include_directories(

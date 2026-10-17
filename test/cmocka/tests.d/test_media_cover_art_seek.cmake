@@ -7,7 +7,7 @@ if(OS_LINUX AND TARGET OBS::libobs-opengl AND TARGET OBS::media-playback)
   add_executable(
     test_media_cover_art_seek
     test_media_cover_art_seek.c
-    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-source.c"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-source.c.h"
   )
   target_compile_definitions(test_media_cover_art_seek PRIVATE GRAPHICS_MODULE_PATH="$<TARGET_FILE:OBS::libobs-opengl>")
   target_include_directories(

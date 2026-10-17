@@ -6,7 +6,7 @@ if((OS_LINUX OR OS_FREEBSD) AND ENABLE_PULSEAUDIO)
   add_executable(
     test_pulse_monitor_backlog
     test_pulse_monitor_backlog.c
-    "${CMAKE_SOURCE_DIR}/libobs/audio-monitoring/pulse/pulseaudio-stream-flags.c"
+    "${CMAKE_SOURCE_DIR}/libobs/audio-monitoring/pulse/pulseaudio-stream-flags.c.h"
   )
   target_include_directories(
     test_pulse_monitor_backlog

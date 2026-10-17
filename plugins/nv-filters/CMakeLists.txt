@@ -8,21 +8,21 @@ if(OS_WINDOWS)
 
   if(ENABLE_NVAFX)
     target_enable_feature(nv-filters "NVIDIA Audio FX support" LIBNVAFX_ENABLED)
-    target_sources(nv-filters PRIVATE nvidia-audiofx-filter.c)
+    target_sources(nv-filters PRIVATE build/nv-filters.windows-afx+.h.c)
   else()
     target_disable_feature(nv-filters "NVIDIA Audio FX support")
   endif()
 
   if(ENABLE_NVVFX)
     target_enable_feature(nv-filters "NVIDIA Video FX support" LIBNVVFX_ENABLED)
-    target_sources(nv-filters PRIVATE nvidia-videofx-filter.c)
+    target_sources(nv-filters PRIVATE build/nv-filters.windows-vfx+.h.c)
   else()
     target_disable_feature(nv-filters "NVIDIA Video FX support")
   endif()
 
   configure_file(cmake/windows/obs-module.rc.in nv-filters.rc)
   target_sources(nv-filters PRIVATE nv-filters.rc)
-  target_sources(nv-filters PRIVATE nv-filters.c)
+  target_sources(nv-filters PRIVATE build/nv-filters.windows+.h.c)
 
   target_link_libraries(nv-filters PRIVATE OBS::libobs $<$<PLATFORM_ID:Windows>:OBS::w32-pthreads>)
 

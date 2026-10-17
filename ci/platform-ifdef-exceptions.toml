@@ -1,0 +1,37 @@
+# Installed public libobs headers whose host conditionals are part of the
+# C API/ABI (#1051). ci/platform_ifdef_ratchet.py skips these files; every
+# other file's host conditionals and OS headers are ratcheted by
+# ci/platform-ifdef-baseline.json. Public headers and the ABI don't change
+# (AGENTS.md), so these stay until the declarations themselves move.
+#
+# Only headers qualify, each needs a reason, and an entry whose file has no
+# findings left must be removed (the ratchet fails on it). This list only
+# shrinks: a new public header puts its host code behind a facade function.
+
+[[exception]]
+path = "libobs/util/c99defs.h"
+reason = "EXPORT/FORCE_INLINE/PRAGMA_WARN: __declspec(dllexport) under MSVC vs __attribute__ elsewhere"
+
+[[exception]]
+path = "libobs/util/threading.h"
+reason = "Inline atomics: threading-windows.h (MSVC intrinsics) vs threading-posix.h, compiled into every module"
+
+[[exception]]
+path = "libobs/util/platform.h"
+reason = "os_stat is an exported function on Windows and a stat macro elsewhere; ARCH_BITS per host"
+
+[[exception]]
+path = "libobs/graphics/graphics.h"
+reason = "struct gs_window holds hwnd / NSView id / X11 id+display per host, and per-host shared-texture exports"
+
+[[exception]]
+path = "libobs/obs.h"
+reason = "obs_init_win32_crash_handler is exported only on Windows"
+
+[[exception]]
+path = "libobs/util/sse-intrin.h"
+reason = "Inline SSE2: native emmintrin.h under MSVC/MinGW x86, else SIMDe (with simd/base.h on Apple), compiled into callers"
+
+[[exception]]
+path = "libobs/util/util_uint64.h"
+reason = "Inline util_mul_div64: MSVC x64 _umul128/_udiv128 (clang-cl __int128), portable arithmetic elsewhere"

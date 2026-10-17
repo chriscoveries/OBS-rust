@@ -1,6 +1,6 @@
 # linux-v4l2 virtual camera format negotiation (obsproject/obs-studio#12081)
 if(TARGET OBS::v4l2)
-  add_executable(test_vcam_format test_vcam_format.c "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/vcam-format.c")
+  add_executable(test_vcam_format test_vcam_format.c "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/vcam-format.c.h")
   target_include_directories(test_vcam_format PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2")
   target_link_libraries(test_vcam_format PRIVATE ${CMOCKA_LIBRARIES})
   add_dependencies(cmocka-tests test_vcam_format)

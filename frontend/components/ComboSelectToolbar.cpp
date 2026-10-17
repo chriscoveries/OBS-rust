@@ -15,7 +15,7 @@ ComboSelectToolbar::ComboSelectToolbar(QWidget *parent, OBSSource source)
 
 ComboSelectToolbar::~ComboSelectToolbar() {}
 
-int FillPropertyCombo(QComboBox *c, obs_property_t *p, const std::string &cur_id, bool is_int = false)
+int FillPropertyCombo(QComboBox *c, obs_property_t *p, const std::string &cur_id, bool is_int)
 {
 	size_t count = obs_property_list_item_count(p);
 	int cur_idx = -1;

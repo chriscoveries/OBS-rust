@@ -9,4 +9,4 @@
 #define decompress_420 oracle_decompress_420
 #define decompress_422 oracle_decompress_422
 
-#include "media-io/format-conversion.c"
+#include "media-io/format-conversion.c.h"

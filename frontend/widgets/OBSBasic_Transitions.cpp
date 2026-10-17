@@ -37,7 +37,7 @@
 extern bool disable_3p_plugins;
 extern bool safe_mode;
 
-static inline QString MakeQuickTransitionText(QuickTransition *qt)
+static inline QString TransitionsQuickTransitionText(QuickTransition *qt)
 {
 	QString name;
 
@@ -104,7 +104,7 @@ void OBSBasic::AddQuickTransitionHotkey(QuickTransition *qt)
 	QString hotkeyName;
 
 	dstr_printf(hotkeyId, "OBSBasic.QuickTransition.%d", qt->id);
-	hotkeyName = QTStr("QuickTransitions.HotkeyName").arg(MakeQuickTransitionText(qt));
+	hotkeyName = QTStr("QuickTransitions.HotkeyName").arg(TransitionsQuickTransitionText(qt));
 
 	auto quickTransition = [](void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
 		int id = (int)(uintptr_t)data;
@@ -890,7 +890,7 @@ void OBSBasic::SetTbarPosition(int position)
 
 static inline void ResetQuickTransitionText(QuickTransition *qt)
 {
-	qt->button->setText(MakeQuickTransitionText(qt));
+	qt->button->setText(TransitionsQuickTransitionText(qt));
 }
 
 QMenu *OBSBasic::CreatePerSceneTransitionMenu()

@@ -29,7 +29,7 @@ endif()
 add_library(vlc-video MODULE)
 add_library(OBS::vlc-video ALIAS vlc-video)
 
-target_sources(vlc-video PRIVATE vlc-video-plugin.c vlc-video-plugin.h vlc-video-source.c)
+target_sources(vlc-video PRIVATE build/vlc-video.core+.h.c vlc-video-plugin.h vlc-drain-gate.h)
 
 target_compile_options(vlc-video PRIVATE $<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang>:-Wno-shorten-64-to-32>)
 

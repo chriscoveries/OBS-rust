@@ -7,7 +7,7 @@
 #define array_output_serializer_free oracle_array_output_serializer_free
 #define array_output_serializer_reset oracle_array_output_serializer_reset
 
-#include "util/array-serializer.c"
+#include "util/array-serializer.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 size_t oracle_serializer_size(void);

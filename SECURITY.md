@@ -1,70 +1,98 @@
-## Introduction
-The OBS Project is an open source project, which develops and distributes the open source application OBS Studio
+# Security policy
 
-Official Channels are our [Discord Server](https://obsproject.com/discord) or security@obsproject.com email address.
+obs-rust is a fork of OBS Studio that is being converted to Rust. This
+policy covers obs-rust: this repository's code, its CI, and the builds
+it publishes. The upstream OBS Project has its own policy and channels
+(see [Upstream OBS Studio](#upstream-obs-studio)).
 
-## Guidelines
-We require all security researchers to:
+## Reporting a vulnerability
 
-- Act in good faith to avoid privacy violations;
-- Perform research only within the scope set out below;
-- Be clear and succinct, a short proof-of-concept link is invaluable; and
-- Keep information about any vulnerabilities you’ve discovered confidential between us until we’ve had 120 days to resolve the issue.
+**Do not open a public issue, pull request or discussion for a
+suspected vulnerability.**
 
-If you follow these guidelines when reporting an issue to us, we commit to:
+Report it privately through GitHub:
 
-- Not pursue or support any legal action related to your research;
-- Work with you to understand and resolve the issue quickly (including an initial confirmation of your report within 72 hours of submission);
+1. Open the repository's **Security** tab and choose **Report a
+   vulnerability**
+   (<https://github.com/obs-rust/obs-studio/security/advisories/new>).
+2. Say what is affected (file, function, build or release), how to
+   reproduce it, and what an attacker gains. A short proof of concept
+   helps.
+3. If you already have a fix, say so. A maintainer will open a
+   temporary private fork on the advisory, and you can push the fix
+   there. Do not push it to a public branch or fork.
 
-## Expectations
-When working with us according to this policy, you can expect us to:
+This applies at every severity, and to code obs-rust inherited from
+upstream as well as to code it added. A maintainer decides whether a
+report can be handled in public, not the reporter.
 
-- Work with you to understand and validate your report, including a timely initial response to the submission;
-- Work to remediate discovered vulnerabilities in a timely manner; and
-- Recognize your contribution to improving our security if you are the first to report a unique vulnerability, and your report triggers a code or configuration change.
+## What happens next
 
-## In-Scope Vulnerabilities
-The vulnerabilities listed here are explicitly eligible for our security program. Any design or implementation issue that substantially affects the confidentiality or integrity of user data is likely to be in scope for the program. Common examples include:
+- **Within 72 hours:** a maintainer acknowledges the report on the
+  advisory.
+- **Triage:** we confirm the issue and agree on its severity (CVSS)
+  with you, on the advisory.
+- **Fix:** the fix is developed and reviewed in the advisory's private
+  fork. It follows the normal rules for this repository: a failing test
+  that shows the bug first, then the fix (see
+  [docs/rust-port/testing-policy.md](docs/rust-port/testing-policy.md)).
+- **Release and disclosure:** we merge the fix, publish the advisory
+  (requesting a CVE where it applies), and credit you unless you ask us
+  not to. We aim to disclose within 90 days of the report, sooner once
+  a fixed build is out.
 
-- Remote Code Execution (RCE)
+After disclosure, any public follow-up work (hardening, regression
+tests, release notes) is tracked in normal issues with the `security`
+label. The label is never used for an undisclosed vulnerability.
 
-While this list represents areas we focus on, we are interested in reports for all of our software and dependencies especially if it impacts reasonably sensitive user data. 
+## Upstream OBS Studio
 
-This can include any open source libraries, software, or third-party components. We do, however, recommend reporting dependency vulnerabilities to the dependency vendor.
+Much of obs-rust's C/C++ code comes from OBS Studio. If a vulnerability
+also affects upstream OBS Studio:
 
-## Out-of-Scope Vulnerabilities
-The following are considered out of scope for our security program and should not be submitted:
+- Report it to obs-rust as described above. You do not need to report
+  it upstream yourself.
+- The obs-rust maintainers report it to the OBS Project through its
+  official channel (security@obsproject.com) and coordinate disclosure,
+  so that neither project publishes the details before the other has a
+  fix. You are credited in both reports unless you ask us not to.
+- If you have already reported it upstream, tell us, so that we follow
+  the same disclosure timeline.
 
-- Password, email and account policies, such as email id verification, reset link expiration, and password complexity.
-- Attacks requiring physical access to a user's device.
-- Vulnerabilities that require a potential victim to install non-standard software or otherwise take active steps to make themselves susceptible (this includes “DLL planting”).
-- Reports from automated tools or scans that haven't been manually verified.
-- UI and UX bugs and spelling mistakes.
-- Web server “security headers”, TLS cipher choices, email SPF / DKIM / DMARC or similar (lack of) best practices that do not actively lead to a vulnerability.
+A bug that affects only upstream OBS Studio, and not obs-rust, should
+go to the OBS Project directly: <https://github.com/obsproject/obs-studio/security/policy>.
 
-## Ground Rules
-To encourage vulnerability research and to avoid any confusion between legitimate research and malicious attack, we ask that you attempt, in good faith, to:
+## Scope
 
-- Play by the rules. This includes following this policy and any other relevant agreements;
-- Report any vulnerability you’ve discovered promptly;
-- Avoid violating the privacy of others, disrupting our systems, destroying data, and/or harming user experience;
-- Use only the Official Channels to discuss vulnerability information with us;
-- Handle the confidentiality of details of any discovered vulnerabilities according to our Disclosure Policy;
-- Perform testing only on in-scope systems, and respect systems and activities which are out-of-scope;
-- Do not run crawlers or other automated tools against our infrastructure; and
-- Do not engage in extortion.
+In scope:
 
-## Safe Harbor
-When conducting vulnerability research according to this policy, we consider this research conducted under this policy to be:
+- Code in this repository, including the Rust ports, the C/C++ code
+  inherited from upstream, plugins and scripting.
+- Network-facing interfaces, such as the obs-websocket server, RTMP,
+  SRT, WHIP and other outputs, and media inputs that parse files or
+  streams.
+- Builds and release artifacts published by this repository (AppImage,
+  Flatpak, DMG, Windows packages) and the CI that produces them.
 
-- Authorized in view of any applicable anti-hacking laws, and we will not initiate or support legal action against you for accidental, good faith violations of this policy;
-- Authorized in view of relevant anti-circumvention laws, and we will not bring a claim against you for circumvention of technology controls;
-- Exempt from restrictions in our Acceptable Usage Policy that would interfere with conducting security research, and we waive those restrictions on a limited basis; and
-- Lawful, helpful to the overall security of the Internet, and conducted in good faith.
+Out of scope:
 
-You are expected, as always, to comply with all applicable laws. If legal action is initiated by a third party against you and you have complied with this policy, we will take steps to make it known that your actions were conducted in compliance with this policy.
+- Attacks that require physical access to the device, or that require
+  the victim to install non-standard software or take active steps to
+  make themselves vulnerable (this includes DLL planting).
+- Reports from automated tools or scans that have not been checked by
+  hand.
+- Vulnerabilities in third-party dependencies that obs-rust does not
+  change. Report those to the dependency's maintainers; tell us as
+  well if obs-rust ships an affected version.
 
-If at any time you have concerns or are uncertain whether your security research is consistent with this policy, please submit a report through one of our Official Channels before going any further.
+## Safe harbor
 
-## Bug Bounty
-The OBS Project does not have the resources to maintain an active bug bounty program, and all reports are made in good faith, for responsible disclosure and the overall safety of the application and our community. Requests for payment or refusal to provide details until a payment is provided are unwelcome.
+We will not pursue or support legal action against research done in
+good faith under this policy. Good faith means avoiding privacy
+violations, data destruction and service disruption, testing only
+against your own installations, and keeping details confidential until
+the advisory is published.
+
+## No bug bounty
+
+obs-rust does not offer payment for reports.

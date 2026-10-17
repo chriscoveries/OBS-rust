@@ -11,10 +11,10 @@ if(TARGET OBS::pulseaudio)
   add_executable(
     test_pulse_two_sources
     test_pulse_two_sources.c
-    "${_pulse_dir}/pulse-input.c"
-    "${_pulse_dir}/pulse-reconnect.c"
-    "${_pulse_dir}/pulse-timing.c"
-    "${_pulse_dir}/pulse-wrapper.c"
+    "${_pulse_dir}/pulse-input.c.h"
+    "${_pulse_dir}/pulse-reconnect.c.h"
+    "${_pulse_dir}/pulse-timing.c.h"
+    "${_pulse_dir}/pulse-wrapper.c.h"
   )
   target_include_directories(test_pulse_two_sources PRIVATE ${CMOCKA_INCLUDE_DIR} "${_pulse_dir}")
   target_link_libraries(test_pulse_two_sources PRIVATE OBS::libobs PulseAudio::PulseAudio ${CMOCKA_LIBRARIES})

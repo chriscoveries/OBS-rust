@@ -1,13 +1,14 @@
 #!/usr/bin/env -S uv run --script
-"""Clippy and Dylint for every shipped Rust target, cross-checked from Linux (#472).
+"""Clippy and Dylint for the PR gate's cross targets, checked from Linux (#472, #955).
 
     uv run python -m unittest ci/test_cross_lane.py
 
-soldr cross-compiles from a Linux host to Windows and both macOS
-architectures, so one Linux lane lints every platform (zackees/ci.yml, the
-soldr pilot's phase 2): the `cross` local-gate lane attests
+soldr cross-compiles from a Linux host, so one Linux lane lints the PR
+gate's Windows x64 and macOS arm64 targets (zackees/ci.yml, the soldr
+pilot's phase 2): the `cross` local-gate lane attests
 rust/<target>/{clippy,dylint}, and CI's rust-cross-lint job runs the same
-lane on every PR push that isn't attested.
+lane on every PR push that isn't attested. Windows arm64, macOS x64 and
+Linux arm64 are linted only in the release gate (`cross-release`).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ sys.path.insert(0, str(ROOT / "ci"))
 
 import local_gate  # noqa: E402
 
-TARGETS = {"x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"}
+TARGETS = {"x86_64-pc-windows-msvc", "aarch64-apple-darwin"}
 
 
 class CrossLaneTest(unittest.TestCase):

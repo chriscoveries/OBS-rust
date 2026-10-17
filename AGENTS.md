@@ -27,6 +27,9 @@ Before picking up or filing an issue, or opening a PR, read
 [docs/rust-port/coordination.md](docs/rust-port/coordination.md): claim
 before coding, search open PRs first, target master, RED then GREEN commits.
 
+Before adding, renaming or building C/C++/Objective-C sources, or touching
+`cmake/common/`, `cmake/pch/` or a `build/` group, read [BUILD.md](BUILD.md).
+
 Before building, testing or pushing, read
 [docs/ci-tooling.md](docs/ci-tooling.md): soldr, setup-soldr, bosn, act2,
 zackees/ci.yml, the local gate and CI attestation, and how to use them so
@@ -48,11 +51,11 @@ errors (soldr permissions, disk, Docker, host FFmpeg): see
 [docs/rust-port/troubleshooting.md](docs/rust-port/troubleshooting.md).
 
 - `./lint` (8 s): clang-format 22.1.3 and gersemi 0.25.0 pinned via uvx, rustfmt, clippy, and the repo Dylints (`dylints/*`). `./lint --fix` rewrites files.
-- `./unittest`: Rust Tiers 1-3, then Tier 2 (cmocka with `ENABLE_RUST_LIBOBS` OFF/ON in Docker; ~30-40 s warm thanks to ccache).
+- `./unittest`: Rust Tiers 1-3, then Tier 2 (cmocka against the C libobs and libobs-with-rust, one build in Docker; ~30-40 s warm thanks to zccache).
 - To let CI skip the Linux unit-test jobs, commit, then run
   `uvx --from git+https://github.com/zackees/ci.yml@1a970f01574447d681571ff3d0b8de56cb983dcc ci-lint local-gate run`.
   It runs every lane in `local-gate.toml` (unchanged lanes are cached) and stamps HEAD with attestation trailers. Push the stamped commit as-is; any later change invalidates the stamp.
-- PRs that only touch `rust/`, `test/cmocka/`, the local gate or docs skip the full OBS builds (quick gate in `build-project.yaml`). Add the `ci-full` label to force them.
+- A PR runs only the lanes its changed paths select (the `LANES` table in `ci/ci_scope.py`: Fast Gate always, Tier 2 for libobs/linked crates/`test/cmocka/`, Qt for `frontend/`, a Linux build of only the touched `plugins/<x>`/`shared/<x>` targets; macOS/Windows only for their own platform files). The full OBS app builds never run from a PR path. No label changes what runs. A master push adds every lane a PR defers (Tier 2, Qt, the workspace tests) but builds macOS, Windows and Flatpak only for paths that select them; schedule, workflow_dispatch, tags and the release gate run everything (#436).
 
 ## Quick rules
 
@@ -63,6 +66,23 @@ errors (soldr permissions, disk, Docker, host FFmpeg): see
 - Name crates, binaries and tags per
   [docs/rust-port/naming.md](docs/rust-port/naming.md) (`ci/test_naming.py`
   checks crates): `obs-<area>` ports, product slug `obs-studio-rust`.
+- Don't move upstream C/C++ files to restructure: the upstream tree
+  stays in place, Rust goes in the `rust/` workspace, and a fully ported C
+  component is deleted, not moved. See the layout section of
+  [docs/rust-port/naming.md](docs/rust-port/naming.md) (#1051). The one
+  rename allowed is in place, to the build-role names of
+  [BUILD.md](BUILD.md) (`foo.c` to `foo.c.h`).
+- Native C/C++/Objective-C builds follow [BUILD.md](BUILD.md): explicit unity
+  groups in each component's `build/`, one precompiled header per group
+  that is each implementation file's only include, unity and PCH always on
+  (`ci/test_build_groups.py`).
+- C/C++ host code stays in OS-named files (`obs-nix.c`, `platform-windows.cpp`,
+  `win-capture/`, ...). `ci/platform_ifdef_ratchet.py` (in `./lint`) fails a
+  new host conditional or OS header in a shared file, and a platform file that
+  names another OS. Shared libobs core calls host code through one interface
+  per capability in `libobs/obs-host/<capability>.h` (`OBS_HOST_EXTERN`); a
+  host implements it in its OS file or builds `obs-host/noop/<capability>.c`,
+  picked in `libobs/cmake/os-<os>.cmake`.
 - Host-specific code (`#[cfg(windows|unix|target_os..)]`, `cfg!()`, `std::os::*`,
   `libc::`, Win32) goes only in the crate's `src/platform/` (single
   `cfg_select!` in `platform/mod.rs`) or `src/ffi/`. A pre-expansion Dylint

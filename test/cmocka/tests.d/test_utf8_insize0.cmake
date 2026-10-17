@@ -4,7 +4,7 @@
 # for U+0800-U+FFFF. These assertions hold the -O0 behaviour in every
 # configuration.
 if(NOT MSVC)
-  add_executable(test_utf8_insize0 test_utf8_insize0.c "${CMAKE_SOURCE_DIR}/libobs/util/utf8.c")
+  add_executable(test_utf8_insize0 test_utf8_insize0.c "${CMAKE_SOURCE_DIR}/libobs/util/utf8.c.h")
   target_include_directories(test_utf8_insize0 PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/libobs")
   target_link_libraries(test_utf8_insize0 PRIVATE OBS::libobs ${CMOCKA_LIBRARIES})
   obs_test_sanitize(test_utf8_insize0 address,undefined)

@@ -31,25 +31,25 @@ enum mp4_track_type {
 };
 
 enum mp4_codec {
-	CODEC_UNKNOWN,
+	MP4_CODEC_UNKNOWN,
 
 	/* Video Codecs */
-	CODEC_H264,
-	CODEC_HEVC,
-	CODEC_AV1,
-	CODEC_PRORES,
+	MP4_CODEC_H264,
+	MP4_CODEC_HEVC,
+	MP4_CODEC_AV1,
+	MP4_CODEC_PRORES,
 
 	/* Audio Codecs */
-	CODEC_AAC,
-	CODEC_OPUS,
-	CODEC_FLAC,
-	CODEC_ALAC,
-	CODEC_PCM_I16,
-	CODEC_PCM_I24,
-	CODEC_PCM_F32,
+	MP4_CODEC_AAC,
+	MP4_CODEC_OPUS,
+	MP4_CODEC_FLAC,
+	MP4_CODEC_ALAC,
+	MP4_CODEC_PCM_I16,
+	MP4_CODEC_PCM_I24,
+	MP4_CODEC_PCM_F32,
 
 	/* Text/Chapter trakcs */
-	CODEC_TEXT,
+	MP4_CODEC_TEXT,
 };
 
 struct chunk {
@@ -349,9 +349,9 @@ enum lpcm_flags {
 
 static inline uint32_t get_lpcm_flags(enum mp4_codec codec)
 {
-	if (codec == CODEC_PCM_F32)
+	if (codec == MP4_CODEC_PCM_F32)
 		return kLinearPCMFormatFlagIsFloat | kLinearPCMFormatFlagIsPacked;
-	if (codec == CODEC_PCM_I16 || codec == CODEC_PCM_I24)
+	if (codec == MP4_CODEC_PCM_I16 || codec == MP4_CODEC_PCM_I24)
 		return kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
 
 	return 0;
@@ -409,7 +409,7 @@ static enum coreaudio_layout get_mov_channel_layout(enum mp4_codec codec, enum s
 		return kAudioChannelLayoutTag_Stereo;
 	case SPEAKERS_2POINT1:
 		/* Only supported for AAC. */
-		return codec == CODEC_AAC ? kAudioChannelLayoutTag_DVD_4 : kAudioChannelLayoutTag_UseChannelBitmap;
+		return codec == MP4_CODEC_AAC ? kAudioChannelLayoutTag_DVD_4 : kAudioChannelLayoutTag_UseChannelBitmap;
 	default:
 		return kAudioChannelLayoutTag_UseChannelBitmap;
 	}

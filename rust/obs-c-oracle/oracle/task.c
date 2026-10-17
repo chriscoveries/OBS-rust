@@ -15,4 +15,4 @@
 #define os_task_queue_wait oracle_os_task_queue_wait
 #define os_task_queue_inside oracle_os_task_queue_inside
 
-#include "util/task.c"
+#include "util/task.c.h"

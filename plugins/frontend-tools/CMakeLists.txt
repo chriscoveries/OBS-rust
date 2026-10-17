@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.28...3.30)
 
+# The tools are frontend UI (Qt); a build without the frontend has none.
+if(NOT ENABLE_FRONTEND)
+  return()
+endif()
+
 find_package(Qt6 REQUIRED Widgets)
 
 if(OS_LINUX OR OS_FREEBSD OR OS_OPENBSD)

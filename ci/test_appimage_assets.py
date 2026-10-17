@@ -182,7 +182,9 @@ gh() {
                 )
 
     def test_workflows_preserve_the_canonical_name(self):
+        # The build scripts moved into build.py (#899); the workflow calls it.
         appimage = (ROOT / ".github/workflows/appimage.yaml").read_text()
+        appimage += (ROOT / "build-aux/appimage/build.py").read_text()
         release = (ROOT / ".github/workflows/release-rust.yaml").read_text()
         self.assertIn("asset_metadata.py name", appimage)
         self.assertIn(

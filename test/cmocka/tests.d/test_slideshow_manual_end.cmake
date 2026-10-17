@@ -8,10 +8,10 @@ if(OS_LINUX AND TARGET OBS::libobs-opengl)
   add_executable(
     test_slideshow_manual_end
     test_slideshow_manual_end.c
-    "${CMAKE_SOURCE_DIR}/plugins/image-source/obs-slideshow.c"
-    "${CMAKE_SOURCE_DIR}/plugins/image-source/obs-slideshow-mk2.c"
-    "${CMAKE_SOURCE_DIR}/plugins/image-source/slideshow-size.c"
-    "${CMAKE_SOURCE_DIR}/plugins/obs-transitions/transition-cut.c"
+    "${CMAKE_SOURCE_DIR}/plugins/image-source/obs-slideshow.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/image-source/obs-slideshow-mk2.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/image-source/slideshow-size.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-transitions/transition-cut.c.h"
   )
   target_compile_definitions(test_slideshow_manual_end PRIVATE GRAPHICS_MODULE_PATH="$<TARGET_FILE:OBS::libobs-opengl>")
   target_include_directories(

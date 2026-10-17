@@ -6,6 +6,6 @@ endif()
 
 add_library(obs-shared-memory-queue INTERFACE)
 add_library(OBS::shared-memory-queue ALIAS obs-shared-memory-queue)
-target_sources(obs-shared-memory-queue INTERFACE shared-memory-queue.c shared-memory-queue.h)
+target_sources(obs-shared-memory-queue INTERFACE build/shared-memory-queue.windows+.h.c shared-memory-queue.h)
 target_include_directories(obs-shared-memory-queue INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(obs-shared-memory-queue INTERFACE OBS::tiny-nv12-scale)

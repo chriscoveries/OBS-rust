@@ -78,7 +78,7 @@ extern QCef *cef;
 extern QCefCookieManager *panel_cookies;
 extern bool cef_js_avail;
 
-enum class ListOpt : int {
+enum class SettingsListOpt : int {
 	ShowAll = 1,
 	Custom,
 	WHIP,
@@ -91,12 +91,12 @@ enum class Section : int {
 
 bool OBSBasicSettings::IsCustomService() const
 {
-	return ui->service->currentData().toInt() == (int)ListOpt::Custom;
+	return ui->service->currentData().toInt() == (int)SettingsListOpt::Custom;
 }
 
 inline bool OBSBasicSettings::IsWHIP() const
 {
-	return ui->service->currentData().toInt() == (int)ListOpt::WHIP;
+	return ui->service->currentData().toInt() == (int)SettingsListOpt::WHIP;
 }
 
 void OBSBasicSettings::InitStreamPage()
@@ -571,15 +571,16 @@ void OBSBasicSettings::LoadServices(bool showAll)
 	}
 
 	if (obs_is_output_protocol_registered("WHIP")) {
-		ui->service->addItem(QTStr("WHIP"), QVariant((int)ListOpt::WHIP));
+		ui->service->addItem(QTStr("WHIP"), QVariant((int)SettingsListOpt::WHIP));
 	}
 
 	if (!showAll) {
 		ui->service->addItem(QTStr("Basic.AutoConfig.StreamPage.Service.ShowAll"),
-				     QVariant((int)ListOpt::ShowAll));
+				     QVariant((int)SettingsListOpt::ShowAll));
 	}
 
-	ui->service->insertItem(0, QTStr("Basic.AutoConfig.StreamPage.Service.Custom"), QVariant((int)ListOpt::Custom));
+	ui->service->insertItem(0, QTStr("Basic.AutoConfig.StreamPage.Service.Custom"),
+				QVariant((int)SettingsListOpt::Custom));
 
 	if (!lastService.isEmpty()) {
 		int idx = ui->service->findText(lastService);
@@ -664,7 +665,7 @@ void OBSBasicSettings::on_service_currentIndexChanged(int idx)
 	ops.param = &selection;
 	ops.is_show_all = [](void *param) {
 		auto *s = static_cast<Selection *>(param)->settings;
-		return s->ui->service->currentData().toInt() == (int)ListOpt::ShowAll;
+		return s->ui->service->currentData().toInt() == (int)SettingsListOpt::ShowAll;
 	};
 	ops.show_all = [](void *param) {
 		auto *s = static_cast<Selection *>(param)->settings;
@@ -1542,7 +1543,7 @@ static inline bool service_supports_encoder(const char **codecs, const char *enc
 	return service_supports_codec(codecs, codec);
 }
 
-static bool return_first_id(void *data, const char *id)
+static bool settings_return_first_id(void *data, const char *id)
 {
 	const char **output = (const char **)data;
 
@@ -1573,7 +1574,7 @@ bool OBSBasicSettings::ServiceAndVCodecCompatible()
 		const char *output = nullptr;
 		char **output_codecs;
 
-		obs_enum_output_types_with_protocol(QT_TO_UTF8(protocol), &output, return_first_id);
+		obs_enum_output_types_with_protocol(QT_TO_UTF8(protocol), &output, settings_return_first_id);
 
 		output_codecs = strlist_split(obs_get_output_supported_video_codecs(output), ';', false);
 
@@ -1608,7 +1609,7 @@ bool OBSBasicSettings::ServiceAndACodecCompatible()
 		const char *output = nullptr;
 		char **output_codecs;
 
-		obs_enum_output_types_with_protocol(QT_TO_UTF8(protocol), &output, return_first_id);
+		obs_enum_output_types_with_protocol(QT_TO_UTF8(protocol), &output, settings_return_first_id);
 		output_codecs = strlist_split(obs_get_output_supported_audio_codecs(output), ';', false);
 
 		ret = service_supports_codec((const char **)output_codecs, QT_TO_UTF8(codec));
@@ -1776,7 +1777,7 @@ void OBSBasicSettings::ResetEncoders(bool streamOnly)
 	if (!vcodecs || IsCustomService()) {
 		const char *output = nullptr;
 
-		obs_enum_output_types_with_protocol(QT_TO_UTF8(protocol), &output, return_first_id);
+		obs_enum_output_types_with_protocol(QT_TO_UTF8(protocol), &output, settings_return_first_id);
 		output_vcodecs = strlist_split(obs_get_output_supported_video_codecs(output), ';', false);
 		vcodecs = (const char **)output_vcodecs.Get();
 	}
@@ -1784,7 +1785,7 @@ void OBSBasicSettings::ResetEncoders(bool streamOnly)
 	if (!acodecs || IsCustomService()) {
 		const char *output = nullptr;
 
-		obs_enum_output_types_with_protocol(QT_TO_UTF8(protocol), &output, return_first_id);
+		obs_enum_output_types_with_protocol(QT_TO_UTF8(protocol), &output, settings_return_first_id);
 		output_acodecs = strlist_split(obs_get_output_supported_audio_codecs(output), ';', false);
 		acodecs = (const char **)output_acodecs.Get();
 	}

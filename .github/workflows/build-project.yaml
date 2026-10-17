@@ -7,7 +7,7 @@ on:
         # dev cycle) skip Flatpak, the macOS/Windows OBS builds, Ubuntu with
         # Rust libobs and Tier 2 macOS/Windows; release-rust.yaml runs them all
         # with full: true and won't publish unless they pass. Tags, schedule,
-        # workflow_dispatch and the ci-full label are full too.
+        # workflow_dispatch are full too; so is a PR whose paths need it (ci/ci_scope.py).
         description: Run every build, including the release-gating ones
         type: boolean
         required: false
@@ -30,6 +30,10 @@ jobs:
       macos: ${{ steps.native.outputs.macos }}
       windows: ${{ steps.native.outputs.windows }}
       platform_os: ${{ steps.native.outputs.platform_os }}
+      deferred: ${{ steps.native.outputs.deferred }}
+      qt: ${{ steps.native.outputs.qt }}
+      tier2: ${{ steps.native.outputs.tier2 }}
+      linux_targets: ${{ steps.native.outputs.linux_targets }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -91,26 +95,24 @@ jobs:
       # config, adds that platform's Rust tests and Tier 2. Every OBS app
       # build (Ubuntu, macOS, Windows, Flatpak) is release-gating: `full`
       # (the release gate in release-rust.yaml, tags, release branches,
-      # schedule, workflow_dispatch, the ci-full label).
+      # schedule, workflow_dispatch, or paths that need them: build-aux/, plugin submodule moves).
       - name: Check Change Scope 🧭
         id: native
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           : Check Change Scope 🧭
-          full=false
+          # No label changes what runs (#992). Schedule, workflow_dispatch,
+          # tags, release branches and the release gate (inputs.full) run
+          # everything (#436); a master push runs its paths' lanes plus the
+          # ones a PR defers (below); a PR or merge-queue run runs the
+          # lanes its changed paths select (ci/ci_scope.py's LANES table).
+          event_full=false
           if [[ "${{ inputs.full }}" == true ]] \
             || [[ "${GITHUB_EVENT_NAME}" == schedule || "${GITHUB_EVENT_NAME}" == workflow_dispatch ]] \
             || [[ "${GITHUB_REF_TYPE}" == tag || "${GITHUB_REF_NAME}" == release/* ]]; then
-            full=true
-          elif [[ "${GITHUB_EVENT_NAME}" == pull_request ]] \
-            && gh pr view ${{ github.event.number }} --json labels | jq -e '.labels[] | select(.name == "ci-full")' > /dev/null; then
-            full=true
+            event_full=true
           fi
-          echo "full=${full}" >> "${GITHUB_OUTPUT}"
-
-          if [[ "${full}" == true ]]; then
-            core=true macos=true windows=true
+          if [[ "${event_full}" == true ]]; then
+            full=true core=true macos=true windows=true qt=true tier2=true linux_targets=
           else
             if [[ "${GITHUB_EVENT_NAME}" == pull_request ]]; then
               base="origin/${GITHUB_BASE_REF}"
@@ -121,23 +123,40 @@ jobs:
             fi
             eval "$(uv run ci/ci_scope.py "${base}")"
           fi
+          # Fast PR path (#992): a PR or merge-queue run that no path escalates
+          # to the full builds runs only the lanes its paths select; the
+          # workspace tests and the unselected lanes run on master.
+          deferred=false
+          if [[ "${full}" != true ]] \
+            && [[ "${GITHUB_EVENT_NAME}" == pull_request || "${GITHUB_EVENT_NAME}" == merge_group ]]; then
+            deferred=true
+          fi
+          # master pushes run every lane the scope would skip on a PR.
+          if [[ "${deferred}" != true ]]; then
+            qt=true tier2=true
+          fi
           os=()
           [[ "${macos}" == true ]] && os+=('"macos-26"')
           [[ "${windows}" == true ]] && os+=('"windows-2025-vs2026"')
           {
+            echo "full=${full}"
+            echo "deferred=${deferred}"
             echo "core=${core}"
             echo "macos=${macos}"
             echo "windows=${windows}"
+            echo "qt=${qt:-false}"
+            echo "tier2=${tier2:-false}"
+            echo "linux_targets=${linux_targets:-}"
             echo "platform_os=[$(IFS=,; echo "${os[*]}")]"
           } >> "${GITHUB_OUTPUT}"
-          echo "full=${full} core=${core} macos=${macos} windows=${windows}"
+          echo "full=${full} core=${core} macos=${macos} windows=${windows} qt=${qt} tier2=${tier2}"
 
   macos-build:
     name: macOS 🍏
     runs-on: macos-26
     needs: check-event
     # OBS app builds are release-gating (#436): release gate, tags, schedule,
-    # dispatch and ci-full only.
+    # dispatch and path-triggered full PRs only.
     if: fromJSON(needs.check-event.outputs.full)
     strategy:
       fail-fast: false
@@ -207,6 +226,15 @@ jobs:
           notarizationUser: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
           notarizationPassword: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
 
+      # The GPU status light links Rust into every frontend build (#946).
+      # Install the toolchain rust-toolchain.toml pins (rustup's auto-install
+      # is deprecated); the x86_64 leg cross-builds on an arm64 runner and
+      # needs that target's standard library too.
+      - name: Install the Rust toolchain 🦀
+        run: |
+          rustup toolchain install
+          if [[ '${{ matrix.target }}' == x86_64 ]] rustup target add x86_64-apple-darwin
+
       - name: Build OBS Studio 🧱
         uses: ./.github/actions/build-obs
         env:
@@ -261,24 +289,28 @@ jobs:
           key: ${{ runner.os }}-xcode-${{ matrix.target }}-${{ needs.check-event.outputs.config }}-${{ github.sha }}
 
   ubuntu-build:
-    name: Ubuntu 🐧 ${{ matrix.rust == 'ON' && '(Rust libobs) ' || '' }}
+    name: Ubuntu 🐧 ${{ matrix.rust == 'ON' && '(OBS-Studio-Rust) ' || '' }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-26.04]
-        # ON builds the app with ENABLE_RUST_LIBOBS: the only CI job that runs
-        # the Rust ports inside OBS itself (obs-rust/obs-studio#140).
+        # ON builds the app as OBS-Studio-Rust (ENABLE_RUST_LIBOBS: name, app ID,
+        # paths). Both legs link the C libobs and build libobs-with-rust beside
+        # it without shipping it (#1065).
         rust: ['OFF', 'ON']
     runs-on: ${{ matrix.os }}
     needs: check-event
     # The full OBS app build is release-gating, not dev-cycle CI: it runs in
     # the release gate (release-rust.yaml), tags, schedule, dispatch and
-    # ci-full. PRs and pushes build and test the Rust workspace and Tier 2
+    # path-triggered full runs. PRs and pushes build and test the Rust workspace and Tier 2
     # (libobs + cmocka) on Linux instead.
     if: fromJSON(needs.check-event.outputs.full)
     defaults:
       run:
         shell: bash
+    env:
+      # zccache is the ubuntu-ci preset's compiler launcher (setup_zccache).
+      ZCCACHE_CACHE_DIR: ${{ github.workspace }}/.zccache
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -289,15 +321,24 @@ jobs:
       # commit so the cache follows master instead of freezing at its first save.
       - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-rust${{ matrix.rust }}-${{ needs.check-event.outputs.config }}-${{ github.sha }}
+          path: ${{ github.workspace }}/.zccache
+          key: zccache-ubuntu-${{ matrix.os }}-x86_64-rust${{ matrix.rust }}-${{ needs.check-event.outputs.config }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-rust${{ matrix.rust }}-${{ needs.check-event.outputs.config }}-
-            ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-rust${{ matrix.rust }}-
+            zccache-ubuntu-${{ matrix.os }}-x86_64-rust${{ matrix.rust }}-${{ needs.check-event.outputs.config }}-
+            zccache-ubuntu-${{ matrix.os }}-x86_64-rust${{ matrix.rust }}-
 
-      - name: Record Start Time ⏱️
-        id: start
-        run: echo "epoch=$(date +%s)" >> "${GITHUB_OUTPUT}"
+      # zccache has no age-based eviction (ccache --evict-older-than), so a
+      # master push drops a restored cache over 2 GiB and rebuilds it cold:
+      # the saved cache stays about the size of one build.
+      - name: Bound zccache 🧹
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          : Bound zccache 🧹
+          dir="${{ github.workspace }}/.zccache"
+          if [ -d "$dir" ] && [ "$(du -sm "$dir" | cut -f1)" -gt 2048 ]; then
+            echo "zccache dir is $(du -sh "$dir" | cut -f1); starting cold"
+            rm -rf "$dir"
+          fi
 
       - name: Build OBS Studio 🧱
         uses: ./.github/actions/build-obs
@@ -315,10 +356,10 @@ jobs:
           target: x86_64
           config: ${{ needs.check-event.outputs.config }}
 
-      - name: Smoke Test Rust libobs 🦀
+      - name: Smoke Test OBS-Studio-Rust 🦀
         if: matrix.rust == 'ON'
         run: |
-          : Smoke Test Rust libobs 🦀
+          : Smoke Test OBS-Studio-Rust 🦀
           prefix="${GITHUB_WORKSPACE}/build_ubuntu/install/${{ needs.check-event.outputs.config }}"
           version=$(LD_LIBRARY_PATH="${prefix}/lib:${prefix}/lib/x86_64-linux-gnu" "${prefix}/bin/obs-studio-rust-gui" --version)
           echo "${version}"
@@ -354,19 +395,39 @@ jobs:
           name: obs-studio-${{ matrix.os }}${{ matrix.rust == 'ON' && '-rust' || '' }}-x86_64-${{ needs.check-event.outputs.commitHash }}-dbgsym
           path: ${{ github.workspace }}/build_ubuntu/obs-studio-*-x86_64-ubuntu-gnu-dbgsym.ddeb
 
-      # Drop entries this build did not use so the saved cache stays the size
-      # of one build.
-      - name: Prune ccache 🧹
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
-        run: |
-          ccache --evict-older-than "$(( $(date +%s) - ${{ steps.start.outputs.epoch }} + 60 ))s"
-          ccache --show-stats
+      - name: Set Up uv 🐍
+        if: matrix.rust == 'ON'
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
+      # The GPU status light must not call llvmpipe green (#846, #940). The
+      # runner has no GPU, so OBS renders on llvmpipe; the check also forces
+      # it. Installed into /usr, the prefix the Rust build is configured for,
+      # so OBS finds its data and plugins; after packaging and uploads, so the
+      # system-wide install cannot leak into the package.
+      - name: Tier 4 GPU Acceleration Check 🎮
+        if: matrix.rust == 'ON'
+        timeout-minutes: 10
+        run: |
+          : Tier 4 GPU Acceleration Check 🎮
+          sudo cmake --install build_ubuntu --config ${{ needs.check-event.outputs.config }} > /dev/null
+          command -v xvfb-run > /dev/null || sudo apt-get install -y --no-install-recommends xvfb
+          uv run --with websockets==13.1 test/websocket-tier4/run_tier4.py --only gpu --obs /usr/bin/obs-studio-rust-gui
+
+      # The whole black-box obs-websocket suite against the real app with Rust
+      # libobs (#140): auth handshake, every request type, scene collections,
+      # inputs and a recording. Full and release-gate runs only (this job
+      # never runs on a PR), so it stays off the critical path.
+      - name: Tier 4 Suite (Rust libobs app) 🔌
+        if: matrix.rust == 'ON'
+        timeout-minutes: 15
+        run: uv run --with websockets==13.1 test/websocket-tier4/run_tier4.py --obs /usr/bin/obs-studio-rust-gui
+
+      # build-obs's summary step stopped the zccache daemon, flushing its index.
       - uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         with:
-          path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-rust${{ matrix.rust }}-${{ needs.check-event.outputs.config }}-${{ github.sha }}
+          path: ${{ github.workspace }}/.zccache
+          key: zccache-ubuntu-${{ matrix.os }}-x86_64-rust${{ matrix.rust }}-${{ needs.check-event.outputs.config }}-${{ github.sha }}
 
   flatpak-build:
     name: Flatpak 📦
@@ -468,7 +529,7 @@ jobs:
       # save. Restore a commit-keyed copy of just that directory first; the
       # action's restore then extracts its snapshot on top (ccache entries are
       # content-addressed, so the union is safe). Every full run saves, so a
-      # ci-full PR is warm from its second push on (a PR restores its own
+      # full PR is warm from its second push on (a PR restores its own
       # newest entry before master's); only master prunes.
       - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -492,7 +553,7 @@ jobs:
           manifest-path: ${{ github.workspace }}/build-aux/com.obsproject.Studio.json
           # Always on: the action passes `--ccache` to flatpak-builder only
           # when `cache` is true. It used to be off for a PR whose manifest
-          # hash had no master cache, so a ci-full PR compiled all ~700 files
+          # hash had no master cache, so a full PR compiled all ~700 files
           # without ccache (~9 min instead of ~1.5 min, #651). The restore
           # falls back to the newest flatpak-builder-x86_64 cache, and
           # flatpak-builder only reuses a module whose own manifest entry and
@@ -567,7 +628,7 @@ jobs:
     runs-on: windows-2025-vs2026
     needs: check-event
     # OBS app builds are release-gating (#436): release gate, tags, schedule,
-    # dispatch and ci-full only.
+    # dispatch and path-triggered full PRs only.
     if: fromJSON(needs.check-event.outputs.full)
     defaults:
       run:
@@ -616,6 +677,15 @@ jobs:
           & (Join-Path $CcacheHome 'ccache.exe') --version | Select-Object -First 1
           & (Join-Path $CcacheHome 'ccache.exe') --zero-stats
           "epoch=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" >> $env:GITHUB_OUTPUT
+
+      # The GPU status light links Rust into every frontend build (#946).
+      # Install the toolchain rust-toolchain.toml pins (rustup's auto-install
+      # is deprecated); the arm64 leg cross-builds on an x64 runner and needs
+      # that target's standard library too.
+      - name: Install the Rust toolchain 🦀
+        run: |
+          rustup toolchain install
+          if ( '${{ matrix.architecture }}' -eq 'arm64' ) { rustup target add aarch64-pc-windows-msvc }
 
       - name: Build OBS Studio 🧱
         uses: ./.github/actions/build-obs
@@ -677,6 +747,21 @@ jobs:
       skip_rust-tests-linux: ${{ steps.gate.outputs.skip_rust-tests-linux }}
       skip_rust-linux-tier2: ${{ steps.gate.outputs.skip_rust-linux-tier2 }}
       skip_rust-cross-lint: ${{ steps.gate.outputs.skip_rust-cross-lint }}
+      rust-test_hit: ${{ steps.rust-test.outputs.hit }}
+      rust-test_name: ${{ steps.rust-test.outputs.name }}
+      cross_hit: ${{ steps.cross.outputs.hit }}
+      cross_name: ${{ steps.cross.outputs.name }}
+      tier2-linux_hit: ${{ steps.tier2-linux.outputs.hit }}
+      tier2-linux_name: ${{ steps.tier2-linux.outputs.name }}
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+      # Lane proofs (#699) are for PRs and the merge queue only, never a
+      # push, schedule, dispatch or full run (#992 folded that job in here).
+      PROOFS: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !inputs.full }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -698,62 +783,44 @@ jobs:
         if: github.event_name != 'merge_group'
         run: PYTHONPATH=.ci-lint uv run python -m ci_lint local-gate verify --repo . --trust --github-output
 
-  # Lane proofs (#699): a lane whose exact inputs already passed in a trusted
-  # run of this workflow is skipped (ci/lane_proof.py). Keys come from the
-  # lane's exclude/keep inputs in local-gate.toml as committed on the BASE,
-  # so a merge-queue rebuild after an unrelated master change reuses the
-  # pass instead of rerunning it. PRs and the merge queue only; never a
-  # push, schedule, dispatch or full run. Fails open: no output, no skip.
-  lane-proofs:
-    name: Lane Proofs 🧾
-    runs-on: ubuntu-26.04
-    needs: check-event
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      rust-test_hit: ${{ steps.rust-test.outputs.hit }}
-      rust-test_name: ${{ steps.rust-test.outputs.name }}
-      cross_hit: ${{ steps.cross.outputs.hit }}
-      cross_name: ${{ steps.cross.outputs.name }}
-      tier2-linux_hit: ${{ steps.tier2-linux.outputs.hit }}
-      tier2-linux_name: ${{ steps.tier2-linux.outputs.name }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-      BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
-    steps:
+      # Lane proofs (#699): a lane whose exact inputs already passed in a
+      # trusted run of this workflow is skipped (ci/lane_proof.py). Keys come
+      # from local-gate.toml as committed on the BASE, so a merge-queue
+      # rebuild after an unrelated master change reuses the pass. Fails open:
+      # no output, no skip. Runs on the merge ref, not the PR head.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !fromJSON(needs.check-event.outputs.full)
+        if: env.PROOFS == 'true'
         with:
+          path: merge
           persist-credentials: false
-      - name: Set Up uv 🐍
-        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !fromJSON(needs.check-event.outputs.full)
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Fetch Base
-        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !fromJSON(needs.check-event.outputs.full)
+        if: env.PROOFS == 'true'
+        working-directory: merge
         continue-on-error: true
         run: git fetch -q --depth=1 origin "${BASE}"
       - name: rust-test
         id: rust-test
-        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !fromJSON(needs.check-event.outputs.full)
+        if: env.PROOFS == 'true'
+        working-directory: merge
         continue-on-error: true
         run: uv run ci/lane_proof.py check --lane rust-test --base "${BASE}" --repo "${GITHUB_REPOSITORY}"
       - name: cross
         id: cross
-        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !fromJSON(needs.check-event.outputs.full)
+        if: env.PROOFS == 'true'
+        working-directory: merge
         continue-on-error: true
         run: uv run ci/lane_proof.py check --lane cross --base "${BASE}" --repo "${GITHUB_REPOSITORY}"
       - name: tier2-linux
         id: tier2-linux
-        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !fromJSON(needs.check-event.outputs.full)
+        if: env.PROOFS == 'true'
+        working-directory: merge
         continue-on-error: true
         run: uv run ci/lane_proof.py check --lane tier2-linux --base "${BASE}" --repo "${GITHUB_REPOSITORY}"
 
   rust-tests-linux:
-    name: Rust Tests 🦀 (ubuntu-26.04)
+    name: Fast Gate ⚡
     runs-on: ubuntu-26.04
-    needs: [check-event, ci-mode, lane-proofs]
+    needs: [check-event, ci-mode]
     if: needs.ci-mode.outputs.skip_rust-tests-linux != 'true'
     defaults:
       run:
@@ -761,6 +828,10 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Fast gate (#992): one runner for the PR path: format checks, rustfmt,
+      # clippy, Dylint, then the unit tests of the crates the diff touches
+      # (ci/rust_scope.py). No Qt: cargo test never needs it; the Qt job owns
+      # Qt. The full workspace tests and the windows-gnu link run on master.
       # platform-nix.c includes uuid/uuid.h. This runner does not ship it.
       # The oracle compile and the Rust libuuid link both need the package.
       - name: Install libuuid
@@ -772,10 +843,13 @@ jobs:
       # cache and cargo registry; it saves them only outside pull_request
       # (save-cache: auto), i.e. from master pushes.
       - name: Set Up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          # soldr 0.9.31 embeds zccache 1.15.2 (zackees/zccache#1937).
-          version: 0.9.31
+          # soldr 0.9.35 embeds zccache 1.15.4 (has zackees/zccache#1937).
+          version: 0.9.35
+          # The lanes add x86_64-pc-windows-gnu mid-job; the toolchain cache
+          # would save it without its std (zackees/setup-soldr#507, #969).
+          solo-toolchain-cache: false
 
       # The lint lane pins clang-format and gersemi through uvx.
       - name: Set Up uv 🐍
@@ -784,24 +858,72 @@ jobs:
       # GATE-001 mirror (local-gate.toml): exactly the local gate's lint and
       # rust-test lanes (./lint, ./unittest), i.e. rustfmt, clippy -D warnings,
       # clang-format, gersemi and soldr cargo test --workspace --locked.
+      # The ci/ self-tests run in the Checks job on the standard pool (#427).
       - name: Local Gate (lint) 🧪
+        env:
+          OBS_GATE_SKIP_SELF_TEST: "1"
         run: uv run ci/local_gate.py --lane lint
+
+      - name: Unit Tests (changed crates) 🧪
+        if: needs.check-event.outputs.deferred == 'true' && needs.ci-mode.outputs.rust-test_hit != 'true'
+        env:
+          BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        run: |
+          git fetch -q --depth=1 origin "${BASE}"
+          uv run ci/local_gate.py --test-diff "${BASE}"
+
+      # Step 3 (#992): only the plugin/shared modules the diff touches, on
+      # Linux, one configure with ENABLE_FRONTEND=OFF (no Qt). Master and full
+      # runs build everything in the Ubuntu app builds instead.
+      - name: Restore ccache 💾
+        if: needs.check-event.outputs.deferred == 'true' && needs.check-event.outputs.linux_targets != ''
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.targets-ccache
+          key: targets-ccache-linux-${{ github.sha }}
+          restore-keys: targets-ccache-linux-
+      - name: Build Touched Linux Targets 🧱
+        if: needs.check-event.outputs.deferred == 'true' && needs.check-event.outputs.linux_targets != ''
+        env:
+          TARGETS: ${{ needs.check-event.outputs.linux_targets }}
+          CCACHE_DIR: ${{ github.workspace }}/.targets-ccache
+        run: |
+          git submodule update --init --recursive -q
+          sudo apt-get update -qq
+          # Distro Qt headers only so configure passes: plugins/frontend-tools is a
+          # core module that calls find_package(Qt6 REQUIRED). Nothing Qt is built
+          # or tested here (only the touched targets); that is the Qt lane's job.
+          grep -v '^#' rust/tools/linux-validate/apt-packages.txt |
+            xargs "${GITHUB_WORKSPACE}/.github/scripts/retry" sudo apt-get install -y --no-install-recommends
+          # The launcher below; apt-packages.txt no longer lists it (#957, #1183).
+          "${GITHUB_WORKSPACE}/.github/scripts/retry" sudo apt-get install -y --no-install-recommends ccache
+          cmake -S . -B "${RUNNER_TEMP}/targets" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DENABLE_FRONTEND=OFF -DENABLE_SCRIPTING=OFF -DENABLE_BROWSER=OFF -DENABLE_WEBSOCKET=OFF \
+            -DENABLE_AJA=OFF -DENABLE_WEBRTC=OFF -DENABLE_QSV11=OFF -DENABLE_VST=OFF -DENABLE_WAYLAND=OFF \
+            -DENABLE_DECKLINK=OFF
+          avail=$(cmake --build "${RUNNER_TEMP}/targets" -- -t targets all | cut -d: -f1)
+          build=()
+          for t in ${TARGETS//,/ }; do
+            if grep -qx "$t" <<<"$avail"; then build+=("$t"); else echo "no Linux target $t: skipped"; fi
+          done
+          [ "${#build[@]}" -eq 0 ] || cmake --build "${RUNNER_TEMP}/targets" --target "${build[@]}"
 
       # Skipped when a trusted run already passed these exact inputs.
       - name: Local Gate (rust-test) 🧪
-        if: needs.lane-proofs.outputs.rust-test_hit != 'true'
+        if: needs.check-event.outputs.deferred != 'true' && needs.ci-mode.outputs.rust-test_hit != 'true'
         run: uv run ci/local_gate.py --lane rust-test
 
       # Publish the pass as a lane proof (ci/lane_proof.py), only for a lane
       # that ran here and passed; the name carries the lane's input key.
       - name: Mark Lane Proof 🧾
-        if: success() && needs.lane-proofs.outputs.rust-test_name != '' && needs.lane-proofs.outputs.rust-test_hit != 'true'
+        if: success() && needs.check-event.outputs.deferred != 'true' && needs.ci-mode.outputs.rust-test_name != '' && needs.ci-mode.outputs.rust-test_hit != 'true'
         run: touch "${{ runner.temp }}/lane-proof"
       - name: Upload Lane Proof 🧾
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: success() && needs.lane-proofs.outputs.rust-test_name != '' && needs.lane-proofs.outputs.rust-test_hit != 'true'
+        if: success() && needs.check-event.outputs.deferred != 'true' && needs.ci-mode.outputs.rust-test_name != '' && needs.ci-mode.outputs.rust-test_hit != 'true'
         with:
-          name: ${{ needs.lane-proofs.outputs.rust-test_name }}
+          name: ${{ needs.ci-mode.outputs.rust-test_name }}
           path: ${{ runner.temp }}/lane-proof
           retention-days: 3
           if-no-files-found: error
@@ -812,8 +934,8 @@ jobs:
   rust-cross-lint:
     name: Rust Cross Lint 🦀 (Windows, macOS)
     runs-on: ubuntu-26.04
-    needs: [check-event, ci-mode, lane-proofs]
-    if: needs.ci-mode.outputs.skip_rust-cross-lint != 'true' && needs.lane-proofs.outputs.cross_hit != 'true'
+    needs: [check-event, ci-mode, rust-tests-linux]
+    if: ${{ always() && !cancelled() && needs.rust-tests-linux.result != 'failure' && ((needs.check-event.outputs.deferred != 'true' || needs.check-event.outputs.macos == 'true' || needs.check-event.outputs.windows == 'true') && needs.ci-mode.outputs.skip_rust-cross-lint != 'true' && needs.ci-mode.outputs.cross_hit != 'true') }}
     defaults:
       run:
         shell: bash
@@ -821,9 +943,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set Up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          version: 0.9.31
+          version: 0.9.35
+          # The cross lane adds targets mid-job (see the Rust Tests job, #969).
+          solo-toolchain-cache: false
 
       - name: Set Up uv 🐍
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -834,27 +958,51 @@ jobs:
       # Publish the pass as a lane proof (ci/lane_proof.py), only for a lane
       # that ran here and passed; the name carries the lane's input key.
       - name: Mark Lane Proof 🧾
-        if: success() && needs.lane-proofs.outputs.cross_name != '' && needs.lane-proofs.outputs.cross_hit != 'true'
+        if: success() && needs.ci-mode.outputs.cross_name != '' && needs.ci-mode.outputs.cross_hit != 'true'
         run: touch "${{ runner.temp }}/lane-proof"
       - name: Upload Lane Proof 🧾
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: success() && needs.lane-proofs.outputs.cross_name != '' && needs.lane-proofs.outputs.cross_hit != 'true'
+        if: success() && needs.ci-mode.outputs.cross_name != '' && needs.ci-mode.outputs.cross_hit != 'true'
         with:
-          name: ${{ needs.lane-proofs.outputs.cross_name }}
+          name: ${{ needs.ci-mode.outputs.cross_name }}
           path: ${{ runner.temp }}/lane-proof
           retention-days: 3
           if-no-files-found: error
 
+  rust-cross-lint-release:
+    name: Rust Cross Lint 🦀 (release targets)
+    # Release gate only (#955): Windows arm64, macOS x64 and Linux arm64 on top
+    # of the PR gate's targets.
+    runs-on: ubuntu-26.04
+    needs: check-event
+    if: needs.check-event.outputs.full == 'true'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set Up soldr 🦀
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
+        with:
+          version: 0.9.35
+
+      - name: Set Up uv 🐍
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Local Gate (cross-release) 🧪
+        run: uv run ci/local_gate.py --lane cross-release
+
   rust-tests:
     name: Rust Tests 🦀
     # Only the platforms the change touches (#436); Linux is rust-tests-linux.
-    if: needs.check-event.outputs.platform_os != '[]'
+    if: ${{ always() && !cancelled() && needs.rust-tests-linux.result != 'failure' && (needs.check-event.outputs.platform_os != '[]') }}
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.check-event.outputs.platform_os) }}
     runs-on: ${{ matrix.os }}
-    needs: check-event
+    needs: [check-event, rust-tests-linux]
     defaults:
       run:
         shell: bash
@@ -867,12 +1015,27 @@ jobs:
       # cache and cargo registry; it saves them only outside pull_request
       # (save-cache: auto), i.e. from master pushes.
       - name: Set Up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          # soldr 0.9.31 embeds zccache 1.15.2 (zackees/zccache#1937).
-          version: 0.9.31
+          # soldr 0.9.35 embeds zccache 1.15.4 (has zackees/zccache#1937).
+          version: 0.9.35
+
+      - name: Set Up uv 🐍
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      # The OS lane runs the tests of the crates the diff touches on a PR
+      # (ci/rust_scope.py selects the feature, ci_scope.py the OS); the
+      # workspace on master (#992).
+      - name: Run Rust Tests (changed crates) 🧪
+        if: needs.check-event.outputs.deferred == 'true'
+        env:
+          BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        run: |
+          git fetch -q --depth=1 origin "${BASE}"
+          uv run ci/local_gate.py --test-diff "${BASE}"
 
       - name: Run Rust Tests 🧪
+        if: needs.check-event.outputs.deferred != 'true'
         run: soldr cargo test --workspace --locked
 
       - name: Run Clippy 📎
@@ -881,60 +1044,373 @@ jobs:
       - name: Check Formatting 🎨
         run: soldr cargo fmt --all --check
 
-  rust-linux-tier2:
-    name: Rust Tier 2 Linux 🐧
+  # Tier 2 Linux builds once and fans the tests out (#937, #1065): the build
+  # job builds libobs (C) and libobs-with-rust in one tree, runs the checks
+  # (including the enforced C/Rust export comparison, so a mismatch fails
+  # before any test) and uploads the tree; mode x shard jobs run one ctest
+  # slice each against one libobs (OFF: C as linked, ON: libobs-with-rust via
+  # LD_LIBRARY_PATH) on the same paths; rust-linux-tier2-done publishes the
+  # lane proof.
+  rust-linux-tier2-build:
+    name: Rust Tier 2 Linux 🐧 (build)
     runs-on: ubuntu-26.04
-    needs: [check-event, ci-mode, lane-proofs]
-    if: needs.ci-mode.outputs.skip_rust-linux-tier2 != 'true' && needs.lane-proofs.outputs.tier2-linux_hit != 'true'
+    # A stock image, no Dockerfile or image build (#966): run directly on the
+    # runner, two group tests failed while passing in a container with the
+    # same libraries, compiler, flags and CPU (#982). Packages install below.
+    container:
+      image: ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+    # A hung test held a runner for 4.5 h without a timeout (#983).
+    timeout-minutes: 30
+    needs: [check-event, ci-mode, rust-tests-linux]
+    if: ${{ always() && !cancelled() && needs.rust-tests-linux.result != 'failure' && (needs.check-event.outputs.tier2 == 'true' && needs.ci-mode.outputs.skip_rust-linux-tier2 != 'true' && needs.ci-mode.outputs.tier2-linux_hit != 'true') }}
     defaults:
       run:
         shell: bash
     steps:
+      # checkout needs git for tags and submodules; sudo keeps the shared
+      # install step below the same as on a plain runner.
+      - name: Install Git 📦
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends git ca-certificates curl sudo zstd
+
       # fetch-depth 0: versionconfig.cmake derives the OBS version from tags.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           fetch-depth: 0
 
+      # Reuse the 339 MB of .debs every Tier 2 job downloaded (#1055): keep
+      # them (the stock image's docker-clean config deletes them after each
+      # install) and restore the archive dir, keyed on the list and the image.
+      # zstd is installed above: the cache entry is versioned by compressor.
+      - name: Keep apt Downloads 📦
+        run: rm -f /etc/apt/apt.conf.d/docker-clean
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        id: apt-cache
+        with:
+          path: /var/cache/apt/archives
+          key: tier2-apt-ubuntu2604-f144425f-${{ hashFiles('rust/tools/linux-validate/apt-packages.txt') }}
+
+      # The package list is shared with the local Docker harness (run.sh).
+      - name: Install Tier 2 Packages 📦
+        run: |
+          sudo apt-get update -qq
+          grep -v '^#' rust/tools/linux-validate/apt-packages.txt |
+            xargs "${GITHUB_WORKSPACE}/.github/scripts/retry" sudo apt-get install -y --no-install-recommends
+      # One saver, master only: per-PR entries overflowed the 10 GB cache.
+      - name: Save apt Downloads 💾
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: /var/cache/apt/archives
+          key: tier2-apt-ubuntu2604-f144425f-${{ hashFiles('rust/tools/linux-validate/apt-packages.txt') }}
+
       # PRs restore the compiler cache; only master pushes save it (a cache
       # saved from a PR ref is unreachable by other PRs).
       - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: ${{ github.workspace }}/.tier2-ccache
-          key: tier2-ccache-linux-${{ github.sha }}
-          restore-keys: tier2-ccache-linux-
+          path: ${{ github.workspace }}/.tier2-zccache
+          key: zccache-tier2-linux-both-${{ github.sha }}
+          restore-keys: |
+            zccache-tier2-linux-both-
+            zccache-tier2-linux-
+      # zccache has no age-based eviction (ccache --evict-older-than), so a
+      # master push drops a restored cache over 2 GiB and rebuilds it cold:
+      # the saved cache stays about the size of one build.
+      - name: Bound zccache 🧹
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        run: |
+          : Bound zccache 🧹
+          dir="${{ github.workspace }}/.tier2-zccache"
+          if [ -d "$dir" ] && [ "$(du -sm "$dir" | cut -f1)" -gt 2048 ]; then
+            echo "zccache dir is $(du -sh "$dir" | cut -f1); starting cold"
+            rm -rf "$dir"
+          fi
 
-      - name: Set Up uv 🐍
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      # libobs-with-rust builds the Rust ports with cargo through Corrosion;
+      # the shims put soldr's cargo/rustc (rust-toolchain.toml) on PATH.
+      - name: Set Up soldr 🦀
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
+        with:
+          version: 0.9.35
+          shims: true
 
-      # GATE-001 mirror (local-gate.toml): the local gate's tier2-linux lane,
-      # which runs rust/tools/linux-validate/run.sh.
-      - name: Validate Tier 2 (ENABLE_RUST_LIBOBS OFF vs ON) ✅
+      # The shard plan uses the test timings the last master run's shards
+      # handed back (rust-linux-tier2-done, #930); until that cache exists,
+      # the timings the ccache still carries from before the split (#931).
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .tier2-cost
+          key: tier2-ctest-cost-${{ github.sha }}
+          restore-keys: tier2-ctest-cost-
+      - name: Seed Tier 2 Test Timings ⏱️
+        run: |
+          mkdir -p .tier2-cost
+          for f in .tier2-ccache/ctest-cost-*.txt; do
+            [ -s "$f" ] && [ ! -s ".tier2-cost/${f##*/}" ] && cp "$f" .tier2-cost/
+          done
+          ls -l .tier2-cost
+
+      # GATE-001 mirror (local-gate.toml): the same validate.sh the local
+      # gate's tier2-linux lane runs in Docker (build and test in one go).
+      # The compiler launcher validate.sh configures (BUILD.md, #957): the
+      # pinned, checksummed zccache release.
+      - name: Install zccache 📦
+        run: |
+          : Install zccache 📦
+          sh rust/tools/linux-validate/install-zccache.sh "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build Tier 2 (libobs and libobs-with-rust) 🧱
         env:
-          OBS_CCACHE_DIR: ${{ github.workspace }}/.tier2-ccache
-        run: uv run ci/local_gate.py --lane tier2-linux
+          OBS_TIER2_SRC: ${{ github.workspace }}
+          OBS_TIER2_BUILD: ${{ runner.temp }}/tier2
+          OBS_TIER2_PACK: ${{ runner.temp }}/tier2-pack
+          ZCCACHE_CACHE_DIR: ${{ github.workspace }}/.tier2-zccache
+          OBS_TIER2_COST_DIR: ${{ github.workspace }}/.tier2-cost
+          OBS_TIER2_MODES: "OFF ON"
+          OBS_TIER2_STAGE: build
+        run: bash rust/tools/linux-validate/validate.sh
 
+      - name: Upload Tier 2 Tree 🧾
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tier2-tree
+          path: ${{ runner.temp }}/tier2-pack/tier2-tree.tar.zst
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
 
+      # validate.sh stops the zccache daemon on exit, flushing its index.
+      - name: Save Tier 2 zccache 💾
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        with:
+          path: ${{ github.workspace }}/.tier2-zccache
+          key: zccache-tier2-linux-both-${{ github.sha }}
+
+  rust-linux-tier2:
+    name: Rust Tier 2 Linux 🐧 (tests)
+    runs-on: ubuntu-26.04
+    # A stock image, no Dockerfile or image build (#966): run directly on the
+    # runner, two group tests failed while passing in a container with the
+    # same libraries, compiler, flags and CPU (#982). Packages install below.
+    container:
+      image: ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+    timeout-minutes: 30
+    needs: [check-event, ci-mode, rust-linux-tier2-build]
+    # One runner tests both libobs builds, at most 8 test binaries at a time:
+    # six mode x shard runners each repeated the checkout, the package
+    # install and the tree download for about a minute of ctest.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # checkout needs git for tags and submodules; sudo keeps the shared
+      # install step below the same as on a plain runner.
+      - name: Install Git 📦
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends git ca-certificates curl sudo zstd
+
+      # fetch-depth 0: versionconfig.cmake derives the OBS version from tags.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # Reuse the 339 MB of .debs every Tier 2 job downloaded (#1055): keep
+      # them (the stock image's docker-clean config deletes them after each
+      # install) and restore the archive dir, keyed on the list and the image.
+      # zstd is installed above: the cache entry is versioned by compressor.
+      - name: Keep apt Downloads 📦
+        run: rm -f /etc/apt/apt.conf.d/docker-clean
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        id: apt-cache
+        with:
+          path: /var/cache/apt/archives
+          key: tier2-apt-ubuntu2604-f144425f-${{ hashFiles('rust/tools/linux-validate/apt-packages.txt') }}
+
+      # The package list is shared with the local Docker harness (run.sh).
+      - name: Install Tier 2 Packages 📦
+        run: |
+          sudo apt-get update -qq
+          grep -v '^#' rust/tools/linux-validate/apt-packages.txt |
+            xargs "${GITHUB_WORKSPACE}/.github/scripts/retry" sudo apt-get install -y --no-install-recommends
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tier2-tree
+          path: ${{ runner.temp }}/tier2-pack
+      - name: Unpack Tier 2 Tree 📂
+        run: |
+          mkdir -p "$RUNNER_TEMP/tier2"
+          tar --zstd -xf "$RUNNER_TEMP/tier2-pack/tier2-tree.tar.zst" -C "$RUNNER_TEMP/tier2"
+
+      # ctest starts the longest tests first only when it has their past
+      # times; with none, the 59 s and 35 s tests started last and one shard
+      # took 168 s for 228 s of -j4 work (run 38892442457). Start from the
+      # timings the last master run merged (rust-linux-tier2-done, #930).
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .tier2-cost
+          key: tier2-ctest-cost-${{ github.sha }}
+          restore-keys: tier2-ctest-cost-
+
+      - name: Test Tier 2 (libobs C, then with Rust) ✅
+        env:
+          OBS_TIER2_SRC: ${{ github.workspace }}
+          OBS_TIER2_BUILD: ${{ runner.temp }}/tier2
+          OBS_TIER2_MODES: "OFF ON"
+          OBS_TIER2_STAGE: test
+          # At most 8 test binaries at once. The two tests that failed under
+          # -j8 (#938) judged timing, not playback; #1001 fixed that.
+          OBS_CTEST_JOBS: 8
+          # Read before ctest (longest first), rewritten after; cached by
+          # rust-linux-tier2-done on master.
+          OBS_TIER2_COST_DIR: ${{ github.workspace }}/.tier2-cost
+        run: bash rust/tools/linux-validate/validate.sh
+      - name: Upload Test Timings ⏱️
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        with:
+          name: tier2-cost
+          path: .tier2-cost/ctest-cost-*.txt
+          retention-days: 1
+          if-no-files-found: ignore
+
+  rust-linux-tier2-done:
+    name: Rust Tier 2 Linux 🐧
+    runs-on: ubuntu-latest
+    needs: [ci-mode, rust-linux-tier2]
+    if: needs.rust-linux-tier2.result == 'success'
+    timeout-minutes: 5
+    steps:
       # Publish the pass as a lane proof (ci/lane_proof.py), only for a lane
       # that ran here and passed; the name carries the lane's input key.
       - name: Mark Lane Proof 🧾
-        if: success() && needs.lane-proofs.outputs.tier2-linux_name != '' && needs.lane-proofs.outputs.tier2-linux_hit != 'true'
+        if: success() && needs.ci-mode.outputs.tier2-linux_name != '' && needs.ci-mode.outputs.tier2-linux_hit != 'true'
         run: touch "${{ runner.temp }}/lane-proof"
       - name: Upload Lane Proof 🧾
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: success() && needs.lane-proofs.outputs.tier2-linux_name != '' && needs.lane-proofs.outputs.tier2-linux_hit != 'true'
+        if: success() && needs.ci-mode.outputs.tier2-linux_name != '' && needs.ci-mode.outputs.tier2-linux_hit != 'true'
         with:
-          name: ${{ needs.lane-proofs.outputs.tier2-linux_name }}
+          name: ${{ needs.ci-mode.outputs.tier2-linux_name }}
           path: ${{ runner.temp }}/lane-proof
           retention-days: 3
           if-no-files-found: error
 
-      - name: Save Tier 2 ccache 💾
+      # Cache the test run's timings per mode for the next run's ctest
+      # ordering (#930). Master only, like the compiler cache.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        with:
+          sparse-checkout: rust/tools/linux-validate
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        with:
+          pattern: tier2-cost*
+          path: ${{ runner.temp }}/tier2-cost-shards
+      - name: Merge Test Timings ⏱️
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          mkdir -p .tier2-cost
+          for mode in OFF ON; do
+            set -- "$RUNNER_TEMP"/tier2-cost-shards/tier2-cost*/ctest-cost-"$mode".txt
+            [ -e "$1" ] || continue
+            bash rust/tools/linux-validate/merge-costs.sh "$@" >".tier2-cost/ctest-cost-$mode.txt"
+            echo "$mode: $(grep -c -v -e '^---$' ".tier2-cost/ctest-cost-$mode.txt") lines"
+          done
+      - uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        with:
+          path: .tier2-cost
+          key: tier2-ctest-cost-${{ github.sha }}
+
+  # Qt frontend on the Linux fast path (#992): configure, build and link the
+  # obs-studio app against PREBUILT Qt and FFmpeg (obs-rust/obs-studio-libs,
+  # pinned by tag and sha256, never compiled here), then run the Qt-linked
+  # cmocka tests. Runs when frontend/Qt code or a Qt-linked test changed
+  # (ci/ci_scope.py), on master and full runs; skipped, and passing CI Gate,
+  # otherwise.
+  linux-qt-frontend:
+    name: Qt Frontend Linux 🐧
+    runs-on: ubuntu-26.04
+    needs: [check-event, rust-tests-linux]
+    if: ${{ always() && !cancelled() && needs.rust-tests-linux.result != 'failure' && (fromJSON(needs.check-event.outputs.qt)) }}
+    timeout-minutes: 30
+    env:
+      QT_TAG: qt6-6.11.1
+      QT_ASSET: qt6-6.11.1-linux-x86_64-glibc2.28-release.tar.zst
+      QT_SHA256: f0edfc3432bd57058bbb9a2cf18aacceb55a2564b018346778c34eb0e3369dbf
+      FFMPEG_TAG: ffmpeg-8.1.2
+      FFMPEG_ASSET: ffmpeg-8.1.2-linux-x86_64-glibc2.28-release.tar.zst
+      FFMPEG_SHA256: 8796ecdb273688c21f90b75a4e84acfc84ab35e69cacb551a6d8ed452961fcb4
+      CCACHE_DIR: ${{ github.workspace }}/.qt-ccache
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set Up uv 🐍
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      # Unpacked prefixes, keyed on the pinned sha256: a warm run skips the
+      # download.
+      - name: Cache Prebuilt Qt 💾
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/qt
+          key: libs-qt-${{ env.QT_SHA256 }}
+      - name: Cache Prebuilt FFmpeg 💾
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/ffmpeg
+          key: libs-ffmpeg-${{ env.FFMPEG_SHA256 }}
+      - name: Fetch Prebuilt Libs 📦
+        run: |
+          uv run ci/fetch_libs_asset.py "${QT_TAG}" "${QT_ASSET}" "${QT_SHA256}" "${{ runner.temp }}/qt"
+          uv run ci/fetch_libs_asset.py "${FFMPEG_TAG}" "${FFMPEG_ASSET}" "${FFMPEG_SHA256}" "${{ runner.temp }}/ffmpeg"
+
+      # PRs restore the compiler cache; only master pushes save it.
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.qt-ccache
+          key: qt-ccache-linux-${{ github.sha }}
+          restore-keys: qt-ccache-linux-
+
+      # No distro Qt, FFmpeg or codec dev packages: the prebuilt prefixes
+      # supply them.
+      - name: Install Build Dependencies 📦
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config ccache git curl zstd \
+            libcurl4-openssl-dev libjansson-dev libx11-dev libx11-xcb-dev libxcb1-dev \
+            libxcb-randr0-dev libxcb-shm0-dev libxcb-xinerama0-dev libxcb-composite0-dev \
+            libxcb-xfixes0-dev libxcb-xinput-dev libxinerama-dev libxcomposite-dev libxdamage-dev \
+            libgl-dev libglvnd-dev libgles2-mesa-dev libwayland-dev libxkbcommon-dev \
+            libpulse-dev libasound2-dev libpipewire-0.3-dev libpci-dev libdrm-dev libudev-dev \
+            libv4l-dev libva-dev libfontconfig-dev libfreetype-dev libspeexdsp-dev libsimde-dev \
+            uthash-dev nlohmann-json3-dev libwebsocketpp-dev libasio-dev libqrcodegencpp-dev \
+            libcmocka-dev libxss-dev extra-cmake-modules xvfb xauth libdbus-1-dev \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
+            libxcb-xkb1 libxkbcommon-x11-0 libxcb-shape0 libxcb-sync1 libegl1
+
+      - name: Build Frontend and Run Qt Tests 🏗️
+        run: ci/linux_qt_frontend.sh "${{ runner.temp }}/qt" "${{ runner.temp }}/ffmpeg" "${{ runner.temp }}/qt-build"
+
+      - name: Save Qt ccache 💾
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
         with:
-          path: ${{ github.workspace }}/.tier2-ccache
-          key: tier2-ccache-linux-${{ github.sha }}
+          path: ${{ github.workspace }}/.qt-ccache
+          key: qt-ccache-linux-${{ github.sha }}
 
   rust-tier2:
     name: Rust Tier 2 ${{ matrix.os }}
@@ -943,37 +1419,117 @@ jobs:
       matrix:
         os: ${{ fromJSON(needs.check-event.outputs.platform_os) }}
     runs-on: ${{ matrix.os }}
-    needs: check-event
+    needs: [check-event, rust-tests-linux]
     # Only the platforms the change touches (#436); Linux Tier 2 always runs
     # (rust-linux-tier2).
-    if: needs.check-event.outputs.platform_os != '[]'
+    if: ${{ always() && !cancelled() && needs.rust-tests-linux.result != 'failure' && (needs.check-event.outputs.platform_os != '[]') }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # The ENABLE_RUST_LIBOBS=ON build runs cargo through Corrosion; the
-      # shims route it through soldr so its compiles hit zccache.
+      # libobs-with-rust builds the Rust ports with cargo through Corrosion;
+      # the shims route it through soldr so its compiles hit zccache.
       - name: Set Up soldr 🦀
-        uses: zackees/setup-soldr@0f223ac68e97fccaaeab026ef1861e5bf73639ac # v0.9.85
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
         with:
-          # soldr 0.9.31 embeds zccache 1.15.2, which names MSVC staticlib
+          # soldr 0.9.35 embeds zccache 1.15.4, which names MSVC staticlib
           # outputs <crate>-<hash>.lib (zackees/zccache#1937).
-          version: 0.9.31
+          version: 0.9.35
           shims: true
 
-      - name: Validate Tier 2 on macOS (ENABLE_RUST_LIBOBS OFF vs ON) 🍏
+      # validate.sh builds through the macos-ci preset's Xcode compilation
+      # cache; it started empty every run, so every build compiled cold
+      # (about 6.5 of 10 min in run 38908431573, #930). As for the macOS OBS
+      # build, PR and queue runs restore master's CAS; master runs (push,
+      # schedule, dispatch: a push runs this job only for macOS paths) build
+      # cold and save, so the CAS holds only what the tree uses (it cannot be
+      # pruned by age).
+      - name: Restore Tier 2 Xcode Cache 🗄️
+        if: runner.os == 'macOS' && !(github.event_name != 'pull_request' && github.ref == 'refs/heads/master')
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.tier2-xcas
+          key: macos-tier2-xcas-${{ github.sha }}
+          restore-keys: macos-tier2-xcas-
+
+      - name: Validate Tier 2 on macOS (libobs C vs with Rust) 🍏
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          XCODE_CAS_PATH: ${{ github.workspace }}/.tier2-xcas
         run: |
           "${GITHUB_WORKSPACE}/.github/scripts/retry" brew install cmocka
           bash rust/tools/tier2-validate/validate.sh
+          du -sh "$XCODE_CAS_PATH"
 
-      - name: Validate Tier 2 on Windows (ENABLE_RUST_LIBOBS OFF vs ON) 🪟
+      - name: Save Tier 2 Xcode Cache 💾
+        if: runner.os == 'macOS' && github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.tier2-xcas
+          key: macos-tier2-xcas-${{ github.sha }}
+
+      # The windows-ci-x64 preset enables ccache (ENABLE_CCACHE) whenever it is
+      # on PATH, as the Windows OBS build does; without it both Tier 2 builds
+      # compiled cold, about 5.5 of 9.1 min (#1038). Only master pushes save.
+      - name: Restore Tier 2 ccache 🗄️
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: windows-tier2-ccache-${{ github.sha }}
+          restore-keys: windows-tier2-ccache-
+
+      - name: Set Up ccache 🗄️
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # Set Up ccache 🗄️ (same pinned build as windows-build)
+          $Version = '4.14.1'
+          $Hash = '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4'
+          $Name = "ccache-${Version}-windows-x86_64"
+          $Zip = "${env:RUNNER_TEMP}/${Name}.zip"
+
+          Invoke-WebRequest -Uri "https://github.com/ccache/ccache/releases/download/v${Version}/${Name}.zip" -OutFile $Zip
+          if ( (Get-FileHash -Algorithm SHA256 -Path $Zip).Hash -ne $Hash ) { throw "${Name}.zip checksum mismatch" }
+          Expand-Archive -Path $Zip -DestinationPath $env:RUNNER_TEMP
+
+          $CcacheHome = Join-Path $env:RUNNER_TEMP $Name
+          $env:CCACHE_DIR = Join-Path $env:GITHUB_WORKSPACE '.ccache'
+          $CcacheHome >> $env:GITHUB_PATH
+          @(
+            "CCACHE_DIR=${env:CCACHE_DIR}"
+            'CCACHE_MAXSIZE=2G'
+            'CCACHE_COMPILERCHECK=content'
+            'CCACHE_SLOPPINESS=include_file_mtime,include_file_ctime'
+          ) >> $env:GITHUB_ENV
+          & (Join-Path $CcacheHome 'ccache.exe') --zero-stats
+
+      # cmocka took 37 s to build from source through vcpkg every run.
+      - name: Cache vcpkg Binaries 🗄️
+        if: runner.os == 'Windows'
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.vcpkg-bin
+          key: vcpkg-bin-cmocka-x64-windows-v1
+
+      - name: Validate Tier 2 on Windows (libobs C vs with Rust) 🪟
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/.vcpkg-bin,readwrite
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/.vcpkg-bin" | Out-Null
           vcpkg install cmocka:x64-windows
           if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed ($LASTEXITCODE)" }
           ./rust/tools/tier2-validate/validate.ps1 -CMockaPrefix "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows"
+          ccache --show-stats
+
+      - name: Save Tier 2 ccache 💾
+        if: runner.os == 'Windows' && github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: windows-tier2-ccache-${{ github.sha }}

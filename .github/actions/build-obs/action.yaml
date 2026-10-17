@@ -114,17 +114,16 @@ runs:
       run: |
         : Create Summary 📊
 
-        local -a ccache_data
-        if (( ${+RUNNER_DEBUG} )) {
-          setopt XTRACE
-          ccache_data=("${(fA)$(ccache -s -vv)}")
-        } else {
-          ccache_data=("${(fA)$(ccache -s -v)}")
-        }
+        if (( ${+RUNNER_DEBUG} )) setopt XTRACE
+        if (( ! ${+commands[zccache]} )) return 0
 
-        print '### ${{ runner.os }} Ccache Stats (${{ inputs.target }})' >> $GITHUB_STEP_SUMMARY
+        local -a zccache_data=("${(fA)$(zccache status)}")
+        # Stop the daemon so its index is flushed before the job saves the cache.
+        zccache stop > /dev/null || true
+
+        print '### ${{ runner.os }} zccache Stats (${{ inputs.target }})' >> $GITHUB_STEP_SUMMARY
         print '```' >> $GITHUB_STEP_SUMMARY
-        for line (${ccache_data}) {
+        for line (${zccache_data}) {
           print ${line} >> $GITHUB_STEP_SUMMARY
           print ${line}
         }

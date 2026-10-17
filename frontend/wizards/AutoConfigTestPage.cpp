@@ -87,7 +87,7 @@ static inline void string_depad_key(string &key)
 
 extern const char *FindAudioEncoderFromCodec(const char *type);
 
-static bool return_first_id(void *data, const char *id)
+static bool autoconfig_return_first_id(void *data, const char *id)
 {
 	const char **output = (const char **)data;
 
@@ -242,7 +242,7 @@ void AutoConfigTestPage::TestBandwidthThread()
 
 		/* If third-party protocol, use the first enumerated type */
 		if (!output_type) {
-			obs_enum_output_types_with_protocol(protocol, &output_type, return_first_id);
+			obs_enum_output_types_with_protocol(protocol, &output_type, autoconfig_return_first_id);
 		}
 
 		/* If none, fail */

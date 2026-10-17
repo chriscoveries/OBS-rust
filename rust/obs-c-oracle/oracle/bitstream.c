@@ -9,7 +9,7 @@
 #define bitstream_reader_r8 oracle_bitstream_reader_r8
 #define bitstream_reader_r16 oracle_bitstream_reader_r16
 
-#include "util/bitstream.c"
+#include "util/bitstream.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 size_t oracle_bitstream_reader_size(void);

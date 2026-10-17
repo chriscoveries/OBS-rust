@@ -120,7 +120,7 @@ class ReleasePlatformsTest(unittest.TestCase):
 
     def test_called_appimage_accepts_the_rust_build_option(self):
         text = (ROOT / ".github/workflows/appimage.yaml").read_text()
-        call = re.search(r"^  workflow_call:\n(.*?)^  pull_request:", text, re.M | re.S)
+        call = re.search(r"^  workflow_call:\n(.*?)^  workflow_dispatch:", text, re.M | re.S)
         self.assertIsNotNone(call)
         self.assertRegex(call.group(1), r"rust_libobs:\n\s+description:.*\n\s+type: boolean")
 

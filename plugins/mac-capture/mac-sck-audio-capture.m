@@ -257,7 +257,7 @@ static bool audio_capture_method_changed(void *data, obs_properties_t *props, ob
 }
 
 API_AVAILABLE(macos(13.0))
-static bool reactivate_capture(obs_properties_t *props __unused, obs_property_t *property, void *data)
+static bool sck_audio_reactivate_capture(obs_properties_t *props __unused, obs_property_t *property, void *data)
 {
     struct screen_capture *sc = data;
     if (!sc->capture_failed) {
@@ -288,8 +288,8 @@ API_AVAILABLE(macos(13.0)) static obs_properties_t *sck_audio_capture_properties
 
     obs_property_t *app_list = obs_properties_add_list(props, "application", obs_module_text("Application"),
                                                        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    obs_property_t *reactivate =
-        obs_properties_add_button2(props, "reactivate_capture", obs_module_text("SCK.Restart"), reactivate_capture, sc);
+    obs_property_t *reactivate = obs_properties_add_button2(props, "reactivate_capture", obs_module_text("SCK.Restart"),
+                                                            sck_audio_reactivate_capture, sc);
     obs_property_set_enabled(reactivate, sc->capture_failed);
 
     if (sc) {

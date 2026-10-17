@@ -250,7 +250,7 @@ static inline bool nvafx_get_sdk_path(char *buffer, const size_t len)
 	return true;
 }
 
-static unsigned int get_lib_version(void)
+static unsigned int get_afx_lib_version(void)
 {
 	static unsigned int version = 0;
 	static bool version_checked = false;

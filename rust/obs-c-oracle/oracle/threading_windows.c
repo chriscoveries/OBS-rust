@@ -28,7 +28,7 @@
 #define os_sem_wait oracle_os_sem_wait
 #define os_set_thread_name oracle_os_set_thread_name
 
-#include "util/threading-windows.c"
+#include "util/threading-windows.c.h"
 
 /* Parity-test probe only, not part of util/threading.h: a non-blocking
  * take. The handle is the opaque pointer, as in threading-windows.c. */

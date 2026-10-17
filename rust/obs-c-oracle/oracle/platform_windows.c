@@ -101,7 +101,7 @@
 #pragma clang diagnostic ignored "-Wunused-but-set-variable"
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
 #endif
-#include "util/platform-windows.c"
+#include "util/platform-windows.c.h"
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #endif

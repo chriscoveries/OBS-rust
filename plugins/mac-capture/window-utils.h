@@ -1,3 +1,5 @@
+#pragma once
+
 #import <CoreGraphics/CGWindow.h>
 #import <Cocoa/Cocoa.h>
 

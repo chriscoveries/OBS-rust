@@ -1,0 +1,46 @@
+name: CI Pre
+# zackees/ci.yml's fast first workflow (docs/policy-general.md, GEN-014..018):
+# ci.yml calls it as its first job. Concurrency is per job here, never
+# workflow-wide, and nothing is installed: ci_lint is stdlib-only python3.
+#
+# cache-janitor deletes Actions caches that ci.toml's [cache.family] entries
+# do not keep: caches matching no family, closed PRs' caches, base layers
+# saved off master, superseded and poisoned entries, an evict = "lru"
+# family's overflow, and anything unused for 5 days. It never deletes an
+# entry younger than 10 minutes or the newest entry of a family a job
+# restores. Add a [cache.family] before adding a cache key.
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  cache-janitor:
+    name: Cache Janitor 🧹
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    # One sweep at a time, repo-wide; a running sweep is never cancelled.
+    concurrency:
+      group: cache-janitor
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # The janitor reads only ci.toml from this repository.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: ci.toml
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: zackees/ci.yml
+          ref: 1a970f01574447d681571ff3d0b8de56cb983dcc
+          path: .ci-lint
+          persist-credentials: false
+          sparse-checkout: ci_lint
+      - name: Sweep Caches 🧹
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: .ci-lint
+        run: python3 -P -m ci_lint cache janitor --repo . --default-branch master

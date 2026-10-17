@@ -16,4 +16,4 @@
 #define os_process_pipe_read_err oracle_os_process_pipe_read_err
 #define os_process_pipe_write oracle_os_process_pipe_write
 
-#include "util/pipe-posix.c"
+#include "util/pipe-posix.c.h"

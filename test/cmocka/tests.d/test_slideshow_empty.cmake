@@ -4,8 +4,8 @@ if(TARGET image-source AND TARGET obs-transitions)
   add_executable(
     test_slideshow_empty
     test_slideshow_empty.c
-    "${CMAKE_SOURCE_DIR}/plugins/image-source/obs-slideshow.c"
-    "${CMAKE_SOURCE_DIR}/plugins/obs-transitions/transition-cut.c"
+    "${CMAKE_SOURCE_DIR}/plugins/image-source/obs-slideshow.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-transitions/transition-cut.c.h"
   )
   target_include_directories(test_slideshow_empty PRIVATE ${CMOCKA_INCLUDE_DIR})
   target_link_libraries(

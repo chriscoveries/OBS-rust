@@ -21,7 +21,7 @@
 #define lexer_getbasetoken oracle_lexer_getbasetoken
 #define lexer_getstroffset oracle_lexer_getstroffset
 
-#include "util/cf-tokenizer.c"
+#include "util/cf-tokenizer.c.h"
 
 /* The declarations are part of the macros: the exports have no header. */
 #define LAYOUT(type)                          \

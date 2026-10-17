@@ -1,0 +1,14 @@
+# Docker build context for the images built from the repo root (bosn.toml:
+# build-aux/appimage/Dockerfile and build-aux/appimage/manylinux/Dockerfile).
+# Only what their COPY lines read: without this, Docker and bosn send the
+# whole checkout (target/, .git, build trees, .deps/), and bosn refuses a
+# context over 64 MiB ("manifest Dockerfile context was refused"). A new COPY
+# from the repo root needs its file listed here.
+# rust/tools/linux-validate/Dockerfile builds from its own directory instead.
+*
+!build-aux/appimage/Dockerfile
+!build-aux/appimage/build.py
+!build-aux/appimage/manylinux/Dockerfile
+!build-aux/appimage/manylinux/deps.lock.json
+!rust-toolchain.toml
+!rust/tools/linux-validate/install-zccache.sh

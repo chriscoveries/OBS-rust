@@ -3,4 +3,4 @@
  * implementation. */
 #define obs_nal_find_startcode oracle_obs_nal_find_startcode
 
-#include "obs-nal.c"
+#include "obs-nal.c.h"

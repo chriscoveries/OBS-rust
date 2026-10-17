@@ -1,0 +1,1350 @@
+# ci.toml -- this repository's CI contract, checked by ci-lint (zackees/ci.yml
+# schema 3, docs/ci-toml.md at the pin below). It generates no YAML: it bounds
+# what .github/workflows/*.yaml may do, and the cache janitor
+# (.github/workflows/ci-pre.yml) deletes every cache that matches no
+# cache family below. Add a family before adding a cache key.
+schema = 3
+profile = "obs-rust"
+linter = "zackees/ci.yml@1a970f01574447d681571ff3d0b8de56cb983dcc"
+
+# -- Platforms ----------------------------------------------------------------
+# The platforms PR CI builds and tests natively (build-project.yaml).
+[platforms]
+linux-x64 = { target = "x86_64-unknown-linux-gnu", runs-on = "ubuntu-26.04", group = "linux" }
+windows-x64 = { target = "x86_64-pc-windows-msvc", runs-on = "windows-2025-vs2026", group = "windows" }
+macos-arm64 = { target = "aarch64-apple-darwin", runs-on = "macos-26", group = "macos" }
+
+# -- Suites (docs/rust-port/testing-policy.md) -------------------------------
+[suites]
+lint = { run = "uv run ci/local_gate.py --lane lint", required = true }
+rust = { run = "uv run ci/local_gate.py --lane rust-test", required = true }
+tier2 = { run = "uv run ci/local_gate.py --lane tier2-linux", required = true }
+sanitizers = { run = "rust/tools/sanitize/sanitize.sh", gating = false }
+
+# -- Flows --------------------------------------------------------------------
+[flow.pr]
+platforms = ["linux-x64"]
+suites = ["lint", "rust", "tier2"]
+
+[flow.main]
+extends = "pr"
+cache = "write"
+
+[flow.release]
+platforms = "all"
+suites = "all"
+publish = "none"
+
+[flow.nightly]
+extends = "release"
+schedule = "daily"
+cache = "write"
+janitor = true
+
+[tags]
+ci-full = { add = { platforms = "all" } }
+
+# -- Caches -------------------------------------------------------------------
+# Only master pushes save (write-on); PRs restore and never save, so there is
+# no PR delta layer. Sizes: the largest live entry of each family
+# (gh api repos/obs-rust/obs-studio/actions/caches, 2026-10-15), rounded up.
+[cache]
+budget = "10GB"
+write-on = ["main", "nightly"]
+pr = { mode = "none", families = [], max-per-pr = "0MB", budget = "0MB", trim = "on-close" }
+
+# The janitor deletes any cache matching no family. evict = "lru" families
+# keep their most recently used entries up to max x cardinality.
+[cache.family]
+# zackees/setup-soldr (build-project.yaml, release-rust.yaml).
+registry = { via = "setup-soldr:cargo-registry", max = "60MB", per = "platform" }
+deps = { via = "setup-soldr:cook", max = "900MB", evict = "lru", shapes = { linux = { max = "850MB" }, macos = { max = "400MB" }, windows = { max = "650MB" } } }
+compile = { via = "setup-soldr:build-cache", max = "170MB", per = "platform" }
+toolchain = { via = "setup-soldr:solo-toolchain", max = "190MB", per = "platform" }
+soldr-mini = { via = "setup-soldr:soldr-mini", max = "15MB", per = "platform" }
+# astral-sh/setup-uv's own cache.
+uv = { via = "setup-uv", max = "50MB" }
+# zccache, the Linux CMake compiler launcher (rust/tools/linux-validate/install-zccache.sh):
+# zccache-tier2-linux-, zccache-ubuntu-<os>-x86_64-rust<ON|OFF>-<config>-,
+# zccache-appimage-, zccache-sanitize-<tool>-<rust>-.
+zccache = { prefix = "zccache-", max = "500MB", evict = "lru", shapes = { tier2-off = { max = "300MB" }, tier2-on = { max = "300MB" }, ubuntu = { max = "400MB" }, appimage = { max = "400MB" }, sanitize = { max = "300MB" } } }
+# Windows compiler cache: ccache as cl.exe (build-project.yaml windows-build).
+windows-ccache = { prefix = "windows-ccache-", max = "800MB", evict = "lru" }
+# macOS: Xcode's compilation cache (build-project.yaml macos-build).
+xcode = { prefix = "macOS-xcode-", max = "500MB", evict = "lru" }
+# Flatpak: flatpak-builder's dependency cache and its SDK ccache.
+flatpak-builder = { prefix = "flatpak-builder-", max = "2.5GB", evict = "lru" }
+flatpak-ccache = { prefix = "flatpak-ccache-", max = "200MB" }
+# AppImage (appimage.yaml): cargo, apt and the test images' packages.
+appimage-cargo = { prefix = "cargo-appimage-", max = "500MB", evict = "lru" }
+appimage-apt = { prefix = "apt-appimage-", max = "250MB" }
+appimage-testpkgs = { prefix = "testpkgs-", max = "250MB" }
+# services-validator action.
+service-check = { prefix = "service-check-", max = "1MB" }
+# Transitional: the ccache keys master's Tier 2 and AppImage jobs restore
+# until #957 (zccache) merges. Delete both once master saves zccache-*.
+tier2-ccache = { prefix = "tier2-ccache-linux-", max = "110MB" }
+# Tier 2's apt downloads (#1055) and the per-target Linux plugin builds' ccache.
+tier2-apt = { prefix = "tier2-apt-", max = "400MB" }
+targets-ccache = { prefix = "targets-ccache-linux-", max = "300MB" }
+# Added on master after #957 was written.
+tier2-ctest-cost = { prefix = "tier2-ctest-cost-", max = "1MB" }
+windows-tier2-ccache = { prefix = "windows-tier2-ccache-", max = "800MB", evict = "lru" }
+macos-tier2-xcas = { prefix = "macos-tier2-xcas-", max = "500MB", evict = "lru" }
+qt-ccache = { prefix = "qt-ccache-linux-", max = "300MB", evict = "lru" }
+vcpkg-cmocka = { prefix = "vcpkg-bin-cmocka-", max = "100MB" }
+libs-qt = { prefix = "libs-qt-", max = "1GB" }
+libs-ffmpeg = { prefix = "libs-ffmpeg-", max = "500MB" }
+appimage-ccache = { prefix = "ccache-appimage-", max = "100MB" }
+
+# -- Local runs (local-gate.toml) --------------------------------------------
+[local]
+runner = "bosn-act"
+lanes = ["lint", "rust-test", "cross", "tier2-linux"]
+cache = "machine"
+
+# -- Allowlists ---------------------------------------------------------------
+[allow]
+workflows = { "ci.yml" = ["workflow_dispatch", "pull_request", "merge_group"], "ci-pre.yml" = ["workflow_call"], "push.yaml" = ["push"], "build-project.yaml" = ["workflow_call"], "analyze-project.yaml" = ["workflow_call"], "check-format.yaml" = ["workflow_call"], "sign-windows.yaml" = ["workflow_call"], "appimage.yaml" = ["push", "workflow_call", "workflow_dispatch"], "claim-bot.yaml" = ["issue_comment", "schedule", "workflow_dispatch"], "dispatch.yaml" = ["workflow_dispatch"], "leaderboard.yml" = ["schedule", "workflow_dispatch"], "publish.yaml" = ["release"], "release-rust.yaml" = ["schedule", "workflow_dispatch"], "sanitizers.yaml" = ["workflow_dispatch", "schedule"], "scheduled.yaml" = ["workflow_dispatch", "schedule"] }
+actions = [
+  "actions/attest", "actions/cache", "actions/checkout", "actions/download-artifact", "actions/upload-artifact",
+  "andriivitiv/setup-steamcmd", "andriivitiv/steam-totp", "astral-sh/setup-uv", "cloudflare/wrangler-action",
+  "flatpak/flatpak-github-actions", "github/codeql-action", "google-github-actions/auth",
+  "korelstar/xmllint-problem-matcher", "obsproject/obs-crowdin-sync", "obsproject/obs-studio",
+  "peter-evans/create-pull-request", "softprops/action-gh-release", "totaldebug/sphinx-publish-action",
+  "yuzutech/annotations-action", "zackees/ci.yml", "zackees/setup-soldr",
+]
+tools = ["soldr", "uv", "uvx", "python3", "cmake", "docker", "git", "gh"]
+# Release signing, publishing and service keys the upstream OBS workflows use.
+secrets = [
+  "CF_ACCOUNT_ID", "CF_API_TOKEN", "CHECK_SERVERS_API_KEY", "CHECK_SERVERS_LIST", "CROWDIN_SYNC_CROWDIN_PAT",
+  "CROWDIN_SYNC_GITHUB_PAT", "FLATHUB_BETA_TOKEN", "FLATHUB_TOKEN", "GCP_IDENTITY_POOL", "GCP_SERVICE_ACCOUNT_NAME",
+  "GCS_ACCESS_KEY_ID", "GCS_ACCESS_KEY_SECRET", "GPU_PRIORITY_VAL", "MACOS_KEYCHAIN_PASSWORD",
+  "MACOS_NOTARIZATION_PASSWORD", "MACOS_NOTARIZATION_USERNAME", "MACOS_SIGNING_CERT", "MACOS_SIGNING_CERT_PASSWORD",
+  "MACOS_SIGNING_IDENTITY", "MACOS_SIGNING_PROVISIONING_PROFILE", "PVS_KEY", "PVS_NAME", "RESTREAM_CLIENTID",
+  "RESTREAM_HASH", "SPARKLE_PRIVATE_KEY", "STEAM_PASSWORD", "STEAM_SHARED_SECRET", "STEAM_USER", "TWITCH_CLIENT_ID",
+  "TWITCH_HASH", "YOUTUBE_CLIENTID", "YOUTUBE_CLIENTID_HASH", "YOUTUBE_SECRET", "YOUTUBE_SECRET_HASH",
+]
+permissions = { "actions: write" = ["cache-janitor", "ci-pre"] }
+# setup-soldr is called from the workflows directly; there is no wrapper.
+setup-soldr = { only-in = ".github/workflows", require = {} }
+# Host-specific Rust code lives in each crate's src/platform/ (one cfg_select!
+# in platform/mod.rs) or src/ffi/, enforced by the repo Dylint
+# dylints/ban_platform_cfg_outside_boundary (AGENTS.md, testing-policy.md).
+# Tests, the C oracle and the tools are exempt there too.
+platform-selector = "rust/obs-util/src/platform/mod.rs"
+platform-code = ["rust/*/src/platform/**", "rust/*/src/ffi/**", "rust/*/tests/**", "rust/*/benches/**", "rust/*/build.rs", "rust/obs-c-oracle/**", "rust/tools/**", "dylints/**"]
+
+[publish]
+pypi = { auth = "none", environment = "none", mode = "none" }
+
+# -- Exceptions -------------------------------------------------------------
+# The ci-lint precheck baseline: findings against workflows and scripts that
+# predate this ci.toml, grouped by rule. Each is reported as approved_exception
+# on every run and expires 2027-04-15; burn-down: https://github.com/obs-rust/obs-studio/issues/962.
+
+# CACHE-001: actions/cache is called directly; there is no .github/actions/cache wrapper yet.
+[[exceptions]]
+rule = "CACHE-001"
+path = ".github/actions/services-validator/action.yaml"
+reason = "actions/cache is called directly; there is no .github/actions/cache wrapper yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-001"
+path = ".github/workflows/appimage.yaml"
+reason = "actions/cache is called directly; there is no .github/actions/cache wrapper yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-001"
+path = ".github/workflows/build-project.yaml"
+reason = "actions/cache is called directly; there is no .github/actions/cache wrapper yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-001"
+path = ".github/workflows/sanitizers.yaml"
+reason = "actions/cache is called directly; there is no .github/actions/cache wrapper yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# CACHE-002: Compiler caches are keyed by commit (github.sha/run_id) on purpose: only master saves and restore-keys pick the newest.
+[[exceptions]]
+rule = "CACHE-002"
+path = ".github/actions/services-validator/action.yaml"
+reason = "Compiler caches are keyed by commit (github.sha/run_id) on purpose: only master saves and restore-keys pick the newest."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-002"
+path = ".github/workflows/appimage.yaml"
+reason = "Compiler caches are keyed by commit (github.sha/run_id) on purpose: only master saves and restore-keys pick the newest."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-002"
+path = ".github/workflows/build-project.yaml"
+reason = "Compiler caches are keyed by commit (github.sha/run_id) on purpose: only master saves and restore-keys pick the newest."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-002"
+path = ".github/workflows/sanitizers.yaml"
+reason = "Compiler caches are keyed by commit (github.sha/run_id) on purpose: only master saves and restore-keys pick the newest."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# CACHE-013: astral-sh/setup-uv's default cache; scoping its save to writer flows is tracked in #962.
+[[exceptions]]
+rule = "CACHE-013"
+path = ".github/actions/compatibility-validator/action.yaml"
+reason = "astral-sh/setup-uv's default cache; scoping its save to writer flows is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-013"
+path = ".github/actions/flatpak-manifest-validator/action.yaml"
+reason = "astral-sh/setup-uv's default cache; scoping its save to writer flows is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-013"
+path = ".github/actions/package-obs/action.yaml"
+reason = "astral-sh/setup-uv's default cache; scoping its save to writer flows is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-013"
+path = ".github/actions/services-validator/action.yaml"
+reason = "astral-sh/setup-uv's default cache; scoping its save to writer flows is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-013"
+path = ".github/workflows/appimage.yaml"
+reason = "astral-sh/setup-uv's default cache; scoping its save to writer flows is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "CACHE-013"
+path = ".github/workflows/build-project.yaml"
+reason = "astral-sh/setup-uv's default cache; scoping its save to writer flows is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# CT-006: soldr's cross targets come from setup-soldr inputs and local_gate.py; a [workspace.metadata.soldr] table would change what soldr prefetches.
+[[exceptions]]
+rule = "CT-006"
+path = "Cargo.toml"
+reason = "soldr's cross targets come from setup-soldr inputs and local_gate.py; a [workspace.metadata.soldr] table would change what soldr prefetches."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# GEN-002: Non-Linux jobs are gated by check-event outputs (ci/ci_scope.py), not the ci-lint plan.
+[[exceptions]]
+rule = "GEN-002"
+path = ".github/workflows/analyze-project.yaml"
+reason = "Non-Linux jobs are gated by check-event outputs (ci/ci_scope.py), not the ci-lint plan."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-002"
+path = ".github/workflows/build-project.yaml"
+reason = "Non-Linux jobs are gated by check-event outputs (ci/ci_scope.py), not the ci-lint plan."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-002"
+path = ".github/workflows/check-format.yaml"
+reason = "Non-Linux jobs are gated by check-event outputs (ci/ci_scope.py), not the ci-lint plan."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-002"
+path = ".github/workflows/dispatch.yaml"
+reason = "Non-Linux jobs are gated by check-event outputs (ci/ci_scope.py), not the ci-lint plan."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-002"
+path = ".github/workflows/publish.yaml"
+reason = "Non-Linux jobs are gated by check-event outputs (ci/ci_scope.py), not the ci-lint plan."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-002"
+path = ".github/workflows/scheduled.yaml"
+reason = "Non-Linux jobs are gated by check-event outputs (ci/ci_scope.py), not the ci-lint plan."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-002"
+path = ".github/workflows/sign-windows.yaml"
+reason = "Non-Linux jobs are gated by check-event outputs (ci/ci_scope.py), not the ci-lint plan."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# GEN-005: Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962.
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/build-obs/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/check-changes/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/compatibility-validator/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/flatpak-builder-lint/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/flatpak-manifest-validator/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/generate-docs/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/package-obs/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/qt-xml-validator/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/run-clang-format/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/run-gersemi/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/run-swift-format/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/services-validator/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/setup-macos-codesigning/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/sparkle-appcast/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/steam-upload/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-analysis/Invoke-External.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-analysis/Logger.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-analysis/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-patches/Ensure-Location.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-patches/Invoke-External.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-patches/Logger.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-patches/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-signing/Ensure-Location.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-signing/Invoke-External.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-signing/Logger.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/actions/windows-signing/action.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/Build-Windows.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/Package-Windows.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/build-macos"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/build-ubuntu"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/package-macos"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/package-ubuntu"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/retry"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/utils.pwsh/Ensure-Location.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/utils.pwsh/Install-BuildDependencies.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/utils.pwsh/Invoke-External.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/scripts/utils.pwsh/Logger.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/analyze-project.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/appimage.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/build-project.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/dispatch.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/leaderboard.yml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/ci.yml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/publish.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/push.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/release-rust.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/sanitizers.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/scheduled.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = ".github/workflows/sign-windows.yaml"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/appimage/AppRun"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/appimage/assemble-appdir.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/appimage/check-appdir.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/appimage/set-runpaths.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/appimage/test-appimage.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/appimage/test-apprun-driver-env.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/appimage/verify-recording.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/run-clang-format"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/run-gersemi"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/run-swift-format"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/steam/scripts_macos/launch.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/steam/scripts_windows/install.bat"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "build-aux/steam/scripts_windows/uninstall.bat"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "deps/libcaption/format.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "deps/w32-pthreads/builddmc.bat"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "docs/sphinx/make.bat"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "lint"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "plugins/obs-filters/rnnoise/src/compile.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/linux-validate/build-errors.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/linux-validate/check-skips.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/linux-validate/install-zccache.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/linux-validate/run.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/linux-validate/stale-build.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/linux-validate/validate.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/sanitize/install-ubuntu-deps.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/sanitize/sanitize.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/tier2-validate/validate.ps1"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "rust/tools/tier2-validate/validate.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "test/cmocka/test_pipewire_context_fail.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "test/cmocka/test_pipewire_cursor_hdr.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "test/cmocka/test_pipewire_wrapper.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "test/cmocka/test_pulse_monitor_device.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "test/video-init-failure.sh"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "GEN-005"
+path = "unittest"
+reason = "Upstream OBS build/packaging scripts (zsh, PowerShell, shell); porting CI logic to Python is tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# PY-004: No ruff configuration yet; Python CI scripts are tested by ci/test_*.py.
+[[exceptions]]
+rule = "PY-004"
+path = "pyproject.toml"
+reason = "No ruff configuration yet; Python CI scripts are tested by ci/test_*.py."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# RUN-001: ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list.
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/analyze-project.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/appimage.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/build-project.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/check-format.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/ci-pre.yml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/claim-bot.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/dispatch.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/leaderboard.yml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/ci.yml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/publish.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/push.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/release-rust.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/sanitizers.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/scheduled.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUN-001"
+path = ".github/workflows/sign-windows.yaml"
+reason = "ubuntu-26.04, windows-2025-vs2026 and macos-26 are GitHub-hosted labels outside ci.yml's fleet list."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# RUST-001: release-rust.yaml adds rustup targets for the release build.
+[[exceptions]]
+rule = "RUST-001"
+path = ".github/workflows/release-rust.yaml"
+reason = "release-rust.yaml adds rustup targets for the release build."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# RUST-005: No [rust.tests] test-binary budget declared yet.
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-c-oracle/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-codec/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-data/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-gpu-status/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-graphics/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-hotkey/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-media-io/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-nvenc/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-properties/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-studio-rust/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-005"
+path = "rust/obs-util/tests"
+reason = "No [rust.tests] test-binary budget declared yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# RUST-013: setup-soldr is pinned to the soldr version the toolchain pin is tested with (testing-policy.md).
+[[exceptions]]
+rule = "RUST-013"
+path = ".github/workflows/build-project.yaml"
+reason = "setup-soldr is pinned to the soldr version the toolchain pin is tested with (testing-policy.md)."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-013"
+path = ".github/workflows/release-rust.yaml"
+reason = "setup-soldr is pinned to the soldr version the toolchain pin is tested with (testing-policy.md)."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# RUST-018: No workspace complexity lint configured yet.
+[[exceptions]]
+rule = "RUST-018"
+path = "Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/libobs-rust/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-c-oracle/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-codec/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-data/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-gpu-status-frontend/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-gpu-status/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-graphics/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-hotkey/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-media-io/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-nvenc-plugin/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-nvenc/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-properties/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-properties/tests/parity.rs"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-studio-rust/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "RUST-018"
+path = "rust/obs-util/Cargo.toml"
+reason = "No workspace complexity lint configured yet."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# SEC-001: Reusable OBS build/sign workflows receive the caller's release secrets.
+[[exceptions]]
+rule = "SEC-001"
+path = ".github/workflows/ci.yml"
+reason = "Reusable OBS build/sign workflows receive the caller's release secrets."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-001"
+path = ".github/workflows/push.yaml"
+reason = "Reusable OBS build/sign workflows receive the caller's release secrets."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-001"
+path = ".github/workflows/release-rust.yaml"
+reason = "Reusable OBS build/sign workflows receive the caller's release secrets."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-001"
+path = ".github/workflows/scheduled.yaml"
+reason = "Reusable OBS build/sign workflows receive the caller's release secrets."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# SEC-002: Upstream workflows without a top-level permissions block; tracked in #962.
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/analyze-project.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/appimage.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/build-project.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/check-format.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/claim-bot.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/dispatch.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/leaderboard.yml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/ci.yml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/push.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/release-rust.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/scheduled.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "SEC-002"
+path = ".github/workflows/sign-windows.yaml"
+reason = "Upstream workflows without a top-level permissions block; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# TAG-003: PR runs do not read title tags, so a title edit need not re-trigger them.
+[[exceptions]]
+rule = "TAG-003"
+path = ".github/workflows/ci.yml"
+reason = "PR runs do not read title tags, so a title edit need not re-trigger them."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# TOOL-001: release-rust.yaml adds rustup targets for the release build.
+[[exceptions]]
+rule = "TOOL-001"
+path = ".github/workflows/release-rust.yaml"
+reason = "release-rust.yaml adds rustup targets for the release build."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# TOOL-002: cargo clippy without --locked; tracked in #962.
+[[exceptions]]
+rule = "TOOL-002"
+path = ".github/workflows/build-project.yaml"
+reason = "cargo clippy without --locked; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# TOOL-003: uv run executes PEP 723 scripts; the repository has no Python project to build.
+[[exceptions]]
+rule = "TOOL-003"
+path = ".github/workflows/appimage.yaml"
+reason = "uv run executes PEP 723 scripts; the repository has no Python project to build."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "TOOL-003"
+path = ".github/workflows/build-project.yaml"
+reason = "uv run executes PEP 723 scripts; the repository has no Python project to build."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "TOOL-003"
+path = ".github/workflows/claim-bot.yaml"
+reason = "uv run executes PEP 723 scripts; the repository has no Python project to build."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "TOOL-003"
+path = ".github/workflows/leaderboard.yml"
+reason = "uv run executes PEP 723 scripts; the repository has no Python project to build."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# WF-001: Upstream jobs without timeout-minutes; tracked in #962.
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/analyze-project.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/appimage.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/build-project.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/check-format.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/dispatch.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/ci.yml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/publish.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/push.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/release-rust.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/sanitizers.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/scheduled.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-001"
+path = ".github/workflows/sign-windows.yaml"
+reason = "Upstream jobs without timeout-minutes; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# WF-002: Upstream workflows without top-level concurrency; tracked in #962.
+[[exceptions]]
+rule = "WF-002"
+path = ".github/workflows/analyze-project.yaml"
+reason = "Upstream workflows without top-level concurrency; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-002"
+path = ".github/workflows/build-project.yaml"
+reason = "Upstream workflows without top-level concurrency; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-002"
+path = ".github/workflows/check-format.yaml"
+reason = "Upstream workflows without top-level concurrency; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-002"
+path = ".github/workflows/claim-bot.yaml"
+reason = "Upstream workflows without top-level concurrency; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-002"
+path = ".github/workflows/dispatch.yaml"
+reason = "Upstream workflows without top-level concurrency; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-002"
+path = ".github/workflows/push.yaml"
+reason = "Upstream workflows without top-level concurrency; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+[[exceptions]]
+rule = "WF-002"
+path = ".github/workflows/sign-windows.yaml"
+reason = "Upstream workflows without top-level concurrency; tracked in #962."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"
+
+# WF-003: continue-on-error on optional upstream steps (Flatpak, analysis).
+[[exceptions]]
+rule = "WF-003"
+path = ".github/workflows/build-project.yaml"
+reason = "continue-on-error on optional upstream steps (Flatpak, analysis)."
+issue = "https://github.com/obs-rust/obs-studio/issues/962"
+expires = "2027-04-15"

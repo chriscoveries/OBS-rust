@@ -9,4 +9,4 @@
 #define buffered_file_serializer_init oracle_buffered_file_serializer_init
 #define buffered_file_serializer_free oracle_buffered_file_serializer_free
 
-#include "util/buffered-file-serializer.c"
+#include "util/buffered-file-serializer.c.h"

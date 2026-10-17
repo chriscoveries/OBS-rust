@@ -6,7 +6,7 @@
 
 #define video_format_from_fourcc oracle_video_format_from_fourcc
 
-#include "media-io/video-fourcc.c"
+#include "media-io/video-fourcc.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 size_t oracle_video_format_size(void);

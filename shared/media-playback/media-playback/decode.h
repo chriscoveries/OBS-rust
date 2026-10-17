@@ -22,19 +22,8 @@ extern "C" {
 
 #include <util/deque.h>
 
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4244)
-#pragma warning(disable : 4204)
-#endif
-
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <util/threading.h>
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
+/* ffmpeg headers, with MSVC warnings 4244/4204 silenced around them only. */
+#include "platform-decode-ffmpeg.h"
 
 struct mp_media;
 
@@ -56,6 +45,7 @@ struct mp_decode {
 	AVFrame *frame;
 	enum AVPixelFormat hw_format;
 	bool got_first_keyframe;
+	bool key_from_packet;
 	bool frame_ready;
 	bool eof;
 	bool hw;
@@ -74,6 +64,7 @@ extern void mp_decode_clear_packets(struct mp_decode *decode);
 
 extern void mp_decode_push_packet(struct mp_decode *decode, AVPacket *pkt);
 extern bool mp_decode_next(struct mp_decode *decode);
+extern bool mp_decode_is_keyframe(const struct mp_decode *decode, const AVFrame *frame);
 extern void mp_decode_flush(struct mp_decode *decode);
 
 #ifdef __cplusplus

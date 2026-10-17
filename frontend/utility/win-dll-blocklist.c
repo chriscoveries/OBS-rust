@@ -23,6 +23,11 @@
 #include "detours.h"
 #include "obs.h"
 
+/* From <ntdef.h>, which a lean <windows.h> leaves out (on Windows arm64 the
+ * precompiled header's libobs headers include it with WIN32_LEAN_AND_MEAN
+ * first). An identical typedef where the full header defines it is fine. */
+typedef LONG NTSTATUS;
+
 // Undocumented NT structs / function definitions !
 typedef enum _SECTION_INHERIT { ViewShare = 1, ViewUnmap = 2 } SECTION_INHERIT;
 

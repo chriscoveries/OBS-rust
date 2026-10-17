@@ -10,6 +10,9 @@ include(cmake/cstrcache.cmake)
 find_package(SWIG 4 REQUIRED)
 
 add_library(obs-scripting SHARED)
+# The Lua and Python SWIG runtimes it compiles both define swig_type_info and
+# its helpers, so its sources can't share a unity batch.
+set_property(TARGET obs-scripting PROPERTY OBS_DISABLE_UNITY_BUILD ON)
 add_library(OBS::scripting ALIAS obs-scripting)
 
 include(cmake/lua.cmake)

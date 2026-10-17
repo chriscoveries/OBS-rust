@@ -7,7 +7,7 @@ if(OS_LINUX AND TARGET OBS::libobs-opengl AND TARGET OBS::media-playback)
   add_executable(
     test_media_restart_stale_frame
     test_media_restart_stale_frame.c
-    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-source.c"
+    "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/obs-ffmpeg-source.c.h"
   )
   target_compile_definitions(
     test_media_restart_stale_frame

@@ -10,18 +10,7 @@ find_package(
 add_library(linux-capture MODULE)
 add_library(OBS::capture ALIAS linux-capture)
 
-target_sources(
-  linux-capture
-  PRIVATE
-    linux-capture.c
-    xcomposite-input.c
-    xcomposite-input.h
-    xcursor-xcb.c
-    xcursor-xcb.h
-    xhelpers.c
-    xhelpers.h
-    xshm-input.c
-)
+target_sources(linux-capture PRIVATE build/linux-capture.nix+.h.c xcomposite-input.h xcursor-xcb.h xhelpers.h)
 
 target_link_libraries(
   linux-capture

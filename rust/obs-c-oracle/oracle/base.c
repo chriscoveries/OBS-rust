@@ -14,4 +14,4 @@
 #define blog oracle_blog
 #define bcrash oracle_bcrash
 
-#include "util/base.c"
+#include "util/base.c.h"

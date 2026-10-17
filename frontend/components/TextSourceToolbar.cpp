@@ -10,7 +10,7 @@
 
 #include "moc_TextSourceToolbar.cpp"
 
-extern void MakeQFont(obs_data_t *font_obj, QFont &font, bool limit = false);
+extern void MakeQFont(obs_data_t *font_obj, QFont &font, bool limit);
 extern QColor color_from_int(long long val);
 extern long long color_to_int(QColor color);
 
@@ -27,7 +27,7 @@ TextSourceToolbar::TextSourceToolbar(QWidget *parent, OBSSource source)
 	bool read_from_file = obs_data_get_bool(settings, ft2 ? "from_file" : "read_from_file");
 
 	OBSDataAutoRelease font_obj = obs_data_get_obj(settings, "font");
-	MakeQFont(font_obj, font);
+	MakeQFont(font_obj, font, false);
 
 	// Use "color1" if it's a freetype source and "color" elsewise
 	unsigned int val = (unsigned int)obs_data_get_int(

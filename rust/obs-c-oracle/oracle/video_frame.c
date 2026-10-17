@@ -12,7 +12,7 @@
 #define video_frame_init oracle_video_frame_init
 #define video_frame_copy oracle_video_frame_copy
 
-#include "media-io/video-frame.c"
+#include "media-io/video-frame.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 void oracle_video_frame_free(struct video_frame *frame);

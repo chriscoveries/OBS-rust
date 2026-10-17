@@ -28,7 +28,7 @@ class AppConfigIdentityTest(unittest.TestCase):
         app = (ROOT / "frontend/OBSApp.cpp").read_text()
         initialization = app.split("void OBSApp::AppInit()", 1)[1]
         initialization = initialization[
-            initialization.index("#ifdef _WIN32") : initialization.index(
+            initialization.index("\tif (!InitializeAppIdentity())") : initialization.index(
                 "\n\tif (!MigrateRustConfiguration"
             )
         ]
@@ -104,7 +104,8 @@ class AppConfigIdentityTest(unittest.TestCase):
         harness.write_text(
             "#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n#include <string>\n"
             + identity_include
-            + '#define ALLOW_PORTABLE_MODE 1\n#define CONFIG_PATH "/portable/config"\n'
+            + 'bool IsPortableModeAllowed() { return true; }\n'
+            + 'const char *GetPortableConfigBasePath() { return "/portable"; }\n'
             + "bool portable_mode = false;\n"
             + "char *bstrdup(const char *s) { return strdup(s); }\n"
             + "int os_get_config_path(char *p, size_t n, const char *s) {\n"
@@ -358,7 +359,7 @@ class InstalledAppIdentityTest(unittest.TestCase):
                 "Exec=obs-studio-rust-gui\nIcon=io.github.obs_rust.OBSStudioRust\nStartupWMClass=obs-studio-rust-gui\n"
             )
             script = (
-                'APPDIR="$1"\nID="$2"\nVERSION_ID="$3"\nVERSION_OUT="OBS-Studio-Rust 0.1.0"\n'
+                'APPDIR="$1"\nID="$2"\nVERSION_ID="$3"\nVERSION_OUT="OBS-Studio-Rust 0.1.0"\nVERSION_LINE="$VERSION_OUT"\n'
                 'FAILED=()\nfail() { FAILED+=("$*"); }\nfinish() { exit 7; }\n'
                 + block
                 + '\nprintf "%s\\n" "$ID"\n'

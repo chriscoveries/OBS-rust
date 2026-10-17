@@ -74,7 +74,11 @@ done
 
 # --- gconv and Qt -----------------------------------------------------------
 GCONV="$(var GCONV_PATH)"
-ls "$GCONV"/gconv-modules* >/dev/null 2>&1 || error "no gconv-modules index in $GCONV"
+# gconv belongs to glibc: checked only when the AppImage bundles glibc (built
+# above the 2.28 floor). Without it, the host's glibc brings its own (#926).
+if [ -d "$APPDIR/glibc" ]; then
+    ls "$GCONV"/gconv-modules* >/dev/null 2>&1 || error "no gconv-modules index in $GCONV"
+fi
 # X11 and Wayland: the platform plugins and what the Wayland one needs to show
 # a window (xdg-shell) and draw into it (wayland-egl).
 QT_PLUGINS="$(var QT_PLUGIN_PATH)"

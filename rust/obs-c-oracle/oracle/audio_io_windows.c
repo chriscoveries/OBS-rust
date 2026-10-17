@@ -55,7 +55,7 @@
 #define audio_input_free oracle_audio_input_free
 #define valid_audio_params oracle_valid_audio_params
 
-#include "media-io/audio-io.c"
+#include "media-io/audio-io.c.h"
 
 /* ------------------------------------------------------------------ */
 /* stubs/impls for libobs symbols absent from the oracle link          */

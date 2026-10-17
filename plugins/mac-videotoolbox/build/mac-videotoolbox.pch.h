@@ -1,0 +1,21 @@
+/* Precompiled header (BUILD.md) for the plugins/mac-videotoolbox unity groups
+ * mac-videotoolbox.macos. C. Every implementation file in them includes this header and
+ * nothing else: the includes and macro setup below are theirs, in group and
+ * file order. */
+
+#pragma once
+
+/* encoder.c */
+#include <obs-module.h>
+#include <util/darray.h>
+#include <util/platform.h>
+#include <obs-avc.h>
+
+#include <CoreFoundation/CoreFoundation.h>
+#include <VideoToolbox/VideoToolbox.h>
+#include <VideoToolbox/VTVideoEncoderList.h>
+#include <CoreMedia/CoreMedia.h>
+
+#include <util/apple/cfstring-utils.h>
+
+#include <assert.h>

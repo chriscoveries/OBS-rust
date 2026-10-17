@@ -10,6 +10,8 @@ _base_log_literal
 # utf8.c is not exported by the C libobs, so its Rust shims are hidden too.
 _utf8_to_wchar
 _wchar_to_utf8
+# obs-hotkey-name-map.c: obs.c calls it on shutdown; not EXPORT.
+_obs_hotkey_name_map_free
 # platform-nix.c is not exported by the C libobs.
 _get_plugin_info
 # platform-windows.c is not exported for these two.
@@ -22,6 +24,8 @@ _video_output_inc_texture_frames
 _video_output_inc_texture_skipped_frames
 _video_output_create_with_frame_rate_divisor
 _video_output_free_frame_rate_divisor
+# obs-data.c: json_decref is a static inline. The glue is not EXPORT.
+_obs_data_json_decref
 # compiler-rt @available helpers (__isOSVersionAtLeast,
 # __isPlatformVersionAtLeast) that Rust's compiler_builtins brings in; the C
 # build does not export them. Wildcards: no error if absent.

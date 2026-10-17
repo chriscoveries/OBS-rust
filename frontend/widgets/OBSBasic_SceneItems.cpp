@@ -36,7 +36,7 @@
 using namespace std;
 
 namespace {
-bool isHiddenInMixer(obs_source_t *source)
+bool SceneItemsHiddenInMixer(obs_source_t *source)
 {
 	OBSDataAutoRelease priv_settings = obs_source_get_private_settings(source);
 	bool hidden = obs_data_get_bool(priv_settings, "mixer_hidden");
@@ -50,7 +50,7 @@ void setHiddenInMixer(obs_source_t *source, bool hidden)
 	obs_data_set_bool(priv_settings, "mixer_hidden", hidden);
 }
 
-std::string getNewSourceName(std::string_view name)
+std::string SceneItemsNewSourceName(std::string_view name)
 {
 	std::string newName{name};
 	int suffix = 1;
@@ -247,7 +247,7 @@ void OBSBasic::ResetAudioDevice(const char *sourceId, const char *deviceId, cons
 		}
 
 	} else if (!disable) {
-		std::string name = getNewSourceName(deviceDesc);
+		std::string name = SceneItemsNewSourceName(deviceDesc);
 
 		settings = obs_data_create();
 		obs_data_set_string(settings, "device_id", deviceId);
@@ -668,7 +668,7 @@ void OBSBasic::CreateSourcePopupMenu(int idx, bool preview)
 			popup.addMenu(AddBackgroundColorMenu(colorMenu, colorWidgetAction, colorSelect, sceneItem));
 
 			if (hasAudio) {
-				bool isHidden = isHiddenInMixer(source);
+				bool isHidden = SceneItemsHiddenInMixer(source);
 
 				QAction *actionHideMixer =
 					popup.addAction(QTStr("HideMixer"), this, [source, isHidden]() {

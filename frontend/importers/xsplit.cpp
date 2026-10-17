@@ -197,7 +197,7 @@ static Json::object parse_slideshow(QString &config)
 			    {"files", files_out}};
 }
 
-static bool source_name_exists(const string &name, const Json::array &sources)
+static bool xsplit_source_name_exists(const string &name, const Json::array &sources)
 {
 	for (size_t i = 0; i < sources.size(); i++) {
 		if (sources.at(i)["name"].string_value() == name) {
@@ -245,7 +245,7 @@ static void parse_items(QDomNode &item, Json::array &items, Json::array &sources
 		}
 
 		temp_name = name;
-		while (source_name_exists(temp_name, sources)) {
+		while (xsplit_source_name_exists(temp_name, sources)) {
 			string new_name = name + " " + to_string(x++);
 			temp_name = new_name;
 		}

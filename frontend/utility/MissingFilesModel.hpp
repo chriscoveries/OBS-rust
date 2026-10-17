@@ -20,11 +20,15 @@
 #include <QAbstractTableModel>
 #include <QIcon>
 
-// TODO: Fix redefinition error of due to clash with enums defined in importer code.
+/* Enumerators stay out of the global scope: a unity build puts this header
+ * next to other models' Count/State/EntryStateRole. */
+namespace missing_files_model {
 enum MissingFilesRole { EntryStateRole = Qt::UserRole, NewPathsToProcessRole };
 
-// TODO: Fix redefinition error of due to clash with enums defined in importer code.
 enum MissingFilesColumn { Source, OriginalPath, NewPath, State, Count };
+} // namespace missing_files_model
+using missing_files_model::MissingFilesRole;
+using missing_files_model::MissingFilesColumn;
 
 enum MissingFilesState { Missing, Found, Replaced, Cleared };
 

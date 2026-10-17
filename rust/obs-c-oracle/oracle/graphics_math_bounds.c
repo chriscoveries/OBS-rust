@@ -2,7 +2,7 @@
  * its global symbols renamed to oracle_* (graphics_math_names.h). */
 #include "graphics_math_names.h"
 
-#include "graphics/bounds.c"
+#include "graphics/bounds.c.h"
 
 #include <stddef.h>
 

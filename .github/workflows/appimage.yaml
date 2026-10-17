@@ -5,7 +5,9 @@ run-name: AppImage build and portability test (${{ github.ref_name }}) 📦
 #   workflow_call   -> release-rust.yaml builds it for the daily beta and, with
 #                      publish_continuous, refreshes the rolling "continuous"
 #                      pre-release (daily, not per master push: #436)
-#   PR / dispatch   -> artifact only
+#   PR / dispatch   -> artifact only (PRs reach it through ci.yml's
+#                      appimage job: zackees/ci.yml GEN-008 keeps
+#                      pull_request in one workflow file)
 on:
   push:
     tags:
@@ -15,7 +17,7 @@ on:
   workflow_call:
     inputs:
       rust_libobs:
-        description: Build libobs with the Rust ports (ENABLE_RUST_LIBOBS)
+        description: Build as OBS-Studio-Rust (ENABLE_RUST_LIBOBS identity; libobs is the C build, #1065)
         type: boolean
         required: false
         default: true
@@ -34,18 +36,23 @@ on:
         type: string
         required: false
         default: ''
-  pull_request:
-    paths:
-      - 'build-aux/appimage/**'
-      - '.github/workflows/appimage.yaml'
+      platform_tests:
+        description: Run the built AppImage on the release-gate distributions (slow; release-rust.yaml only)
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
     inputs:
       rust_libobs:
-        description: Build libobs with the Rust ports (ENABLE_RUST_LIBOBS)
+        description: Build as OBS-Studio-Rust (ENABLE_RUST_LIBOBS identity; libobs is the C build, #1065)
         type: boolean
         default: true
       qsv:
         description: Include the Intel QSV plugin (probes the Intel GPU through the host's libvpl runtime at startup; off until verified on real hardware)
+        type: boolean
+        default: false
+      platform_tests:
+        description: Run the built AppImage on the release-gate distributions (slow)
         type: boolean
         default: false
 permissions:
@@ -60,10 +67,8 @@ jobs:
     outputs:
       rust: ${{ steps.configure.outputs.rust }}
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_BASEDIR: ${{ github.workspace }}
-      CCACHE_COMPRESS: '1'
-      CCACHE_MAXSIZE: 2G
+      # zccache is the ubuntu-ci preset's compiler launcher (build.py deps).
+      ZCCACHE_CACHE_DIR: ${{ github.workspace }}/.zccache
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -75,12 +80,12 @@ jobs:
       # Caches are restored on every run and saved even when a later step fails, so a
       # red build still leaves its compiled objects behind for the next attempt.
       # Keys carry the run id (caches are immutable); restore-keys pick the newest.
-      - name: Restore ccache
+      - name: Restore zccache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: .ccache
-          key: ccache-appimage-${{ github.run_id }}
-          restore-keys: ccache-appimage-
+          path: .zccache
+          key: zccache-appimage-${{ github.run_id }}
+          restore-keys: zccache-appimage-
 
       - name: Restore cargo
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -94,75 +99,16 @@ jobs:
             cargo-appimage-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             cargo-appimage-
 
-      - name: Restore apt packages
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: .apt-cache
-          key: apt-appimage-${{ hashFiles('.github/workflows/appimage.yaml') }}-${{ github.run_id }}
-          restore-keys: apt-appimage-${{ hashFiles('.github/workflows/appimage.yaml') }}-
-
-      - name: Install build dependencies 🛍️
-        timeout-minutes: 10 # a hang here must fail with logs rather than sit for hours
-        env:
-          DEBIAN_FRONTEND: noninteractive
-          NEEDRESTART_SUSPEND: '1' # never restart runner services in the middle of the install
-        run: |
-          sudo apt-get update
-          mkdir -p .apt-cache/partial
-          # Same set as .github/scripts/utils.zsh/setup_ubuntu, minus CEF/VLC/Python
-          # (not shipped in the AppImage), plus tools for packaging, plus what the
-          # bundled libpipewire loads at runtime: its modules (libpipewire-0.3-modules)
-          # and client.conf (pipewire-bin). assemble-appdir.sh fails without them
-          # (obs-rust/obs-studio#426).
-          sudo -E apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 -o Dir::Cache::archives="$PWD/.apt-cache" \
-            build-essential cmake ninja-build ccache pkg-config git curl ca-certificates \
-            patchelf desktop-file-utils file squashfs-tools zsync \
-            libglib2.0-dev extra-cmake-modules libcurl4-openssl-dev \
-            libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev \
-            libswresample-dev libswscale-dev libjansson-dev libx11-xcb-dev libgles2-mesa-dev \
-            libwayland-dev libpipewire-0.3-dev libpulse-dev libx264-dev libmbedtls-dev \
-            libpipewire-0.3-modules pipewire-bin \
-            libgl1-mesa-dev libgbm-dev ffmpeg uthash-dev libsimde-dev libluajit-5.1-dev swig libxss-dev libglvnd-dev \
-            libx11-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xinerama0-dev libxcb-composite0-dev \
-            libxinerama-dev libxcb1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libatk1.0-dev libatk-bridge2.0-dev libxcomposite-dev libxdamage-dev \
-            libasound2-dev libfdk-aac-dev libfontconfig-dev libfreetype6-dev libjack-jackd2-dev \
-            libsndio-dev libspeexdsp-dev libudev-dev libv4l-dev libva-dev libpci-dev libdrm-dev \
-            nlohmann-json3-dev libwebsocketpp-dev libasio-dev libqrcodegencpp-dev \
-            libffmpeg-nvenc-dev librist-dev libsrt-openssl-dev libvpl-dev libvpl2 \
-            qt6-base-dev qt6-base-private-dev libqt6svg6-dev qt6-svg-plugins qt6-wayland \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
-            libxcb-shape0 libxcb-xkb1 libxcb-sync1 libxcb-xinerama0
-          sudo chown -R "$(id -u):$(id -g)" .apt-cache # apt ran as root; the cache action must read it
-
+      # The build steps live in build-aux/appimage/build.py (one call per step, the
+      # same scripts), so `bosn run --task appimage` can run them locally (#899).
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
-      - name: Build libavutil with host VA compatibility
-        run: |
-          # Keep Ubuntu's complete feature configuration. Only the optional
-          # newer VA mapping API is adapted; exports/backends are audited.
-          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
-          sudo apt-get update -qq
-          sudo -E apt-get -y -qq -o DPkg::Lock::Timeout=120 -o Dir::Cache::archives="$PWD/.apt-cache" build-dep --arch-only ffmpeg=7:8.0.1-3ubuntu2
-          sudo chown -R "$(id -u):$(id -g)" .apt-cache
-          uv run --no-project build-aux/appimage/build_vaapi_compat.py avutil-compat
-          # FFmpeg's recipe replaces this with libsrt-gnutls-dev, which lacks
-          # the library name OBS's finder expects. Restore OBS's build input
-          # after the audited avutil build; keep MPEG-TS/SRT enabled.
-          sudo -E apt-get -y -qq -o DPkg::Lock::Timeout=120 -o Dir::Cache::archives="$PWD/.apt-cache" install libsrt-openssl-dev
-          sudo chown -R "$(id -u):$(id -g)" .apt-cache
-
-      - name: Determine version 🏷️
-        run: |
-          # Same tag filter as cmake/common/versionconfig.cmake: this repository also carries
-          # non-OBS tags (obs-studio-rust-v...), which must not become the OBS version.
-          # In a fork or shallow clone without OBS release tags `git describe` yields a bare
-          # commit hash, which CMake rejects as a project VERSION, so use a dev version then.
-          if desc="$(git describe --tags --match '[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)" && [[ "$desc" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "OBS_VERSION=$desc" >> "$GITHUB_ENV"
-          else
-            echo "OBS_VERSION=0.0.0-g${GITHUB_SHA::9}" >> "$GITHUB_ENV"
-          fi
+      # The glibc 2.28 build image (#926): AlmaLinux 8 packages plus the prebuilt
+      # dependencies from obs-rust/obs-studio-libs (deps.lock.json); every build
+      # step below runs in it through manylinux/run.sh.
+      - name: Build the glibc 2.28 image 🐳
+        timeout-minutes: 20
+        run: docker build -f build-aux/appimage/manylinux/Dockerfile -t obs-appimage-228 .
 
       - name: Configure 🔧
         id: configure
@@ -170,33 +116,24 @@ jobs:
           # Keep absent inputs (push, tag, pull_request) distinct from explicit
           # false: loose Boolean equality would treat both as zero.
           RUST_LIBOBS: ${{ format('{0}', inputs.rust_libobs) != 'false' }}
-          QSV: ${{ github.event_name == 'workflow_dispatch' && inputs.qsv }}
+          # qsv exists only as a workflow_dispatch input; called from release-rust.yaml
+          # (workflow_call) it is absent, which must mean false, never ''.
+          QSV: ${{ inputs.qsv == true }}
           OBS_RUST_VERSION: ${{ inputs.rust_version }}
+        # Determine version 🏷️ + Configure: the OBS version is only used here.
         run: |
-          echo "rust=${RUST_LIBOBS^^}" >> "$GITHUB_OUTPUT" # the tests check the build really has it
-          cmake --preset ubuntu-ci \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF \
-            -DCMAKE_INSTALL_PREFIX=/usr \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DOBS_VERSION_OVERRIDE="${OBS_VERSION}" \
-            -DENABLE_RELOCATABLE=ON \
-            -DENABLE_RUST_LIBOBS="${RUST_LIBOBS^^}" \
-            -DENABLE_QSV11="${QSV^^}" \
-            -DENABLE_BROWSER=OFF -DENABLE_VLC=OFF -DENABLE_WEBRTC=OFF -DENABLE_AJA=OFF \
-            -DENABLE_SCRIPTING_PYTHON=OFF
+          build-aux/appimage/manylinux/run.sh uv run build-aux/appimage/build.py --base manylinux --steps version,configure \
+            --rust-libobs "$RUST_LIBOBS" --qsv "$QSV" --rust-version "$OBS_RUST_VERSION"
 
       - name: Build 🧱
-        run: |
-          cmake --build build_ubuntu
-          ccache -s
+        run: build-aux/appimage/manylinux/run.sh uv run build-aux/appimage/build.py --base manylinux --steps build
 
-      - name: Save ccache
+      - name: Save zccache
         if: always()
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: .ccache
-          key: ccache-appimage-${{ github.run_id }}
+          path: .zccache
+          key: zccache-appimage-${{ github.run_id }}
 
       - name: Save cargo
         if: always()
@@ -208,56 +145,33 @@ jobs:
             build_ubuntu/cargo
           key: cargo-appimage-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.run_id }}
 
-      - name: Save apt packages
-        if: always()
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: .apt-cache
-          key: apt-appimage-${{ hashFiles('.github/workflows/appimage.yaml') }}-${{ github.run_id }}
-
       - name: Assemble AppDir 📁
-        run: |
-          DESTDIR="$PWD/AppDir" cmake --install build_ubuntu
-          build-aux/appimage/assemble-appdir.sh AppDir avutil-compat/libavutil.so.60
+        run: build-aux/appimage/manylinux/run.sh uv run build-aux/appimage/build.py --base manylinux --steps appdir
 
       - name: Create AppImage 📀
         env:
-          # A tagged release (not the rolling "continuous" build), verified by checksum. To
-          # update: change both, e.g. sha256sum of .../releases/download/<tag>/appimagetool-x86_64.AppImage
-          APPIMAGETOOL_VERSION: '1.9.1'
-          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
-        run: |
-          curl -fsSLo appimagetool "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
-          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
-          chmod +x appimagetool
-          # Runners have no /dev/fuse: extract appimagetool instead of running it.
-          ./appimagetool --appimage-extract >/dev/null
-          # A build published as the "continuous" pre-release (release job) carries
-          # update information: AppImageUpdate and friends can then fetch the next
-          # continuous build as a delta against this one (.zsync).
-          update=()
-          if [ "${{ inputs.publish_continuous }}" = true ]; then
-            update=(-u "gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|continuous|OBS-Studio-Rust-*-linux-x86_64.AppImage.zsync")
-          fi
-          version="$(AppDir/AppRun --version)"
-          asset="$(uv run --no-project build-aux/appimage/asset_metadata.py name --version "$version")"
-          ARCH=x86_64 squashfs-root/AppRun --no-appstream "${update[@]}" AppDir "$asset"
-          ls -lh OBS-Studio-*
+          PUBLISH_CONTINUOUS: ${{ inputs.publish_continuous == true }}
+        run: build-aux/appimage/manylinux/run.sh uv run build-aux/appimage/build.py --base manylinux --steps appimage --publish-continuous "$PUBLISH_CONTINUOUS"
 
       - name: Build the test helper 🧰
-        # Run by test-appimage.sh next to obs, with the AppImage's own loader and
-        # (through the same relative DT_RPATH obs has) its own libraries: runtime
-        # probes, a fake ScreenCast/Camera portal and the test tone.
+        # Run by test-appimage.sh next to obs, with (through the same relative
+        # DT_RPATH obs has) the AppImage's own libraries: runtime probes, a fake
+        # ScreenCast/Camera portal and the test tone. Built in the glibc 2.28
+        # image so they run on every host the AppImage does.
         run: |
-          gcc -O2 -Wall -Wextra -Werror -o obs-appimage-testkit build-aux/appimage/testkit.c \
-            $(pkg-config --cflags --libs gio-unix-2.0 libpipewire-0.3 libpulse) -lm \
-            -Wl,--disable-new-dtags -Wl,-rpath,'$ORIGIN/../lib'
-          gcc -O2 -Wall -Wextra -Werror -o obs-appimage-gpu-test build-aux/appimage/gpu-test.c \
-            $(pkg-config --cflags --libs gbm egl glesv2 libavcodec libavformat libavutil) \
-            -Wl,--disable-new-dtags -Wl,-rpath,'$ORIGIN/../lib'
+          build-aux/appimage/manylinux/run.sh sh -c '
+            gcc -O2 -Wall -Wextra -Werror -fPIE -pie -o obs-appimage-testkit build-aux/appimage/testkit.c \
+              $(pkg-config --cflags --libs gio-unix-2.0 libpipewire-0.3 libpulse) -lm \
+              -Wl,--disable-new-dtags -Wl,-rpath,"\$ORIGIN/../lib"
+            gcc -O2 -Wall -Wextra -Werror -fPIE -pie -o obs-appimage-gpu-test build-aux/appimage/gpu-test.c \
+              $(pkg-config --cflags --libs gbm egl glesv2 libavcodec libavformat libavutil) \
+              -Wl,--disable-new-dtags -Wl,-rpath,"\$ORIGIN/../lib"'
+          sudo apt-get install -y --no-install-recommends ffmpeg >/dev/null
           ffmpeg -v error -f lavfi -i testsrc2=size=128x72:rate=12 -frames:v 12 \
             -c:v libx264 -pix_fmt yuv420p -bf 0 -crf 18 gpu-h264.mp4
           ffmpeg -v error -i gpu-h264.mp4 -pix_fmt yuv420p -f rawvideo gpu-reference.yuv
+          # The container wrote as root; the upload and cache steps read as the runner.
+          sudo chown -R "$(id -u):$(id -g)" .
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -282,18 +196,32 @@ jobs:
           path: obs-appimage-testkit
           if-no-files-found: error
 
+  # The release gate: the AppImage built once above, run as shipped on each
+  # distribution. Slow, so never in PR CI: only when a release is being made
+  # (release-rust.yaml passes platform_tests, and a tag push publishes).
   test:
     name: Test on ${{ matrix.image }} 🧪
     needs: build
+    if: github.event_name == 'push' || inputs.platform_tests
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
-        # Different glibc versions and families, none with OBS dependencies installed:
-        # Debian 13 (glibc 2.41), Ubuntu 22.04 (2.35, older than the build host), Fedora, and
-        # Arch Linux (rolling: glibc 2.44+, newer than the 2.43 the AppImage is built with, whose
-        # Mesa/LLVM cannot load against an older glibc; obs-rust/obs-studio#621).
-        image: ['debian:trixie-slim', 'ubuntu:22.04', 'fedora:latest', 'archlinux:latest']
+        # None with OBS dependencies installed. The AppImage is built against glibc 2.28
+        # and bundles none (#926): AlmaLinux 8 (2.28, the oldest supported), Ubuntu 22.04
+        # (2.35, an older LTS), and Arch Linux (rolling: the newest glibc and Mesa). NixOS
+        # (no FHS at all) is the test-nixos job below.
+        # AlmaLinux 8 runs the bundle and first-start scenarios: its desktop is
+        # PulseAudio/X11 with PipeWire 0.3.6 and no session manager, so the PipeWire
+        # capture/camera scenarios have no desktop to imitate there. Its job is the
+        # floor: every bundled library loads on glibc 2.28 and OBS starts.
+        include:
+          - image: almalinux:8
+            scenarios: bundle first-start
+          - image: ubuntu:22.04
+            scenarios: bundle first-start probes saved-profile saved-profile-custom saved-profile-existing
+          - image: archlinux:latest
+            scenarios: bundle first-start probes saved-profile saved-profile-custom saved-profile-existing
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -350,7 +278,7 @@ jobs:
         run: |
           mkdir -p results pkgcache/apt pkgcache/lists pkgcache/dnf pkgcache/pacman
           status=0
-          for scenario in bundle first-start probes saved-profile saved-profile-custom saved-profile-existing; do
+          for scenario in ${{ matrix.scenarios }}; do
             echo "::group::Scenario: $scenario"
             docker run --rm --cap-add SYS_PTRACE \
               ${{ matrix.image == 'debian:trixie-slim' && '-e HOSTILE_QT=1' || '' }} \
@@ -376,7 +304,8 @@ jobs:
           build-aux/appimage/verify-recording.sh --self-test
           # (test-appimage.sh allows a run without the test producers only on
           # Ubuntu 22.04, and fails anywhere else)
-          for scenario in saved-profile saved-profile-custom saved-profile-existing; do
+          for scenario in ${{ matrix.scenarios }}; do
+            case "$scenario" in saved-profile*) ;; *) continue ;; esac # only these record
             if [ -f "results/$scenario/recording-skipped.txt" ]; then
               echo "::notice::no recording on ${{ matrix.image }} ($scenario): $(cat "results/$scenario/recording-skipped.txt")"
             else
@@ -402,9 +331,36 @@ jobs:
           path: results
           if-no-files-found: ignore
 
+  test-nixos:
+    name: Test on NixOS 🧪
+    needs: build
+    if: github.event_name == 'push' || inputs.platform_tests
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: build-aux/appimage
+      # The same AppImage the other lanes test: nothing is rebuilt here.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: obs-studio-appimage
+      - name: Run through appimageTools.wrapType2 on NixOS 🐳
+        run: |
+          # bubblewrap (inside wrapType2) needs user namespaces: --privileged.
+          docker run --rm --privileged -v "$PWD:/work" -w /work \
+            nixos/nix@sha256:e623d73af9cac82d1b50784c83e0cf2a4b83bfd2cfe8d5b67809a2fc94e043ac \
+            bash build-aux/appimage/test-appimage-nixos.sh OBS-Studio-*-linux-x86_64.AppImage results/nixos
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: appimage-test-nixos
+          path: results/nixos
+          if-no-files-found: ignore
+
   release:
     name: Publish to GitHub Releases 🚀
-    needs: [build, test]
+    needs: [build, test, test-nixos]
     # Only after the AppImage has run on every distribution in the matrix
     # (test-appimage.sh: bundle check, first start, runtime probes, and a saved
     # profile with PipeWire screen capture, camera and microphone recording): a

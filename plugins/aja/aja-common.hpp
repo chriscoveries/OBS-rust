@@ -1,3 +1,5 @@
+#pragma once
+
 #include "aja-enums.hpp"
 
 #include <obs-module.h>

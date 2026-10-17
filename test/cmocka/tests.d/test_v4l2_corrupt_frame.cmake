@@ -8,14 +8,14 @@ if(OS_LINUX AND TARGET OBS::v4l2)
   add_executable(
     test_v4l2_corrupt_frame
     test_v4l2_corrupt_frame.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-controls.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-decoder.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-frame-action.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-framerate.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-helpers.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-input-caps.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-busy.c"
-    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-input.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-controls.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-decoder.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-frame-action.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-framerate.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-helpers.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-input-caps.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-busy.c.h"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-v4l2/v4l2-input.c.h"
   )
   # libv4l2 is not linked: the test defines v4l2_open, v4l2_ioctl and friends.
   target_include_directories(

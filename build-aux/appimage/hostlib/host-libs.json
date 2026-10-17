@@ -1,0 +1,72 @@
+{
+  "_comment": "Libraries the AppImage takes from the host (obs-rust/obs-studio#959). required: OBS cannot start without it; AppRun's preflight (obs-hostlib-check) exits with a message naming it. optional: loaded on first use through a shim (libobs-<name>.so); when the host has none, the shim's functions fail cleanly and the feature is off. symbols: must all resolve for a candidate to be accepted (doubles as a minimum version). Read by build.py, obs-hostlib-check and test-appimage.sh.",
+  "libraries": [
+    {
+      "name": "egl",
+      "kind": "required",
+      "feature": "OpenGL rendering (EGL)",
+      "sonames": ["libEGL.so.1"],
+      "symbols": ["eglGetDisplay", "eglInitialize", "eglGetProcAddress"],
+      "install": {"debian": "libegl1", "fedora": "libglvnd-egl", "arch": "libglvnd", "suse": "libEGL1", "nixos": "hardware.graphics.enable = true"}
+    },
+    {
+      "name": "opengl",
+      "kind": "required",
+      "feature": "OpenGL rendering",
+      "sonames": ["libOpenGL.so.0", "libGL.so.1"],
+      "symbols": ["glGetString"],
+      "install": {"debian": "libopengl0", "fedora": "libglvnd-opengl", "arch": "libglvnd", "suse": "libOpenGL0", "nixos": "hardware.graphics.enable = true"}
+    },
+    {
+      "name": "gbm",
+      "kind": "required",
+      "feature": "GPU buffer sharing (screen capture, DMA-BUF)",
+      "sonames": ["libgbm.so.1"],
+      "symbols": ["gbm_create_device", "gbm_bo_create"],
+      "install": {"debian": "libgbm1", "fedora": "mesa-libgbm", "arch": "mesa", "suse": "libgbm1", "nixos": "hardware.graphics.enable = true"}
+    },
+    {
+      "name": "drm",
+      "kind": "required",
+      "feature": "GPU device access",
+      "sonames": ["libdrm.so.2"],
+      "symbols": ["drmGetDevices2"],
+      "install": {"debian": "libdrm2", "fedora": "libdrm", "arch": "libdrm", "suse": "libdrm2", "nixos": "hardware.graphics.enable = true"}
+    },
+    {
+      "name": "wayland-client",
+      "kind": "required",
+      "feature": "Wayland (also needed under X11: Qt and OBS link it)",
+      "sonames": ["libwayland-client.so.0"],
+      "symbols": ["wl_display_connect", "wl_proxy_marshal_flags"],
+      "install": {"debian": "libwayland-client0", "fedora": "libwayland-client", "arch": "wayland", "suse": "libwayland-client0", "nixos": "run through appimage-run or nix-ld (programs.nix-ld.libraries = [ pkgs.wayland ])"}
+    },
+    {
+      "name": "va",
+      "kind": "optional",
+      "feature": "VA-API hardware encoding and decoding",
+      "sonames": ["libva.so.2"],
+      "symbols": ["vaInitialize", "vaCreateSurfaces", "vaExportSurfaceHandle"],
+      "headers": ["va/va.h", "va/va_str.h"],
+      "install": {"debian": "libva2", "fedora": "libva", "arch": "libva", "suse": "libva2", "nixos": "hardware.graphics.enable = true"}
+    },
+    {
+      "name": "va-drm",
+      "kind": "optional",
+      "feature": "VA-API hardware encoding and decoding",
+      "sonames": ["libva-drm.so.2"],
+      "symbols": ["vaGetDisplayDRM"],
+      "headers": ["va/va.h", "va/va_drm.h"],
+      "install": {"debian": "libva-drm2", "fedora": "libva", "arch": "libva", "suse": "libva-drm2", "nixos": "hardware.graphics.enable = true"}
+    },
+    {
+      "name": "va-x11",
+      "kind": "optional",
+      "feature": "VA-API hardware encoding and decoding",
+      "sonames": ["libva-x11.so.2"],
+      "symbols": ["vaGetDisplay"],
+      "headers": ["va/va.h", "va/va_x11.h"],
+      "install": {"debian": "libva-x11-2", "fedora": "libva", "arch": "libva", "suse": "libva-x11-2", "nixos": "hardware.graphics.enable = true"}
+    }
+  ]
+}

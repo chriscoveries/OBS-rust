@@ -14,7 +14,7 @@ mark_as_advanced(SYPHON)
 add_library(mac-syphon MODULE)
 add_library(OBS::syphon ALIAS mac-syphon)
 
-target_sources(mac-syphon PRIVATE syphon.m plugin-main.c SyphonOBSClient.h SyphonOBSClient.m)
+target_sources(mac-syphon PRIVATE build/mac-syphon.macos+.h.c SyphonOBSClient.h build/mac-syphon.macos-objc+.h.m)
 
 target_compile_options(mac-syphon PRIVATE -fobjc-arc)
 

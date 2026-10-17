@@ -22,7 +22,7 @@ constexpr const char *TICK_LABEL_TOKEN = "-88";
 constexpr float TICK_LABEL_HEIGHT_SCALE_FACTOR = 0.8f;
 } // namespace
 
-static inline QColor color_from_int(long long val)
+static inline QColor volume_color_from_int(long long val)
 {
 	QColor color(val & 0xff, (val >> 8) & 0xff, (val >> 16) & 0xff, (val >> 24) & 0xff);
 	color.setAlpha(255);
@@ -46,7 +46,7 @@ void VolumeMeter::setBackgroundNominalColor(QColor c)
 
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
 		backgroundNominalColor =
-			color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "MixerGreen"));
+			volume_color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "MixerGreen"));
 	} else {
 		backgroundNominalColor = p_backgroundNominalColor;
 	}
@@ -73,7 +73,7 @@ void VolumeMeter::setBackgroundWarningColor(QColor c)
 
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
 		backgroundWarningColor =
-			color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "MixerYellow"));
+			volume_color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "MixerYellow"));
 	} else {
 		backgroundWarningColor = p_backgroundWarningColor;
 	}
@@ -100,7 +100,7 @@ void VolumeMeter::setBackgroundErrorColor(QColor c)
 
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
 		backgroundErrorColor =
-			color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "MixerRed"));
+			volume_color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "MixerRed"));
 	} else {
 		backgroundErrorColor = p_backgroundErrorColor;
 	}
@@ -126,8 +126,8 @@ void VolumeMeter::setForegroundNominalColor(QColor c)
 	p_foregroundNominalColor = std::move(c);
 
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
-		foregroundNominalColor =
-			color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "MixerGreenActive"));
+		foregroundNominalColor = volume_color_from_int(
+			config_get_int(App()->GetUserConfig(), "Accessibility", "MixerGreenActive"));
 	} else {
 		foregroundNominalColor = p_foregroundNominalColor;
 	}
@@ -153,8 +153,8 @@ void VolumeMeter::setForegroundWarningColor(QColor c)
 	p_foregroundWarningColor = std::move(c);
 
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
-		foregroundWarningColor =
-			color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "MixerYellowActive"));
+		foregroundWarningColor = volume_color_from_int(
+			config_get_int(App()->GetUserConfig(), "Accessibility", "MixerYellowActive"));
 	} else {
 		foregroundWarningColor = p_foregroundWarningColor;
 	}
@@ -180,8 +180,8 @@ void VolumeMeter::setForegroundErrorColor(QColor c)
 	p_foregroundErrorColor = std::move(c);
 
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
-		foregroundErrorColor =
-			color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "MixerRedActive"));
+		foregroundErrorColor = volume_color_from_int(
+			config_get_int(App()->GetUserConfig(), "Accessibility", "MixerRedActive"));
 	} else {
 		foregroundErrorColor = p_foregroundErrorColor;
 	}

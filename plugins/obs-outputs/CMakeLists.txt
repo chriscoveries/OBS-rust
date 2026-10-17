@@ -22,11 +22,12 @@ add_library(OBS::outputs ALIAS obs-outputs)
 target_sources(
   obs-outputs
   PRIVATE
-    $<$<BOOL:${ENABLE_HEVC}>:rtmp-hevc.c>
     $<$<BOOL:${ENABLE_HEVC}>:rtmp-hevc.h>
-    flv-mux.c
+    build/obs-outputs.core+.h.c
+    build/obs-outputs.av1+.h.c
+    build/obs-outputs.mp4-mux+.h.c
+    build/obs-outputs.rtmp+.h.c
     flv-mux.h
-    flv-output.c
     librtmp/amf.c
     librtmp/amf.h
     librtmp/bytes.h
@@ -44,22 +45,24 @@ target_sources(
     librtmp/rtmp.h
     librtmp/rtmp_sys.h
     mp4-mux-internal.h
-    mp4-mux.c
     mp4-mux.h
-    mp4-output.c
-    net-if.c
+    build/obs-outputs.net-if+.h.c
     net-if.h
-    null-output.c
     obs-output-ver.h
-    obs-outputs.c
-    rtmp-av1.c
     rtmp-av1.h
     rtmp-helpers.h
-    rtmp-stream.c
     rtmp-stream.h
-    rtmp-windows.c
     utils.h
 )
+
+# Unity groups (BUILD.md) behind a condition, listed plainly: groups.cmake
+# doesn't read sources behind generator expressions.
+if(ENABLE_HEVC)
+  target_sources(obs-outputs PRIVATE build/obs-outputs.hevc+.h.c)
+endif()
+if(OS_WINDOWS)
+  target_sources(obs-outputs PRIVATE build/obs-outputs.windows+.h.c)
+endif()
 
 target_compile_definitions(obs-outputs PRIVATE USE_MBEDTLS CRYPTO)
 

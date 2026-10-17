@@ -45,7 +45,7 @@ static inline void do_log(int level, const char *msg, ...)
 	va_end(args);
 }
 
-static BOOL CALLBACK enum_monitor(HMONITOR handle, HDC hdc, LPRECT rect, LPARAM param)
+static BOOL CALLBACK monitor_enum_monitor(HMONITOR handle, HDC hdc, LPRECT rect, LPARAM param)
 {
 	struct monitor_info *monitor = (struct monitor_info *)param;
 
@@ -65,7 +65,7 @@ static void update_monitor(struct monitor_capture *capture, obs_data_t *settings
 	uint32_t width, height;
 
 	monitor.desired_id = (int)obs_data_get_int(settings, "monitor");
-	EnumDisplayMonitors(NULL, NULL, enum_monitor, (LPARAM)&monitor);
+	EnumDisplayMonitors(NULL, NULL, monitor_enum_monitor, (LPARAM)&monitor);
 
 	capture->monitor = monitor.id;
 
@@ -76,7 +76,7 @@ static void update_monitor(struct monitor_capture *capture, obs_data_t *settings
 			capture->compatibility);
 }
 
-static inline void update_settings(struct monitor_capture *capture, obs_data_t *settings)
+static inline void monitor_update_settings(struct monitor_capture *capture, obs_data_t *settings)
 {
 	capture->monitor = (int)obs_data_get_int(settings, "monitor");
 	capture->capture_cursor = obs_data_get_bool(settings, "capture_cursor");
@@ -115,7 +115,7 @@ static void monitor_capture_defaults(obs_data_t *settings)
 static void monitor_capture_update(void *data, obs_data_t *settings)
 {
 	struct monitor_capture *mc = data;
-	update_settings(mc, settings);
+	monitor_update_settings(mc, settings);
 }
 
 static void *monitor_capture_create(obs_data_t *settings, obs_source_t *source)
@@ -125,7 +125,7 @@ static void *monitor_capture_create(obs_data_t *settings, obs_source_t *source)
 	capture = bzalloc(sizeof(struct monitor_capture));
 	capture->source = source;
 
-	update_settings(capture, settings);
+	monitor_update_settings(capture, settings);
 
 	return capture;
 }
@@ -164,7 +164,7 @@ static uint32_t monitor_capture_height(void *data)
 	return capture->data.height;
 }
 
-static BOOL CALLBACK enum_monitor_props(HMONITOR handle, HDC hdc, LPRECT rect, LPARAM param)
+static BOOL CALLBACK monitor_enum_monitor_props(HMONITOR handle, HDC hdc, LPRECT rect, LPARAM param)
 {
 	UNUSED_PARAMETER(hdc);
 	UNUSED_PARAMETER(rect);
@@ -208,7 +208,7 @@ static obs_properties_t *monitor_capture_properties(void *unused)
 	obs_properties_add_bool(props, "compatibility", TEXT_COMPATIBILITY);
 	obs_properties_add_bool(props, "capture_cursor", TEXT_CAPTURE_CURSOR);
 
-	EnumDisplayMonitors(NULL, NULL, enum_monitor_props, (LPARAM)monitors);
+	EnumDisplayMonitors(NULL, NULL, monitor_enum_monitor_props, (LPARAM)monitors);
 
 	return props;
 }

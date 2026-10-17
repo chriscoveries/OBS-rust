@@ -214,6 +214,13 @@ case "${ID_LIKE:-} ${ID}" in
     ;;
 *fedora* | *rhel*)
     FAMILY=fedora
+    # RHEL-family releases (AlmaLinux 8, the glibc 2.28 floor) carry icewm and
+    # ImageMagick in EPEL, and some -devel-free runtime pieces in PowerTools/CRB.
+    if [ "${ID}" != fedora ]; then
+        dnf install -y -q epel-release >/dev/null
+        dnf config-manager --set-enabled powertools >/dev/null 2>&1 ||
+            dnf config-manager --set-enabled crb >/dev/null 2>&1 || true
+    fi
     dnf install -y -q --setopt=install_weak_deps=False --setopt=keepcache=1 \
         xorg-x11-server-Xvfb icewm xwininfo xprop ImageMagick dbus-daemon diffutils \
         dejavu-sans-fonts gdb procps-ng mesa-dri-drivers mesa-libGL mesa-libEGL mesa-libgbm libdrm libva \
@@ -250,6 +257,12 @@ done
 
 chmod +x "$APPIMAGE"
 
+# The first line of `obs --version` output (stdout and stderr) that names
+# OBS, so loader warnings printed before it don't count as the version.
+app_version_line() {
+    printf '%s\n' "$1" | grep -m1 -E '^OBS' || true
+}
+
 echo "::group::AppImage runs through its own runtime (no FUSE in containers)"
 VERSION_OUT="$(APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE" --version 2>&1)" || {
     echo "$VERSION_OUT"
@@ -258,14 +271,17 @@ VERSION_OUT="$(APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE" --version 2>&1)" || {
 }
 echo "$VERSION_OUT"
 echo "::endgroup::"
+# The output carries stderr too, and the loader may warn before the version
+# line ("libobs-va.so.2: no version information available").
+VERSION_LINE="$(app_version_line "$VERSION_OUT")"
 # A build with the Rust libobs ports names itself OBS-Studio-Rust (obs-rust/obs-studio#112).
-if [ -n "${EXPECT_RUST:-}" ] && [[ "$VERSION_OUT" != OBS-Studio-Rust* ]]; then
+if [ -n "${EXPECT_RUST:-}" ] && [[ "$VERSION_LINE" != OBS-Studio-Rust* ]]; then
     echo "::error::this AppImage was built with ENABLE_RUST_LIBOBS but does not report OBS-Studio-Rust"
     exit 1
 fi
 # The daily beta carries its full release string, so betas can be told apart (#631).
-if [ -n "${EXPECT_RUST_VERSION:-}" ] && [[ "$VERSION_OUT" != "OBS-Studio-Rust $EXPECT_RUST_VERSION (based on OBS "* ]]; then
-    echo "::error::expected 'OBS-Studio-Rust $EXPECT_RUST_VERSION (based on OBS ...)' from --version, got: $VERSION_OUT"
+if [ -n "${EXPECT_RUST_VERSION:-}" ] && [[ "$VERSION_LINE" != "OBS-Studio-Rust $EXPECT_RUST_VERSION (based on OBS "* ]]; then
+    echo "::error::expected 'OBS-Studio-Rust $EXPECT_RUST_VERSION (based on OBS ...)' from --version, got: $VERSION_LINE"
     exit 1
 fi
 
@@ -280,9 +296,15 @@ fi
 "$APPIMAGE" --appimage-extract >/dev/null
 APPDIR="$PWD/squashfs-root"
 LOADER="$APPDIR/lib64/ld-linux-x86-64.so.2"
+# Built at or below the glibc floor (#926), the AppImage bundles no glibc and
+# runs on the host's loader.
+if [ ! -e "$LOADER" ]; then
+    LOADER=/lib64/ld-linux-x86-64.so.2
+    [ -e "$LOADER" ] || LOADER="$(find /lib /lib64 /usr/lib /usr/lib64 -maxdepth 2 -name ld-linux-x86-64.so.2 2>/dev/null | head -1)"
+fi
 PACKAGE_DATA="$APPDIR/usr/share/obs"
 PACKAGE_MODULES="$APPDIR/usr/lib/obs-modules"
-if [[ "$VERSION_OUT" == OBS-Studio-Rust* ]]; then
+if [[ "$VERSION_LINE" == OBS-Studio-Rust* ]]; then
     GUI_NAME=obs-studio-rust-gui
     CONFIG_NAME=obs-studio-rust
     INSTANCE_PREFIX=@/io/github/obs_rust/OBSStudioRust
@@ -302,10 +324,26 @@ fi
 # bundled ELF file with the bundled loader directly are given it explicitly.
 LOADER_ARGS=()
 [ -d "$APPDIR/glibc" ] && LOADER_ARGS=(--library-path "$APPDIR/glibc")
+# The Text (FreeType 2) source's default face ships with it (obs-rust/obs-studio#1012).
+# Plugin data sits at $PACKAGE_DATA/obs-modules/core/<plugin>/; find it rather
+# than hard-code the layout.
+FT2_FONTS=$(find "$PACKAGE_DATA" -type d -path '*/text-freetype2/fonts' -print -quit)
+for f in JetBrainsMonoNerdFont-Regular.ttf JetBrainsMonoNerdFont-Bold.ttf \
+    JetBrainsMonoNerdFont-Italic.ttf JetBrainsMonoNerdFont-BoldItalic.ttf OFL.txt; do
+    [ -n "$FT2_FONTS" ] && [ -f "$FT2_FONTS/$f" ] ||
+        fail "text-freetype2's bundled font file $f is missing"
+done
 # Which C library AppRun picked for this run, written by AppRun (bundled|host);
 # empty before AppRun has run, or for an AppImage that always bundles it.
 DRIVER_STACK_RE='libGL\.|libGLX|libEGL|libOpenGL|libGLdispatch|libGLESv|libglapi|libgbm|libdrm|libvulkan|libva(\.so|-)|libwayland-(client|egl|server)|libgallium|libLLVM|libcuda|libnvidia'
-runtime_mode() { cat /tmp/.obs-rust-appimage-*/mode 2>/dev/null | head -1; }
+# Without a bundled glibc (built at the 2.28 floor, #926) the C and C++ runtime
+# is the host's by design, like the driver stack.
+HOST_RUNTIME_RE='ld-linux[^/]*|lib(c|m|mvec|pthread|dl|rt|resolv|util|anl|BrokenLocale|nss_[a-z]+)\.so[^/]*|libstdc\+\+\.so[^/]*|libgcc_s\.so[^/]*'
+# libffi is not linked by anything bundled: ldd lists it because the host's
+# libwayland-client (driver stack, never bundled) needs it.
+HOST_ALLOWED_RE="$DRIVER_STACK_RE|libffi\.so[^/]*"
+[ -d "$APPDIR/glibc" ] || HOST_ALLOWED_RE="$HOST_ALLOWED_RE|$HOST_RUNTIME_RE"
+runtime_mode() { cat /tmp/.obs-rust-appimage-*/mode 2>/dev/null | head -1 || true; } # no file without a bundled glibc (#926)
 # What this host should get: its own glibc and libstdc++ when they are at least
 # as new as the bundled ones (so it can load the host's Mesa/LLVM), else the bundle.
 host_glibc_is_newer() {
@@ -332,6 +370,16 @@ fi
 if [ "$SCENARIO" = bundle ]; then
     echo "::group::1. Bundle: runtime paths, libraries and symbols"
     "$HERE_DIR/check-appdir.sh" "$APPDIR" || fail "the AppImage lacks files that AppRun points OBS at (see above)"
+    # The packaged AppRun's host driver search paths on NixOS, on a host without
+    # a NixOS driver tree, and with the user's own choice (obs-rust/obs-studio#722).
+    # It needs user and mount namespaces; the first-start scenario checks the
+    # NixOS case against the real OBS without them.
+    if unshare -rm true 2>/dev/null; then
+        "$HERE_DIR/test-apprun-driver-env.sh" "$APPDIR/AppRun" ||
+            fail "AppRun does not hand OBS the host driver search paths (see above)"
+    else
+        echo "::notice::no user namespaces here; AppRun's driver search paths are checked in first-start only"
+    fi
     # The bundled loader resolves every bundled ELF file the way it will at runtime
     # (each file's own RPATH into the AppDir), binding every symbol now.
     # The GPU driver stack must come from the host (the AppImage excludelist): the
@@ -359,7 +407,7 @@ if [ "$SCENARIO" = bundle ]; then
             echo "${f#"$APPDIR"/}:"
             grep -E 'not found|undefined symbol|error while loading' <<<"$out" | sed "s|$APPDIR/||g" | head -5
             unresolved=$((unresolved + 1))
-        elif grep '=> /' <<<"$out" | grep -v "$APPDIR" | grep -v "=> /tmp/.obs-rust-appimage-[0-9a-f]*/lib/" | grep -vE "=> [^ ]*/($DRIVER_STACK_RE)" | grep .; then
+        elif grep '=> /' <<<"$out" | grep -v "$APPDIR" | grep -v "=> /tmp/.obs-rust-appimage-[0-9a-f]*/lib/" | grep -vE "=> [^ ]*/($HOST_ALLOWED_RE)" | grep .; then
             # (the host's GPU driver stack is the only thing allowed outside the bundle)
             echo "  ^ ${f#"$APPDIR"/} resolves the libraries above from the host"
             unresolved=$((unresolved + 1))
@@ -412,11 +460,18 @@ if [ "$SCENARIO" = gpu ]; then
     [ -n "$APPRUN_DRIVER_ENV" ] || { echo "::error::package lacks host driver setup"; exit 1; }
     install -m755 "$GPU_TEST" "$APPDIR/usr/bin/obs-appimage-gpu-test"
     GPU_LOADER="$(sed -n 's/^LOADER="\([^"]*\)"$/\1/p' "$APPDIR/AppRun")"
-    GPU_LOADER_DIR="$(dirname "$GPU_LOADER")"
-    [ -x "$GPU_LOADER" ] && [ -r "$GPU_LOADER_DIR/mode" ] ||
-        { echo "::error::AppRun did not initialize its selected interpreter"; exit 1; }
+    if [ -n "$GPU_LOADER" ]; then
+        GPU_LOADER_DIR="$(dirname "$GPU_LOADER")"
+        [ -x "$GPU_LOADER" ] && [ -r "$GPU_LOADER_DIR/mode" ] ||
+            { echo "::error::AppRun did not initialize its selected interpreter"; exit 1; }
+        echo "GPU runtime mode: $(cat "$GPU_LOADER_DIR/mode")"
+    else
+        # no bundled glibc (#926): the host's loader, with no private C runtime
+        GPU_LOADER="$LOADER"
+        GPU_LOADER_DIR="$APPDIR/.no-private-runtime"
+        echo "GPU runtime mode: host (no bundled glibc)"
+    fi
     eval "$APPRUN_DRIVER_ENV"
-    echo "GPU runtime mode: $(cat "$GPU_LOADER_DIR/mode")"
     # Select the same C runtime as AppRun. In host mode this private lib
     # directory is empty; in bundled mode it holds the chosen C runtime.
     for mode in gbm vaapi; do
@@ -482,6 +537,20 @@ if [ "$SCENARIO" = first-start ]; then
     echo "::group::2. First start with a new profile"
     export HOME="$PWD/home-new"
     mkdir -p "$HOME/.config/$CONFIG_NAME" # OBS only creates one directory level at a time
+    # This host also looks like NixOS: its driver closure under /run/opengl-driver,
+    # with the NVIDIA EGL Wayland platform that went missing before
+    # obs-rust/obs-studio#722 (OBS then rendered on llvmpipe). Its directories
+    # are empty or name a library that is not there, so Mesa still renders.
+    DRIVER_ENV_CASE=none
+    if [ ! -e /run/opengl-driver ] && [ "$(id -u)" = 0 ]; then
+        mkdir -p /run/opengl-driver/lib/gbm /run/opengl-driver/lib/dri /run/opengl-driver/share/glvnd/egl_vendor.d \
+            /run/opengl-driver/share/egl/egl_external_platform.d /run/opengl-driver/share/vulkan/icd.d
+        printf '{"file_format_version":"1.0.0","ICD":{"library_path":"libnvidia-egl-wayland.so.1"}}\n' \
+            >/run/opengl-driver/share/egl/egl_external_platform.d/10_nvidia_wayland.json
+        DRIVER_ENV_CASE=nixos
+    fi
+    unset GBM_BACKENDS_PATH LIBVA_DRIVERS_PATH __EGL_VENDOR_LIBRARY_DIRS __EGL_VENDOR_LIBRARY_FILENAMES \
+        __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS __EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES VK_DRIVER_FILES VK_ICD_FILENAMES
     LD_LIBRARY_PATH="$HOSTILE_LD" dbus-run-session -- "$APPDIR/AppRun" --disable-shutdown-check --verbose >"$OUT/obs-stdout.log" 2>&1 &
     APP_PID=$!
     OWN_PIDS+=("$APP_PID")
@@ -523,6 +592,9 @@ if [ "$SCENARIO" = first-start ]; then
     xwininfo -tree -root 2>&1 | head -40 || true
     OBS_PID="$(obs_pid_of "$APP_PID")"
     if [ -n "$OBS_PID" ]; then
+        # The driver search paths the running OBS's EGL, GBM, VA-API and Vulkan loaders see.
+        "$HERE_DIR/test-apprun-driver-env.sh" --check "$OBS_PID" "$DRIVER_ENV_CASE" ||
+            fail "OBS did not get the host driver search paths (see above)"
         # Libraries actually mapped into the running process: the core stack must be bundled.
         echo "Libraries mapped from outside the AppImage:"
         grep -o '/[^ ]*\.so[^ ]*' "/proc/$OBS_PID/maps" | sort -u | grep -v "$APPDIR" | grep -v '/tmp/.obs-rust-appimage-' || true
@@ -541,6 +613,9 @@ if [ "$SCENARIO" = first-start ]; then
         # host's own on a host with a newer one - the host's Mesa/LLVM cannot load
         # against an older glibc (obs-rust/obs-studio#621).
         MODE="$(runtime_mode)"
+        # Built at the glibc floor (#926), the AppImage bundles no C or C++ runtime:
+        # it always runs on the host's.
+        [ -d "$APPDIR/glibc" ] || MODE=host
         echo "C library mode: ${MODE:-bundled (AppRun without modes)} (host: $(ldd --version | head -1))"
         if host_glibc_is_newer && [ -d "$APPDIR/glibc" ]; then
             [ "$MODE" = host ] || fail "this host's glibc is newer than the bundled one but OBS runs on the bundled C library (mode: ${MODE:-none})"

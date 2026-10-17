@@ -19,30 +19,20 @@ if(OS_LINUX OR OS_FREEBSD OR OS_OPENBSD)
   endif()
 endif()
 
-target_sources(
-  libobs-opengl
-  PRIVATE
-    $<$<AND:$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>,$<BOOL:${ENABLE_WAYLAND}>>:gl-wayland-egl.c>
-    $<$<PLATFORM_ID:Darwin>:gl-cocoa.m>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:gl-egl-common.c>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:gl-nix.c>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:gl-x11-egl.c>
-    $<$<PLATFORM_ID:Windows>:gl-windows.c>
-    gl-helpers.c
-    gl-helpers.h
-    gl-indexbuffer.c
-    gl-shader.c
-    gl-shaderparser.c
-    gl-shaderparser.h
-    gl-stagesurf.c
-    gl-subsystem.c
-    gl-subsystem.h
-    gl-texture2d.c
-    gl-texture3d.c
-    gl-texturecube.c
-    gl-vertexbuffer.c
-    gl-zstencil.c
-)
+# Unity groups (BUILD.md): build/opengl.<name>+.h.c (.h.m) #includes the
+# implementation files (gl-foo.c.h) it compiles, behind one precompiled
+# header per group. Platform groups are listed plainly per platform.
+target_sources(libobs-opengl PRIVATE build/opengl.core+.h.c gl-helpers.h gl-shaderparser.h gl-subsystem.h)
+if(OS_LINUX OR OS_FREEBSD OR OS_OPENBSD)
+  target_sources(libobs-opengl PRIVATE build/opengl.nix+.h.c)
+  if(ENABLE_WAYLAND)
+    target_sources(libobs-opengl PRIVATE build/opengl.nix-wayland+.h.c)
+  endif()
+elseif(OS_MACOS)
+  target_sources(libobs-opengl PRIVATE build/opengl.macos-cocoa+.h.m)
+elseif(OS_WINDOWS)
+  target_sources(libobs-opengl PRIVATE build/opengl.windows+.h.c)
+endif()
 
 target_compile_options(libobs-opengl PRIVATE $<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang>:-Wno-strict-prototypes>)
 

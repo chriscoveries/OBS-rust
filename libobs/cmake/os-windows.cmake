@@ -36,51 +36,34 @@ endif()
 
 configure_file(cmake/windows/obs-module.rc.in libobs.rc)
 
-target_sources(
-  libobs
-  PRIVATE
-    audio-monitoring/win32/wasapi-enum-devices.c
-    audio-monitoring/win32/wasapi-monitoring-available.c
-    audio-monitoring/win32/wasapi-output.c
-    audio-monitoring/win32/wasapi-output.h
-    libobs.rc
-    obs-win-crash-handler.c
-    obs-windows.c
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/pipe-windows.c>
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/platform-windows.c>
-    $<$<NOT:$<BOOL:${ENABLE_RUST_LIBOBS}>>:util/threading-windows.c>
-    util/threading-windows.h
-    util/windows/CoTaskMemPtr.hpp
-    util/windows/device-enum.c
-    util/windows/device-enum.h
-    util/windows/HRError.hpp
-    util/windows/win-registry.h
-    util/windows/win-version.h
-    util/windows/window-helpers.c
-    util/windows/window-helpers.h
-)
+target_sources(libobs-objects PRIVATE libobs.rc)
+libobs_add_host_sources(WINDOWS)
 
-target_compile_options(libobs PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:/EHc->)
+target_compile_options(libobs-objects PUBLIC $<$<COMPILE_LANGUAGE:C,CXX>:/EHc->)
 
 set_source_files_properties(
-  obs-win-crash-handler.c
+  build/libobs.windows-crash-handler+.h.c
   PROPERTIES COMPILE_DEFINITIONS OBS_VERSION="${OBS_VERSION_CANONICAL}"
 )
 
 set_source_files_properties(
-  graphics/libnsgif/gif.c
-  graphics/libnsgif/lzw.c
+  build/libobs.nsgif+.h.c
   graphics/libnsgif/lzw.h
   graphics/libnsgif/nsgif.h
   PROPERTIES COMPILE_OPTIONS "/wd4244;/wd4267"
 )
 
+# PRIVATE: libobs and libobs-with-rust get these as link-only items, so
+# OBS::obfuscate's interface source (util/windows/obfuscate.c) is compiled
+# once, into libobs-objects, not again into each DLL.
 target_link_libraries(
-  libobs
+  libobs-objects
   PRIVATE Avrt Dwmapi Dxgi winmm Rpcrt4 OBS::obfuscate OBS::winhandle OBS::COMutils
   PUBLIC OBS::w32-pthreads
 )
+target_link_libraries(libobs INTERFACE OBS::w32-pthreads)
 
-target_link_options(libobs PRIVATE /IGNORE:4098 /SAFESEH:NO)
-
-set_target_properties(libobs PROPERTIES PREFIX "" OUTPUT_NAME "obs")
+foreach(target IN LISTS LIBOBS_SHARED_TARGETS)
+  target_link_options(${target} PRIVATE /IGNORE:4098 /SAFESEH:NO)
+  set_target_properties(${target} PROPERTIES PREFIX "" OUTPUT_NAME "obs")
+endforeach()

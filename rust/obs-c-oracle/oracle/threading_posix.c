@@ -21,7 +21,7 @@
 #define os_sem_wait oracle_os_sem_wait
 #define os_set_thread_name oracle_os_set_thread_name
 
-#include "util/threading-posix.c"
+#include "util/threading-posix.c.h"
 
 /* Test-only exports called from Rust over FFI. */
 int oracle_os_sem_trywait(os_sem_t *sem);

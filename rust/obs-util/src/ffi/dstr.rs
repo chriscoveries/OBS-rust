@@ -7,6 +7,11 @@
 //! allocating only through `bmalloc`/`bfree` so C can later free or resize
 //! the buffer.
 
+// c_char is i8 on most targets and u8 on some (aarch64-pc-windows-msvc,
+// aarch64 Linux): the `as u8` / `as *const u8` conversions below are needed on
+// the first and no-ops on the second, where clippy calls them unnecessary.
+#![allow(clippy::unnecessary_cast)]
+
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::{mem, ptr, slice};
 

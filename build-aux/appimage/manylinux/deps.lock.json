@@ -1,0 +1,133 @@
+{
+  "root": "https://raw.githubusercontent.com/obs-rust/obs-studio-libs/assets/manifest.json",
+  "tools": [
+    {
+      "tool": "headers",
+      "version": "2026.10.16",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64",
+        "os_version": "2.28",
+        "libc": "glibc"
+      },
+      "variant": {
+        "optimization": "release"
+      },
+      "sha256": "b326b2a3ca521b84de02fc902227704e72e2e7e21b3249a8b3e17adf1b8fd610",
+      "install": "/opt/obs-deps/headers"
+    },
+    {
+      "tool": "qrcodegen",
+      "version": "1.8.0",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64",
+        "os_version": "2.28",
+        "libc": "glibc"
+      },
+      "variant": {
+        "optimization": "release"
+      },
+      "sha256": "cf7834766cba37c8e5161aea0c3665a2dfd48d9da2e26155fd12199727177391",
+      "install": "/opt/obs-deps/qrcodegen"
+    },
+    {
+      "tool": "fdk-aac",
+      "version": "2.0.3",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64",
+        "os_version": "2.28",
+        "libc": "glibc"
+      },
+      "variant": {
+        "optimization": "release"
+      },
+      "sha256": "e4dd1021a56099e8b60655ac5b1c65e18a095a70de5f7333642adbc0ae07229e",
+      "install": "/opt/obs-deps/fdk-aac"
+    },
+    {
+      "tool": "glib",
+      "version": "2.80.5",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64",
+        "os_version": "2.28",
+        "libc": "glibc"
+      },
+      "variant": {
+        "optimization": "release"
+      },
+      "sha256": "436ba443e4c7b05ea9f0f70ba3408fd04833f086a3beff5715e0df163e212fa9",
+      "install": "/opt/obs-deps/glib"
+    },
+    {
+      "tool": "pipewire",
+      "version": "1.2.7",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64",
+        "os_version": "2.28",
+        "libc": "glibc"
+      },
+      "variant": {
+        "optimization": "release"
+      },
+      "sha256": "cf476db89fc9cbb3a3dcd09f143d419f833a84fd51ac74e361f643bc33c31f93",
+      "install": "/opt/obs-deps/pipewire"
+    },
+    {
+      "tool": "ffmpeg",
+      "version": "8.1.2",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64",
+        "os_version": "2.28",
+        "libc": "glibc"
+      },
+      "variant": {
+        "optimization": "release",
+        "flavor": "r2"
+      },
+      "sha256": "8b80ad434b2107c62c54c23aebfafd9d4718f281bbb1978319c5dd5085baef85",
+      "install": "/opt/obs-deps/ffmpeg"
+    },
+    {
+      "tool": "qt6",
+      "version": "6.11.1",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64",
+        "os_version": "2.28",
+        "libc": "glibc"
+      },
+      "variant": {
+        "optimization": "release"
+      },
+      "sha256": "f0edfc3432bd57058bbb9a2cf18aacceb55a2564b018346778c34eb0e3369dbf",
+      "install": "/opt/obs-deps/qt6"
+    },
+    {
+      "tool": "implib",
+      "version": "a3e167cf",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64"
+      },
+      "variant": {},
+      "sha256": "b5dd0afff9b10ce08c60ce3f0811c0b682ceb44be5465fff6e7ecf0246fe7abb",
+      "install": "/opt/obs-deps/implib"
+    },
+    {
+      "tool": "appimagetool",
+      "version": "1.9.1",
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64"
+      },
+      "variant": {},
+      "sha256": "13886a4cb2ffd510de61e8963d46c1439c533554777f75246d890a2651e92267",
+      "install": "/opt/obs-deps/appimagetool"
+    }
+  ]
+}

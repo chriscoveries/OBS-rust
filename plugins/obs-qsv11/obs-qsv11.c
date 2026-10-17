@@ -1420,3 +1420,6 @@ struct obs_encoder_info obs_qsv_hevc_encoder = {
 	.get_video_info = obs_qsv_video_plus_hdr_info,
 	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_INTERNAL | OBS_ENCODER_CAP_ROI,
 };
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef do_log

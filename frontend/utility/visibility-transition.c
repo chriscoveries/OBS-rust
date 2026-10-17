@@ -12,7 +12,7 @@ struct changes {
 	size_t count;
 };
 
-static void add_entry(obs_data_array_t *entries, obs_sceneitem_t *item, obs_data_t *transition)
+static void visibility_add_entry(obs_data_array_t *entries, obs_sceneitem_t *item, obs_data_t *transition)
 {
 	obs_source_t *scene_source = obs_scene_get_source(obs_sceneitem_get_scene(item));
 	obs_data_t *entry = obs_data_create();
@@ -54,8 +54,8 @@ static void set_item_transition(obs_sceneitem_t *item, void *param)
 
 	obs_data_t *after = obs_sceneitem_transition_save(item, change->show);
 	if (strcmp(obs_data_get_json(before), obs_data_get_json(after)) != 0) {
-		add_entry(c->undo, item, before);
-		add_entry(c->redo, item, after);
+		visibility_add_entry(c->undo, item, before);
+		visibility_add_entry(c->redo, item, after);
 		c->count++;
 	}
 	obs_data_release(before);
@@ -67,7 +67,7 @@ struct targets {
 	DARRAY(obs_sceneitem_t *) items;
 };
 
-static bool collect_selected(obs_scene_t *scene, obs_sceneitem_t *item, void *param)
+static bool visibility_collect_selected(obs_scene_t *scene, obs_sceneitem_t *item, void *param)
 {
 	struct targets *t = param;
 	UNUSED_PARAMETER(scene);
@@ -78,7 +78,7 @@ static bool collect_selected(obs_scene_t *scene, obs_sceneitem_t *item, void *pa
 	}
 
 	if (obs_sceneitem_is_group(item))
-		obs_sceneitem_group_enum_items(item, collect_selected, t);
+		obs_sceneitem_group_enum_items(item, visibility_collect_selected, t);
 
 	return true;
 }
@@ -93,7 +93,7 @@ static void for_each_target(obs_scene_t *scene, obs_sceneitem_t *item, void (*ap
 
 	da_init(t.items);
 	if (scene)
-		obs_scene_enum_items(scene, collect_selected, &t);
+		obs_scene_enum_items(scene, visibility_collect_selected, &t);
 
 	if (item)
 		apply(item, param);

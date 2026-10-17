@@ -17,30 +17,25 @@ add_subdirectory(ffmpeg-mux)
 target_sources(
   obs-ffmpeg
   PRIVATE
-    $<$<BOOL:${ENABLE_FFMPEG_LOGGING}>:obs-ffmpeg-logging.c>
-    $<$<BOOL:${ENABLE_FFMPEG_NVENC}>:obs-ffmpeg-nvenc.c>
-    $<$<BOOL:${ENABLE_NEW_MPEGTS_OUTPUT}>:obs-ffmpeg-mpegts.c>
+    $<$<BOOL:${ENABLE_FFMPEG_LOGGING}>:build/obs-ffmpeg.logging+.h.c>
+    $<$<BOOL:${ENABLE_FFMPEG_NVENC}>:build/obs-ffmpeg.nvenc+.h.c>
+    $<$<BOOL:${ENABLE_NEW_MPEGTS_OUTPUT}>:build/obs-ffmpeg.mpegts+.h.c>
     $<$<BOOL:${ENABLE_NEW_MPEGTS_OUTPUT}>:obs-ffmpeg-rist.h>
     $<$<BOOL:${ENABLE_NEW_MPEGTS_OUTPUT}>:obs-ffmpeg-srt.h>
     $<$<BOOL:${ENABLE_NEW_MPEGTS_OUTPUT}>:obs-ffmpeg-url.h>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:obs-ffmpeg-vaapi.c>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:vaapi-device-select.c>
+    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:build/obs-ffmpeg.vaapi+.h.c>
+    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:build/obs-ffmpeg.vaapi-device-select+.h.c>
     $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:vaapi-device-select.h>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:vaapi-utils.c>
     $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:vaapi-utils.h>
-    obs-ffmpeg-audio-encoders.c
-    obs-ffmpeg-av1.c
+    build/obs-ffmpeg.core+.h.c
+    build/obs-ffmpeg.mux+.h.c
+    build/obs-ffmpeg.output+.h.c
+    build/obs-ffmpeg.source+.h.c
+    build/obs-ffmpeg.video-encoders+.h.c
     obs-ffmpeg-compat.h
     obs-ffmpeg-formats.h
-    obs-ffmpeg-openh264.c
-    obs-ffmpeg-hls-mux.c
-    obs-ffmpeg-mux.c
     obs-ffmpeg-mux.h
-    obs-ffmpeg-output.c
     obs-ffmpeg-output.h
-    obs-ffmpeg-source.c
-    obs-ffmpeg-video-encoders.c
-    obs-ffmpeg.c
 )
 
 target_compile_options(obs-ffmpeg PRIVATE $<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang>:-Wno-shorten-64-to-32>)

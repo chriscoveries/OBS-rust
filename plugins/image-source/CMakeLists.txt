@@ -5,22 +5,14 @@ add_library(OBS::image-source ALIAS image-source)
 
 target_sources(
   image-source
-  PRIVATE
-    color-source.c
-    image-file-version.c
-    image-file-version.h
-    image-source.c
-    obs-slideshow.c
-    obs-slideshow-mk2.c
-    slideshow-size.c
-    slideshow-size.h
+  PRIVATE build/image-source.core+.h.c image-file-version.h build/image-source.slideshow+.h.c slideshow-size.h
 )
 
 target_link_libraries(image-source PRIVATE OBS::libobs $<$<PLATFORM_ID:Windows>:OBS::w32-pthreads>)
 
 if(OS_WINDOWS)
   configure_file(cmake/windows/obs-module.rc.in image-source.rc)
-  target_sources(image-source PRIVATE image-file-version-win32.c image-source.rc)
+  target_sources(image-source PRIVATE build/image-source.windows+.h.c image-source.rc)
 endif()
 
 set_target_properties_obs(image-source PROPERTIES FOLDER plugins PREFIX "")

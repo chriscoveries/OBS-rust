@@ -5,7 +5,7 @@ if(TARGET OBS::pipewire)
   add_executable(
     test_pipewire_frame_pacing
     test_pipewire_frame_pacing.c
-    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c"
+    "${CMAKE_SOURCE_DIR}/plugins/linux-pipewire/frame-pacing.c.h"
   )
   target_include_directories(
     test_pipewire_frame_pacing

@@ -33,9 +33,9 @@ class HostDriverStackTest(unittest.TestCase):
             self.assertIn(package, result.stdout.splitlines())
 
     def test_ffmpeg_build_dependencies_do_not_remove_obs_srt_support(self):
-        workflow = (ROOT / ".github/workflows/appimage.yaml").read_text()
+        workflow = (ROOT / "build-aux/appimage/build.py").read_text()
         bootstrap = workflow.index("build_vaapi_compat.py avutil-compat")
-        configure = workflow.index("- name: Configure", bootstrap)
+        configure = workflow.index("\nVERSION = ", bootstrap)
         self.assertIn("install", workflow[bootstrap:configure])
         self.assertIn("libsrt-openssl-dev", workflow[bootstrap:configure])
         self.assertNotIn("-DENABLE_NEW_MPEGTS_OUTPUT=OFF", workflow)
@@ -59,11 +59,13 @@ class HostDriverStackTest(unittest.TestCase):
             )
 
     def test_workflow_builds_and_passes_the_compatible_library(self):
-        workflow = (ROOT / ".github/workflows/appimage.yaml").read_text()
+        workflow = (ROOT / "build-aux/appimage/build.py").read_text()
         self.assertIn("build_vaapi_compat.py avutil-compat", workflow)
-        self.assertIn(
-            "assemble-appdir.sh AppDir avutil-compat/libavutil.so.60", workflow
-        )
+        self.assertIn('assemble-appdir.sh AppDir "${AVUTIL_LIB}"', workflow)
+        # The Ubuntu base passes the compatibility build; the glibc 2.28 base
+        # (#926) passes its own FFmpeg's, built against AlmaLinux 8's libva.
+        self.assertIn('else "avutil-compat/libavutil.so.60"', workflow)
+        self.assertIn('"/opt/obs-deps/ffmpeg/lib/libavutil.so.60" if args.base == "manylinux"', workflow)
         self.assertIn("build-dep --arch-only", workflow)
 
     def test_driver_libraries_are_excluded_without_excluding_app_dependencies(self):

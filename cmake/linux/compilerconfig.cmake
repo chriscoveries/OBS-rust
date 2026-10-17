@@ -3,10 +3,32 @@
 include_guard(GLOBAL)
 
 include(ccache)
+include(zccache)
 include(compiler_common)
 
 option(ENABLE_COMPILER_TRACE "Enable Clang time-trace (requires Clang and Ninja)" OFF)
 mark_as_advanced(ENABLE_COMPILER_TRACE)
+
+# Position-independent code and executables everywhere. A Qt built with
+# reduce-relocations (-Bsymbolic-functions; the glibc 2.28 AppImage's Qt, #926)
+# requires application code compiled with -fPIC, "and not with -fPIE"
+# (qcompilerdetection.h): otherwise a Qt function the executable references
+# gets a second, canonical address in it, the pointer-to-member comparisons
+# behind signals and slots fail, and OBS crashes in QObject::connect or while
+# emitting. So: -fPIC for every target (CMake would pick -fPIE for
+# executables), linked as PIE. Ubuntu's GCC defaults to PIE and Debian's Qt has
+# no reduce-relocations, which is why the Ubuntu build never showed this.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+include(CheckPIESupported)
+check_pie_supported(LANGUAGES C CXX)
+set(CMAKE_C_COMPILE_OPTIONS_PIE ${CMAKE_C_COMPILE_OPTIONS_PIC})
+set(CMAKE_CXX_COMPILE_OPTIONS_PIE ${CMAKE_CXX_COMPILE_OPTIONS_PIC})
+# With LTO the code is generated at link time from the link line's flags, so
+# the link options must say -fPIC too, or the executable still gets copy
+# relocations of Qt's data (QCoreApplication::staticMetaObject, ...): Qt and
+# OBS then use different copies, and qGuiApp reads as null during startup.
+set(CMAKE_C_LINK_OPTIONS_PIE -fPIC -pie)
+set(CMAKE_CXX_LINK_OPTIONS_PIE -fPIC -pie)
 
 # gcc options for C
 set(

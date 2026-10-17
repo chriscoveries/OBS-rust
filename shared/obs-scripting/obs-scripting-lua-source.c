@@ -795,3 +795,8 @@ void undef_lua_script_sources(struct obs_lua_script *data)
 
 	pthread_mutex_unlock(&lua_source_def_mutex);
 }
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef call_func
+#undef ls_get_libobs_obj
+#undef ls_push_libobs_obj

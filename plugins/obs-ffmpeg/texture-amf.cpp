@@ -2820,3 +2820,7 @@ extern "C" void amf_unload(void)
 		amf_trace->UnregisterWriter(L"obs_amf_trace_writer");
 	}
 }
+
+/* File-local macros: keep them out of the next source of a unity build. */
+#undef SEC_TO_NSEC
+#undef do_log

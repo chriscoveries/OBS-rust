@@ -19,6 +19,7 @@
 
 #import <OBSApp.hpp>
 
+#import <util/dstr.h>
 #import <util/threading.h>
 
 #import <AVFoundation/AVFoundation.h>
@@ -396,7 +397,132 @@ void InstallNSApplicationSubclass()
     [OBSApplication sharedApplication];
 }
 
+void *GetGlGetStringProc()
+{
+    void *gl = dlopen("/System/Library/Frameworks/OpenGL.framework/OpenGL", RTLD_LAZY);
+    return gl ? dlsym(gl, "glGetString") : nullptr;
+}
+
 bool HighContrastEnabled()
 {
     return [[NSWorkspace sharedWorkspace] accessibilityDisplayShouldIncreaseContrast];
+}
+
+/* OBSApp platform facade (#849) */
+
+void InitPlatformConfigDefaults(config_t *appConfig)
+{
+    // TODO: Change this value to "Metal" once the renderer has reached production quality
+    config_set_default_string(appConfig, "Video", "Renderer", "OpenGL");
+    config_set_default_bool(appConfig, "General", "BrowserHWAccel", true);
+    config_set_default_bool(appConfig, "Video", "DisableOSXVSync", true);
+    config_set_default_bool(appConfig, "Video", "ResetOSXVSyncOnExit", true);
+}
+
+void ApplyPlatformAppSettings(config_t *appConfig)
+{
+    if (config_get_bool(appConfig, "Video", "DisableOSXVSync")) {
+        EnableOSXVSync(false);
+    }
+}
+
+void RevertPlatformAppSettings(config_t *appConfig)
+{
+    bool vsyncDisabled = config_get_bool(appConfig, "Video", "DisableOSXVSync");
+    bool resetVSync = config_get_bool(appConfig, "Video", "ResetOSXVSyncOnExit");
+    if (vsyncDisabled && resetVSync) {
+        EnableOSXVSync(true);
+    }
+}
+
+void LogPlatformSettings(config_t *) {}
+
+bool PlatformSupportsBrowserHWAccel()
+{
+    return true;
+}
+
+std::vector<std::string> GetPlatformExtraConfigDirs()
+{
+    return {};
+}
+
+bool InitializeAppIdentity()
+{
+    return true;
+}
+
+void SetApplicationIcon()
+{
+    InitializeMacApplicationIcon();
+}
+
+void InitPlatformDisplay()
+{
+    QApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
+}
+
+bool GetPlatformHotkeyOverride(int qtKey, obs_key_t &key, bool &pressed)
+{
+    if (qtKey != Qt::Key_CapsLock) {
+        return false;
+    }
+    // kVK_CapsLock == 57
+    key = obs_key_from_virtual_key(57);
+    pressed = true;
+    return true;
+}
+
+void PlatformLocalTime(const time_t *now, struct tm *out)
+{
+    localtime_r(now, out);
+}
+
+const char *GetPlatformRenderModule(const char *renderer)
+{
+#if defined(__aarch64__)
+    return (astrcmpi(renderer, "Metal") == 0) ? DL_METAL : DL_OPENGL;
+#else
+    UNUSED_PARAMETER(renderer);
+    return DL_OPENGL;
+#endif
+}
+
+std::string GetPlatformVersionName()
+{
+    return "mac";
+}
+
+const char *GetPlatformInputAudioSource()
+{
+    return "coreaudio_input_capture";
+}
+
+const char *GetPlatformOutputAudioSource()
+{
+    return "coreaudio_output_capture";
+}
+
+bool IsPortableModeAllowed()
+{
+#ifdef ENABLE_PORTABLE_CONFIG
+    return true;
+#else
+    return false;
+#endif
+}
+
+const char *GetPortableConfigBasePath()
+{
+    return "..";
+}
+
+bool IsUpdateBranchSupported(bool, bool macos)
+{
+    return macos;
+}
+
+bool PlatformSavesBeforeSignalQuit()
+{
+    return false;
 }

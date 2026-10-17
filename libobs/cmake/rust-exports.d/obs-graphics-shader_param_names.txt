@@ -1,0 +1,3 @@
+get_address_mode
+get_sample_filter
+get_shader_param_type

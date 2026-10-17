@@ -166,7 +166,7 @@ OBSBasicProperties::~OBSBasicProperties()
 	main->UpdateContextBarDeferred(true);
 }
 
-static obs_source_t *CreateLabel(const char *name, size_t h)
+static obs_source_t *CreatePropertiesLabel(const char *name, size_t h)
 {
 	OBSDataAutoRelease settings = obs_data_create();
 	OBSDataAutoRelease font = obs_data_create();
@@ -212,7 +212,7 @@ static void CreateTransitionScene(OBSSource scene, const char *text, uint32_t co
 
 	obs_scene_add(obs_scene_from_source(scene), colorBG);
 
-	OBSSourceAutoRelease label = CreateLabel(text, obs_source_get_height(scene));
+	OBSSourceAutoRelease label = CreatePropertiesLabel(text, obs_source_get_height(scene));
 	obs_sceneitem_t *item = obs_scene_add(obs_scene_from_source(scene), label);
 
 	vec2 size;
@@ -227,7 +227,7 @@ static void CreateTransitionScene(OBSSource scene, const char *text, uint32_t co
 	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
 }
 
-static bool ConfirmReset(QWidget *parent)
+static bool ConfirmPropertiesReset(QWidget *parent)
 {
 	QMessageBox::StandardButton button;
 
@@ -239,7 +239,7 @@ static bool ConfirmReset(QWidget *parent)
 
 void OBSBasicProperties::restoreDefaultsClicked()
 {
-	if (!ConfirmReset(this)) {
+	if (!ConfirmPropertiesReset(this)) {
 		return;
 	}
 

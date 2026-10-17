@@ -3,4 +3,4 @@
  * implementation. */
 #define calc_crc32 oracle_calc_crc32
 
-#include "util/crc32.c"
+#include "util/crc32.c.h"
