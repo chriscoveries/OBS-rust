@@ -29,7 +29,7 @@ target_sources(
     speech-transcriber.h
 )
 add_dependencies(mac-captions mac-captions-speech-shim)
-target_link_libraries(mac-captions PRIVATE OBS::libobs "${SPEECH_SHIM}")
+target_link_libraries(mac-captions PRIVATE OBS::libobs OBS::caption "${SPEECH_SHIM}")
 target_link_options(mac-captions PRIVATE "-Wl,-rpath,@loader_path")
 
 add_custom_command(
