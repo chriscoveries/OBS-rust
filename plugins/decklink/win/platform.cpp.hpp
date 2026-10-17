@@ -1,7 +1,4 @@
-#include "../platform.hpp"
-
-#include <util/platform.h>
-#include <comdef.h>
+#include "../build/decklink-windows.pch.hpp"
 
 IDeckLinkDiscovery *CreateDeckLinkDiscoveryInstance(void)
 {

@@ -1,15 +1,4 @@
-#include <obs-module.h>
-#include <obs-avc.h>
-
-#include "const.h"
-
-#include "DecklinkOutput.hpp"
-#include "decklink-device.hpp"
-#include "decklink-device-discovery.hpp"
-#include "decklink-devices.hpp"
-
-#include <media-io/video-scaler.h>
-#include <util/util_uint64.h>
+#include "build/decklink.pch.hpp"
 
 static void decklink_output_destroy(void *data)
 {

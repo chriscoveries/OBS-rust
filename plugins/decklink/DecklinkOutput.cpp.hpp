@@ -1,6 +1,4 @@
-#include "DecklinkOutput.hpp"
-
-#include <util/threading.h>
+#include "build/decklink.pch.hpp"
 
 DeckLinkOutput::DeckLinkOutput(obs_output_t *output, DeckLinkDeviceDiscovery *discovery_)
 	: DecklinkBase(discovery_),

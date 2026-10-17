@@ -1,5 +1,4 @@
-#include "../platform.hpp"
-#include <util/apple/cfstring-utils.h>
+#include "../build/decklink-macos.pch.hpp"
 
 bool DeckLinkStringToStdString(decklink_string_t input, std::string &output)
 {

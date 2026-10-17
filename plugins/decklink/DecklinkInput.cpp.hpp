@@ -1,6 +1,4 @@
-#include "DecklinkInput.hpp"
-
-#include <util/threading.h>
+#include "build/decklink.pch.hpp"
 
 DeckLinkInput::DeckLinkInput(obs_source_t *source, DeckLinkDeviceDiscovery *discovery_)
 	: DecklinkBase(discovery_),

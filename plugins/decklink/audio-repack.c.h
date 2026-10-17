@@ -1,6 +1,4 @@
-#include "audio-repack.h"
-
-#include <util/sse-intrin.h>
+#include "build/decklink-audio-repack.pch.h"
 
 int check_buffer(struct audio_repack *repack, uint32_t frame_count)
 {
@@ -8,8 +6,9 @@ int check_buffer(struct audio_repack *repack, uint32_t frame_count)
 
 	if (repack->packet_size < new_size) {
 		repack->packet_buffer = brealloc(repack->packet_buffer, new_size);
-		if (!repack->packet_buffer)
+		if (!repack->packet_buffer) {
 			return -1;
+		}
 
 		repack->packet_size = new_size;
 	}
@@ -29,8 +28,9 @@ int check_buffer(struct audio_repack *repack, uint32_t frame_count)
 
 int repack_squash(struct audio_repack *repack, const uint8_t *bsrc, uint32_t frame_count)
 {
-	if (check_buffer(repack, frame_count) < 0)
+	if (check_buffer(repack, frame_count) < 0) {
 		return -1;
+	}
 
 	int squash = repack->extra_dst_size;
 	const __m128i *src = (const __m128i *)bsrc;
@@ -53,8 +53,9 @@ int repack_squash(struct audio_repack *repack, const uint8_t *bsrc, uint32_t fra
 
 int repack_squash_swap(struct audio_repack *repack, const uint8_t *bsrc, uint32_t frame_count)
 {
-	if (check_buffer(repack, frame_count) < 0)
+	if (check_buffer(repack, frame_count) < 0) {
 		return -1;
+	}
 	int squash = repack->extra_dst_size;
 	const __m128i *src = (const __m128i *)bsrc;
 	const __m128i *esrc = src + frame_count;
@@ -72,24 +73,27 @@ int audio_repack_init(struct audio_repack *repack, audio_repack_mode_t repack_mo
 {
 	memset(repack, 0, sizeof(*repack));
 
-	if (sample_bit != 16)
+	if (sample_bit != 16) {
 		return -1;
+	}
 	int _audio_repack_ch[8] = {3, 4, 5, 6, 5, 6, 8, 8};
 	repack->base_src_size = 8 * (16 / 8);
 	repack->base_dst_size = _audio_repack_ch[repack_mode] * (16 / 8);
 	repack->extra_dst_size = 8 - _audio_repack_ch[repack_mode];
 	repack->repack_func = &repack_squash;
 	if (repack_mode == repack_mode_8to5ch_swap || repack_mode == repack_mode_8to6ch_swap ||
-	    repack_mode == repack_mode_8ch_swap)
+	    repack_mode == repack_mode_8ch_swap) {
 		repack->repack_func = &repack_squash_swap;
+	}
 
 	return 0;
 }
 
 void audio_repack_free(struct audio_repack *repack)
 {
-	if (repack->packet_buffer)
+	if (repack->packet_buffer) {
 		bfree(repack->packet_buffer);
+	}
 
 	memset(repack, 0, sizeof(*repack));
 }

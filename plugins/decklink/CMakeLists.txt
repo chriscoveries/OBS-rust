@@ -38,36 +38,24 @@ target_sources(
 target_sources(
   decklink
   PRIVATE
-    $<$<PLATFORM_ID:Darwin>:mac/platform.cpp>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:linux/platform.cpp>
-    $<$<PLATFORM_ID:Windows>:win/platform.cpp>
-    audio-repack.c
+    $<$<PLATFORM_ID:Darwin>:build/decklink.macos+.hpp.cpp>
+    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:build/decklink.linux+.hpp.cpp>
+    $<$<PLATFORM_ID:Windows>:build/decklink.windows+.hpp.cpp>
+    build/decklink.core+.hpp.cpp
+    build/decklink.audio-repack+.h.c
     audio-repack.h
     audio-repack.hpp
     const.h
-    decklink-device-discovery.cpp
     decklink-device-discovery.hpp
-    decklink-device-instance.cpp
     decklink-device-instance.hpp
-    decklink-device-mode.cpp
     decklink-device-mode.hpp
-    decklink-device.cpp
     decklink-device.hpp
-    decklink-devices.cpp
     decklink-devices.hpp
-    decklink-output.cpp
-    decklink-source.cpp
-    DecklinkBase.cpp
     DecklinkBase.h
-    DecklinkInput.cpp
     DecklinkInput.hpp
-    DecklinkOutput.cpp
     DecklinkOutput.hpp
-    OBSVideoFrame.cpp
     OBSVideoFrame.h
     platform.hpp
-    plugin-main.cpp
-    util.cpp
     util.hpp
 )
 

@@ -1,7 +1,4 @@
-#include "decklink-device-discovery.hpp"
-#include "decklink-device.hpp"
-
-#include <util/threading.h>
+#include "build/decklink.pch.hpp"
 
 DeckLinkDeviceDiscovery::DeckLinkDeviceDiscovery()
 {

@@ -1,8 +1,4 @@
-#include <sstream>
-
-#include "decklink-device.hpp"
-
-#include <util/threading.h>
+#include "build/decklink.pch.hpp"
 
 DeckLinkDevice::DeckLinkDevice(IDeckLink *device_) : device(device_) {}
 

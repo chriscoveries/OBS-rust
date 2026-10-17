@@ -1,12 +1,4 @@
-#include <obs-module.h>
-
-#include "const.h"
-#include "util.hpp"
-
-#include "DecklinkInput.hpp"
-#include "decklink-device.hpp"
-#include "decklink-device-discovery.hpp"
-#include "decklink-devices.hpp"
+#include "build/decklink.pch.hpp"
 
 static void decklink_enable_buffering(DeckLinkInput *decklink, bool enabled)
 {

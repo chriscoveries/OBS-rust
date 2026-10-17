@@ -1,21 +1,4 @@
-#include "decklink-device-instance.hpp"
-#include "audio-repack.hpp"
-
-#include "DecklinkInput.hpp"
-#include "DecklinkOutput.hpp"
-
-#include <util/platform.h>
-#include <util/threading.h>
-#include <util/util_uint64.h>
-
-#include <sstream>
-#include <iomanip>
-#include <algorithm>
-
-#include "OBSVideoFrame.h"
-
-#include <caption/caption.h>
-#include <util/bitstream.h>
+#include "build/decklink.pch.hpp"
 
 template<typename T> RenderDelegate<T>::RenderDelegate(T *pOwner)
 {
@@ -822,3 +805,6 @@ ULONG STDMETHODCALLTYPE DeckLinkDeviceInstance::Release(void)
 
 	return newRefCount;
 }
+
+/* File-local macros (BUILD.md): out of the next file in the unity group. */
+#undef TIME_BASE

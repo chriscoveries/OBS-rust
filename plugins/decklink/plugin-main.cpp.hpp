@@ -1,5 +1,4 @@
-#include <obs-module.h>
-#include "decklink-devices.hpp"
+#include "build/decklink.pch.hpp"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("decklink", "en-US")

@@ -1,4 +1,4 @@
-#include "decklink-device-mode.hpp"
+#include "build/decklink.pch.hpp"
 
 DeckLinkDeviceMode::DeckLinkDeviceMode(IDeckLinkDisplayMode *mode, long long id) : id(id), mode(mode)
 {

@@ -332,6 +332,14 @@ elseif(_host STREQUAL MACOS)
       plugin-main.m
       plugin-properties.m
   )
+  # decklink's unity groups (BUILD.md) with the macOS SDK headers; Windows
+  # needs the SDK's MIDL-generated header.
+  _obs_cross_plugin(
+    decklink-cross
+    DIR plugins/decklink
+    SOURCES build/decklink.core+.hpp.cpp build/decklink.audio-repack+.h.c build/decklink.macos+.hpp.cpp
+    INCLUDES plugins/decklink/mac/decklink-sdk deps/libcaption
+  )
   _obs_cross_plugin(mac-videotoolbox-cross DIR plugins/mac-videotoolbox SOURCES build/mac-videotoolbox.macos+.h.c)
   # libobs-opengl's unity groups (BUILD.md): the shared renderer and CGL.
   _obs_cross_plugin(

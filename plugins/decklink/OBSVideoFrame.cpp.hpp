@@ -1,4 +1,4 @@
-#include "OBSVideoFrame.h"
+#include "build/decklink.pch.hpp"
 
 OBSVideoFrame::OBSVideoFrame(long width, long height, BMDPixelFormat pixelFormat)
 {
@@ -226,3 +226,6 @@ HRESULT HDRVideoFrame::GetBytes(BMDDeckLinkFrameMetadataID, void *, uint32_t *bu
 	// Not expecting GetBytes
 	return E_INVALIDARG;
 }
+
+/* File-local macros (BUILD.md): out of the next file in the unity group. */
+#undef CompareREFIID
