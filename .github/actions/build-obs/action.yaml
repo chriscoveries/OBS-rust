@@ -43,6 +43,11 @@ runs:
         version: 0.9.35
         solo-toolchain-cache: false
 
+    - name: Install macOS x86_64 Rust target
+      if: runner.os == 'macOS' && inputs.target == 'x86_64'
+      shell: bash
+      run: soldr rustup target add x86_64-apple-darwin
+
     - name: Run macOS Build
       if: runner.os == 'macOS'
       shell: zsh --no-rcs --errexit --pipefail {0}

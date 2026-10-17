@@ -2,7 +2,8 @@ option(OBS_PREFLIGHT_ENABLE "Build the OBS Preflight bench and Rust engine" ON)
 
 # The Flatpak sandbox does not provision soldr or its Rust toolchain; that
 # package disables this demo until those build tools are available in-sandbox.
-if(OBS_PREFLIGHT_ENABLE AND (OS_LINUX OR OS_MACOS))
+# Libobs-only Tier 2 builds also skip this frontend-only engine target.
+if(OBS_PREFLIGHT_ENABLE AND ENABLE_FRONTEND AND (OS_LINUX OR OS_MACOS))
   find_program(SOLDR_EXECUTABLE soldr REQUIRED)
   find_package(Threads REQUIRED)
 

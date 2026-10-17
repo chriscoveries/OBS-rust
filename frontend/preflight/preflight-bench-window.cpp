@@ -91,7 +91,7 @@ public:
 };
 #endif
 
-namespace {
+namespace preflight_ui_detail {
 
 using preflight::bench::policy::OBS_CONGESTION_DANGER_PERCENT;
 using preflight::bench::policy::OBS_CONGESTION_WARNING_PERCENT;
@@ -910,7 +910,9 @@ QString test_mode_label(preflight::UplinkTestMode mode)
 	return {};
 }
 
-} // namespace
+} // namespace preflight_ui_detail
+
+using namespace preflight_ui_detail;
 
 struct PreflightBenchWindow::Impl : preflight::bench::DataApi {
 	PreflightBenchWindow *dialog;

@@ -1357,6 +1357,14 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      # The frontend build includes the Preflight Rust C ABI on Linux, as the
+      # regular Ubuntu app builds do.
+      - name: Set Up soldr 🦀
+        uses: zackees/setup-soldr@b782f606a2f3beadc35b9e3bf5b4565e005f52ed # v0.9.86
+        with:
+          version: 0.9.35
+          solo-toolchain-cache: false
+
       - name: Set Up uv 🐍
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
