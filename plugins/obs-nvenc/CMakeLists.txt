@@ -26,11 +26,15 @@ add_subdirectory(obs-nvenc-test)
 
 set(
   _obs_nvenc_sources
+  $<$<PLATFORM_ID:Linux>:build/obs-nvenc.caps-cache-linux+.h.c>
   $<$<PLATFORM_ID:Linux>:build/obs-nvenc.linux+.h.c>
+  $<$<PLATFORM_ID:Windows>:build/obs-nvenc.caps-cache-windows+.h.c>
   $<$<PLATFORM_ID:Windows>:build/obs-nvenc.windows+.h.c>
+  build/obs-nvenc.caps-cache+.h.c
   build/obs-nvenc.core+.h.c
   build/obs-nvenc.override+.h.c
   cuda-helpers.h
+  nvenc-caps-cache.h
   nvenc-helpers.h
   nvenc-internal.h
   nvenc-override.h

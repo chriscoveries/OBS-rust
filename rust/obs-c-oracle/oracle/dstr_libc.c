@@ -1,11 +1,12 @@
 /* Test-only oracle: the original libobs/util/dstr-libc.c with its own
  * functions renamed to oracle_*. It also calls functions that the Rust port
  * replaces (the dstr.c ones) and the utf8 conversions, so those are renamed
- * to the oracle_* versions compiled by oracle/dstr.c and oracle/utf8.c.
- * os_mbs_to_utf8_ptr and os_utf8_to_wcs_ptr stay unrenamed (platform.c copies in
- * oracle/platform_conv_host.c). */
+ * to the oracle_* versions compiled by oracle/dstr.c, oracle/utf8.c and
+ * oracle/platform.c. */
 
 /* functions defined by dstr-libc.c */
+#define os_mbs_to_utf8_ptr oracle_os_mbs_to_utf8_ptr
+#define os_utf8_to_wcs_ptr oracle_os_utf8_to_wcs_ptr
 #define wstrcmpi oracle_wstrcmpi
 #define wstrcmp_n oracle_wstrcmp_n
 #define wstrcmpi_n oracle_wstrcmpi_n

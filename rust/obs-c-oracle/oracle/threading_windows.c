@@ -1,7 +1,7 @@
 /* Test-only oracle: the original libobs/util/threading-windows.c, unmodified,
  * with every global symbol renamed to oracle_* so it can link next to the
- * Rust implementation. bfree and os_utf8_to_wcs_ptr come from test_bmem.c
- * and platform_conv_host.c. Windows only.
+ * Rust implementation. bfree and os_utf8_to_wcs_ptr come from the oracle's
+ * bmem.c and platform.c. Windows only.
  *
  * UNICODE has to be set before the included file pulls in windows.h.
  * Otherwise LoadLibrary(L"KernelBase.dll") is LoadLibraryA on a wide
@@ -16,6 +16,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #define os_event_init oracle_os_event_init
+#define os_utf8_to_wcs_ptr oracle_os_utf8_to_wcs_ptr
 #define os_event_destroy oracle_os_event_destroy
 #define os_event_wait oracle_os_event_wait
 #define os_event_timedwait oracle_os_event_timedwait

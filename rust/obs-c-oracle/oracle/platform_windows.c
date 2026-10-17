@@ -4,8 +4,8 @@
  *
  * UNICODE makes FindNextFile the wide entry, as the libobs Windows build
  * does (cmake/windows/compilerconfig.cmake). os_utf8_to_wcs* stay the
- * platform.c names from oracle/platform_conv_host.c. dstr and bmalloc
- * resolve to the Rust shims. blog and bcrash stay in base-variadic.c.
+ * platform.c names from oracle/platform.c. dstr and bmalloc resolve to the
+ * Rust shims. blog and bcrash stay in base-variadic.c.
  *
  * The oracle build defines PTW32_STATIC_LIB, so this copy's DllMain also
  * runs the pthread static-lib hooks. libobs does not define that macro.
@@ -77,8 +77,10 @@
 #define os_inhibit_sleep_set_active oracle_os_inhibit_sleep_set_active
 #define os_inhibit_sleep_destroy oracle_os_inhibit_sleep_destroy
 #define num_logical_cores oracle_num_logical_cores
-#define os_breakpoint oracle_os_breakpoint
-#define os_oom oracle_os_oom
+/* The shared platform_host.c supplies the oracle's loud-abort versions. Keep
+ * these real Windows definitions in the translation unit under unused names. */
+#define os_breakpoint unreferenced_windows_os_breakpoint
+#define os_oom unreferenced_windows_os_oom
 #define os_get_physical_cores oracle_os_get_physical_cores
 #define os_get_logical_cores oracle_os_get_logical_cores
 #define os_get_sys_free_size oracle_os_get_sys_free_size

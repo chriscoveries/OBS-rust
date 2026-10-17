@@ -189,15 +189,40 @@ class ObsServer:
         # dialog.
         cmd += ["--multi", "--disable-shutdown-check", "--disable-updater",
                 "--disable-missing-files-check"]
+        # An OBS from an earlier phase or CI step can still hold the port
+        # while it shuts down: this one's server would fail to listen and
+        # the tests would talk to the old one until it exits.
+        if not wait_for_port_closed(self.port, timeout=60):
+            raise RuntimeError(
+                f"port {self.port} is still in use before starting OBS")
         self.log = os.path.join(self.home, "obs.log")
         self.logf = open(self.log, "w")
         self.proc = subprocess.Popen(
             cmd, env=env, stdout=self.logf, stderr=subprocess.STDOUT,
             preexec_fn=os.setsid)
-        if not wait_for_port(self.port, timeout=90):
+        if not self._wait_for_server(timeout=90):
             self.dump_log(60)
             raise RuntimeError(
-                f"obs-websocket did not open port {self.port} (log above)")
+                f"obs-websocket did not start on port {self.port} (log above)")
+
+    def _wait_for_server(self, timeout):
+        """Wait for this OBS's own server, by its log: an open port alone
+        could be another process's."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with open(self.log) as f:
+                    log = f.read()
+            except OSError:
+                log = ""
+            if "[WebSocketServer::Start] Listen failed" in log:
+                return False
+            if "[WebSocketServer::Start] Server started successfully" in log:
+                return wait_for_port(self.port, timeout=max(1.0, deadline - time.time()))
+            if self.proc.poll() is not None:
+                return False
+            time.sleep(0.25)
+        return False
 
     def dump_log(self, lines=40):
         try:
@@ -224,14 +249,23 @@ class ObsServer:
 
     def stop(self):
         if self.proc is not None:
+            pgid = os.getpgid(self.proc.pid)
             try:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                os.killpg(pgid, signal.SIGTERM)
                 self.proc.wait(timeout=15)
             except Exception:
                 try:
-                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                    os.killpg(pgid, signal.SIGKILL)
                 except Exception:
                     pass
+            # xvfb-run can exit before the OBS under it: the next phase, or
+            # the next CI step, must find the port free.
+            if not wait_for_port_closed(self.port, timeout=30):
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except Exception:
+                    pass
+                wait_for_port_closed(self.port, timeout=15)
         try:
             self.logf.close()
         except Exception:

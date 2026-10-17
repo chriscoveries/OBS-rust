@@ -1,9 +1,9 @@
 /* Test-only oracle: the original libobs/util/config-file.c, unmodified,
  * with every exported symbol renamed to oracle_* so it can link next to
  * the Rust implementation. The lexer comes from util/lexer.c, dstr from
- * util/dstr.c, bmem from test_bmem.c, blog from oracle/base.c, and the
- * os_* platform helpers from config_file_host.c and
- * file_serializer_host.c. */
+ * util/dstr.c, bmem from oracle/bmem.c, blog from oracle/base.c, and the
+ * os_* platform helpers from oracle/platform.c and the platform-specific
+ * oracle wrappers. */
 #define _FILE_OFFSET_BITS 64
 /* PTHREAD_MUTEX_RECURSIVE is behind _GNU_SOURCE with -std=c11. */
 #define _GNU_SOURCE
@@ -46,8 +46,11 @@
 #define config_has_default_value oracle_config_has_default_value
 #define blog oracle_blog
 #define blogva oracle_blogva
-/* os_safe_replace is the Rust platform shim on Unix and Windows. This
- * oracle keeps the C copy under a private name. */
-#define os_safe_replace oracle_host_os_safe_replace
+/* Platform helpers are compiled from the real util/platform.c. */
+#define os_fopen oracle_os_fopen
+#define os_fread_utf8 oracle_os_fread_utf8
+#define os_fseeki64 oracle_os_fseeki64
+#define os_ftelli64 oracle_os_ftelli64
+#define os_safe_replace oracle_os_safe_replace
 
 #include "util/config-file.c.h"

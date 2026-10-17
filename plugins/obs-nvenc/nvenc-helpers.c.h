@@ -276,25 +276,51 @@ static void read_codec_caps(config_t *config, enum codec_type codec, const char 
 	caps->uhq = config_get_bool(config, section, "uhq");
 }
 
-static bool nvenc_check(void)
+/* obs-nvenc-test's answer is kept while the driver, the GPUs and the test stay
+ * the same (nvenc-caps-cache.h). */
+static const char *caps_cache_file = "nvenc-caps-cache.ini";
+
+static bool read_caps_cache(const char *key, struct dstr *caps_str)
 {
-#ifdef _WIN32
-	char *test_exe = os_get_executable_path_ptr("obs-nvenc-test.exe");
-#else
-	char *test_exe = os_get_executable_path_ptr("obs-nvenc-test");
-#endif
-	os_process_args_t *args;
-	struct dstr caps_str = {0};
-	config_t *config = NULL;
-	bool success = false;
+	char *path = obs_module_config_path(caps_cache_file);
+	char *data = path ? os_quick_read_utf8_file(path) : NULL;
+	char *caps = nvenc_caps_cache_lookup(data, key);
 
-	args = os_process_args_create(test_exe);
+	if (caps)
+		dstr_copy(caps_str, caps);
 
+	bfree(caps);
+	bfree(data);
+	bfree(path);
+	return caps != NULL;
+}
+
+static void write_caps_cache(const char *key, const struct dstr *caps_str)
+{
+	char *dir = obs_module_config_path("");
+	char *path = obs_module_config_path(caps_cache_file);
+
+	if (dir && path && os_mkdirs(dir) != MKDIR_ERROR) {
+		char *data = nvenc_caps_cache_format(key, caps_str->array);
+		if (!os_quick_write_utf8_file_safe(path, data, strlen(data), false, "tmp", NULL))
+			blog(LOG_WARNING, "[obs-nvenc] Failed to save the NVENC capabilities to %s", path);
+		bfree(data);
+	}
+
+	bfree(path);
+	bfree(dir);
+}
+
+static bool run_nvenc_test(const char *test_exe, struct dstr *caps_str)
+{
+	os_process_args_t *args = os_process_args_create(test_exe);
 	os_process_pipe_t *pp = os_process_pipe_create2(args, "r");
+	os_process_args_destroy(args);
+
 	if (!pp) {
 		blog(LOG_WARNING, "[NVENC] Failed to launch the NVENC "
 				  "test process I guess");
-		goto fail;
+		return false;
 	}
 
 	for (;;) {
@@ -303,10 +329,30 @@ static bool nvenc_check(void)
 		if (!len)
 			break;
 
-		dstr_ncat(&caps_str, data, len);
+		dstr_ncat(caps_str, data, len);
 	}
 
 	os_process_pipe_destroy(pp);
+	return true;
+}
+
+static bool nvenc_check(void)
+{
+#ifdef _WIN32
+	char *test_exe = os_get_executable_path_ptr("obs-nvenc-test.exe");
+#else
+	char *test_exe = os_get_executable_path_ptr("obs-nvenc-test");
+#endif
+	struct dstr caps_str = {0};
+	config_t *config = NULL;
+	bool success = false;
+
+	char *cache_key = nvenc_caps_cache_key("", test_exe);
+	bool cached = cache_key && read_caps_cache(cache_key, &caps_str);
+	if (cached)
+		blog(LOG_INFO, "[obs-nvenc] Driver, GPUs and test unchanged, using the saved NVENC capabilities");
+	else if (!run_nvenc_test(test_exe, &caps_str))
+		goto fail;
 
 	if (dstr_is_empty(&caps_str)) {
 		blog(LOG_WARNING, "[NVENC] Seems the NVENC test subprocess crashed. "
@@ -343,13 +389,16 @@ static bool nvenc_check(void)
 	     NVCODEC_CONFIGURED_VERSION >> 4, NVCODEC_CONFIGURED_VERSION & 0xf, nvenc_ver, cuda_ver,
 	     codec_supported[CODEC_AV1] ? "true" : "false");
 
+	if (cache_key && !cached)
+		write_caps_cache(cache_key, &caps_str);
+
 fail:
 	if (config)
 		config_close(config);
 
+	bfree(cache_key);
 	bfree(test_exe);
 	dstr_free(&caps_str);
-	os_process_args_destroy(args);
 
 	return success;
 }

@@ -20,6 +20,9 @@
 /* nvenc-compat.c */
 #include "../nvenc-helpers.h"
 
+/* nvenc-helpers.c */
+#include "../nvenc-caps-cache.h"
+
 /* nvenc-opts-parser.c */
 
 #include <stdio.h>
